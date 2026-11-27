@@ -1,0 +1,4 @@
+window.GT_AD_IDS = {"appId": "ca-app-pub-5151387136918372~1960269646", "interstitial": "ca-app-pub-5151387136918372/9264044590", "rewarded": "ca-app-pub-5151387136918372/7626870151", "testing": false, "testDevices": ["58FE6CBF420E7F9D5339A2AE1EC80707"], "ios": {"appId": "ca-app-pub-5151387136918372~1476908123", "interstitial": "ca-app-pub-5151387136918372/2362101038", "rewarded": "ca-app-pub-5151387136918372/2870026638", "testing": false, "testDevices": []}};
+window.GT_BUILD = {"target": "app", "forceLandscape": false, "name": "Gran Toretto"};
+window.GT_DEV = false;
+window.S3A_ID = "G-GBKWW53NKN";

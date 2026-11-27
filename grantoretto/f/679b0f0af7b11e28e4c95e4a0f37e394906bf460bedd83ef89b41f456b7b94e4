@@ -1,0 +1,118 @@
+// Career world map: one painted overhead map of Kurogane Bay (game/art/world.webp, 1024x1536, tools/make_art.py "world").
+// Each career tier is one AREA pinned on it; coordinates are map pixels. The area also picks the race environment
+// (env = which painted layer set, look = fog / lamp / tint variant, see LOOKS and main.js useArea()).
+export const WORLD = { img: 'art/world.webp', w: 1024, h: 1536, name: 'KUROGANE BAY' };
+
+export const AREAS = {
+  D: { name: 'NEON ALLEY', sub: 'DOWNTOWN BACK STREETS', x: 468, y: 575, r: 185, env: 'city', look: 'downtown', thumb: 'art/area_d.webp' },
+  C: { name: 'HARBOR DOCKS', sub: 'PORT OF KUROGANE', x: 548, y: 958, r: 200, env: 'docks', look: 'docks', thumb: 'art/area_c.webp' },
+  B: { name: 'LANTERN ROW', sub: 'OLD TOWN RIVERSIDE', x: 168, y: 300, r: 185, env: 'lantern', look: 'lantern', thumb: 'art/area_b.webp' },
+  A: { name: 'BAYSHORE LOOP', sub: 'ELEVATED EXPRESSWAY', x: 892, y: 585, r: 165, env: 'expressway', look: 'expressway', thumb: 'art/area_a.webp' },
+  S: { name: 'CROWN SUMMIT', sub: 'MOUNTAIN PASS', x: 812, y: 262, r: 210, env: 'pass', look: 'summit', thumb: 'art/area_s.webp' },
+};
+export const AREA_ORDER = ['D', 'C', 'B', 'A', 'S'];
+
+// Career route legs (from -> to): control points of a quadratic curve between the two pins, so the glowing route
+// bows around the city instead of cutting straight through the pins of other areas.
+export const LEGS = { D: [600, 760], C: [250, 760], B: [560, 400], A: [930, 420] };
+
+// Decor labels (not interactive)
+export const LABELS = [
+  { x: 150, y: 1395, t: 'KUROGANE INT’L', s: 'AIRPORT · COMING SOON', soon: true },
+  { x: 880, y: 905, t: 'IRONWORKS', s: 'INDUSTRIAL ZONE · COMING SOON', soon: true },
+  { x: 640, y: 1420, t: 'KUROGANE BAY', s: '' },
+];
+
+// Ambient life (all map px): light trails on roads, blinking lights, water glints, the runway, clouds.
+export const AMBIENT = {
+  trails: [ // [polyline, cars, speed px/s, two-way]
+    [[[30, 700], [40, 620], [72, 560], [130, 520], [200, 470], [245, 428]], 3, 70, true],
+    [[[40, 690], [120, 728], [250, 745], [400, 750], [520, 736], [640, 706], [760, 662], [860, 640], [985, 598]], 6, 95, true],
+    [[[760, 565], [830, 522], [930, 520], [1000, 560], [990, 602], [900, 640], [820, 662], [752, 640], [740, 600], [760, 565]], 3, 80, false],
+    [[[820, 560], [832, 480], [800, 420], [720, 372], [692, 335], [735, 300], [880, 292], [905, 275], [860, 255], [700, 250], [660, 238], [700, 214], [870, 208], [890, 188], [855, 150], [855, 128], [905, 110]], 2, 55, false],
+    [[[300, 1240], [420, 1210], [560, 1172], [700, 1136], [780, 1118], [950, 1104]], 4, 85, true],
+    [[[0, 882], [60, 840], [150, 795], [185, 740]], 2, 60, true],
+  ],
+  blink: [ // [x, y, colour, period s, phase]
+    [466, 828, '#ff3344', 1.6, 0], [612, 888, '#ff3344', 1.6, 0.5], [770, 1028, '#ff3344', 1.6, 0.9], [416, 1130, '#ff3355', 2.1, 0.2], [760, 1032, '#ff3355', 2.1, 1.1],
+    [845, 742, '#ff4455', 1.3, 0.3], [884, 752, '#ff4455', 1.3, 0.8], [950, 768, '#ff4455', 1.3, 0.1], [510, 300, '#ff2f9a', 1.8, 0.4], [243, 1100, '#2fe6ff', 1.2, 0.6],
+    [905, 58, '#ffd76a', 2.6, 0], [218, 140, '#ff6a4a', 2.2, 0.7], [956, 70, '#ff3344', 1.4, 0.2],
+  ],
+  runway: [[218, 1338], [78, 1122]], // takeoff roll direction (plane lifts off past the far end)
+  water: [[0, 885, 290, 1070], [330, 1250, 1024, 1536], [380, 1050, 720, 1140], [0, 1420, 320, 1536]],
+  clouds: [[120, 120, 1.0], [620, 70, 1.3], [360, 210, 0.8], [900, 380, 0.9], [200, 900, 0.7], [760, 1300, 0.9]],
+};
+
+// Race looks per area: fog colours (near ground / high), fog density, street-lamp colour, mid/near layer tints, road tint.
+export const LOOKS = {
+  downtown:   { fogA: 0x4a2370, fogB: 0x150c33, fogD: 0.011, lamp: [1.0, 0.8, 0.55], far: 0xffffff, mid: 0xd8d8ff, near: 0xffffff, road: 0xb4b0cc },
+  docks:      { fogA: 0x2a5a70, fogB: 0x0a1a30, fogD: 0.02, lamp: [1.0, 0.62, 0.28], far: 0x80a8cc, mid: 0x88aed0, near: 0xb8cce0, road: 0x98a8b8 },
+  lantern:    { fogA: 0x7a1e28, fogB: 0x2a0a14, fogD: 0.015, lamp: [1.0, 0.45, 0.3], far: 0xffa090, mid: 0xff9c8c, near: 0xffc4b4, road: 0xc89ca4 },
+  expressway: { fogA: 0x1a4090, fogB: 0x081438, fogD: 0.012, lamp: [0.7, 0.88, 1.0], far: 0x8cb4ff, mid: 0x9cc0ff, near: 0xc4dcff, road: 0x98acd8 },
+  garage:     { fogA: 0x1c2636, fogB: 0x0a0d18, fogD: 0.006, lamp: [0.86, 0.94, 1.0], far: 0xf2f4ff, mid: 0xeef2ff, near: 0xffffff, road: 0xa8acbc },   /* Kurogane Garage interior: cool strip lights */
+  summit:     { fogA: 0x3a2a6a, fogB: 0x0e0a28, fogD: 0.010, lamp: [1.0, 0.85, 0.6], far: 0xffffff, mid: 0xd0c8ff, near: 0xffffff, road: 0xb4b0cc },
+};
+export const areaOf = (t) => AREAS[t] || AREAS.D;
+
+export const MAP = { files: () => [WORLD.img, ...AREA_ORDER.map((t) => AREAS[t].thumb)] };
+
+/* ---------- race locations (user, 2026-11-13): every career rung races at a real spot on the bay map, and the env on
+   screen is always that spot's env. LOCS = named places (env = painted layer set in main.js ENVS, look = LOOKS key,
+   area = the region whose painting shows that env: the location card art). ROUTE[tier] = the chapter's 10 stops in
+   order (rung 0..9, last = boss): race type t, place at, map pixel x / y. A chapter is a route across the map (Neon
+   Alley runs out onto the elevated and the harbor edge, etc.); the career map draws the stops + the route line and
+   flies to the stop before each race. Types fit their spot: roll / cop on the expressway / bridge / long harbor and
+   summit roads, half-mile on long straights, wet anywhere. */
+export const LOCS = {
+  alley:      { name: 'NEON ALLEY', sub: 'DOWNTOWN BACK STREET', env: 'city', look: 'downtown', area: 'D' },
+  market:     { name: 'MARKET STREET', sub: 'DOWNTOWN', env: 'city', look: 'downtown', area: 'D' },
+  tower:      { name: 'TOWER AVENUE', sub: 'DOWNTOWN STRAIGHT', env: 'city', look: 'downtown', area: 'D' },
+  canal:      { name: 'CANAL AVENUE', sub: 'WEST SIDE STRAIGHT', env: 'city', look: 'downtown', area: 'D' },
+  eastend:    { name: 'EAST END', sub: 'DOWNTOWN EDGE', env: 'city', look: 'downtown', area: 'D' },
+  cityelev:   { name: 'CITY ELEVATED', sub: 'EXPRESSWAY SOUTH', env: 'expressway', look: 'expressway', area: 'A' },
+  westelev:   { name: 'WEST ELEVATED', sub: 'EXPRESSWAY WEST', env: 'expressway', look: 'expressway', area: 'A' },
+  harboredge: { name: 'HARBOR EDGE', sub: 'WEST PIER', env: 'docks', look: 'docks', area: 'C' },
+  containers: { name: 'CONTAINER ROW', sub: 'PORT OF KUROGANE', env: 'docks', look: 'docks', area: 'C' },
+  pier:       { name: 'PIER ROAD', sub: 'PORT OF KUROGANE', env: 'docks', look: 'docks', area: 'C' },
+  cranes:     { name: 'CRANE YARD', sub: 'PORT OF KUROGANE', env: 'docks', look: 'docks', area: 'C' },
+  warehouse:  { name: 'WAREHOUSE ROW', sub: 'PORT OF KUROGANE', env: 'docks', look: 'docks', area: 'C' },
+  baybridge:  { name: 'BAY BRIDGE', sub: 'KUROGANE BAY CROSSING', env: 'expressway', look: 'expressway', area: 'A' },
+  torii:      { name: 'TORII GATE', sub: 'OLD TOWN', env: 'lantern', look: 'lantern', area: 'B' },
+  temple:     { name: 'TEMPLE STREET', sub: 'OLD TOWN', env: 'lantern', look: 'lantern', area: 'B' },
+  riverside:  { name: 'RIVERSIDE ROAD', sub: 'OLD TOWN STRAIGHT', env: 'lantern', look: 'lantern', area: 'B' },
+  sakura:     { name: 'SAKURA LANE', sub: 'OLD TOWN', env: 'lantern', look: 'lantern', area: 'B' },
+  redbridge:  { name: 'RED BRIDGE', sub: 'OLD TOWN RIVERSIDE', env: 'lantern', look: 'lantern', area: 'B' },
+  riverelev:  { name: 'RIVER ELEVATED', sub: 'EXPRESSWAY WEST', env: 'expressway', look: 'expressway', area: 'A' },
+  hillroad:   { name: 'HILL ROAD', sub: 'ABOVE OLD TOWN', env: 'pass', look: 'summit', area: 'S' },
+  bayloop:    { name: 'BAYSHORE LOOP', sub: 'ELEVATED EXPRESSWAY', env: 'expressway', look: 'expressway', area: 'A' },
+  interchange: { name: 'INTERCHANGE', sub: 'BAYSHORE LOOP', env: 'expressway', look: 'expressway', area: 'A' },
+  summitramp: { name: 'SUMMIT RAMP', sub: 'EXPRESSWAY NORTH', env: 'expressway', look: 'expressway', area: 'A' },
+  factory:    { name: 'FACTORY ROAD', sub: 'EAST DOCKS', env: 'docks', look: 'docks', area: 'C' },
+  summitroad: { name: 'SUMMIT ROAD', sub: 'MOUNTAIN PASS', env: 'pass', look: 'summit', area: 'S' },
+  hairpin:    { name: 'HAIRPIN RUN', sub: 'MOUNTAIN PASS', env: 'pass', look: 'summit', area: 'S' },
+  cloudbend:  { name: 'CLOUD BEND', sub: 'MOUNTAIN PASS', env: 'pass', look: 'summit', area: 'S' },
+  observatory: { name: 'OBSERVATORY', sub: 'CROWN SUMMIT', env: 'pass', look: 'summit', area: 'S' },
+};
+const R = (t, at, x, y) => ({ t, at, x, y });
+export const ROUTE = {
+  /* tier D: a new race type every 2-3 races: (tutorial drag) drag, ROLL, drag, WET, roll, HALF, drag, wet, COP, boss drag */
+  D: [R('drag', 'alley', 470, 612), R('roll', 'cityelev', 590, 718), R('drag', 'market', 395, 668), R('wet', 'harboredge', 330, 895),
+    R('roll', 'westelev', 205, 738), R('half', 'canal', 225, 615), R('drag', 'tower', 330, 548), R('wet', 'alley', 425, 515),
+    R('cop', 'cityelev', 690, 700), R('drag', 'alley', 505, 468)],
+  C: [R('drag', 'containers', 560, 965), R('cop', 'pier', 420, 925), R('roll', 'baybridge', 470, 1215), R('wet', 'cranes', 520, 895),
+    R('drag', 'warehouse', 640, 850), R('half', 'baybridge', 640, 1160), R('cop', 'pier', 690, 1000), R('roll', 'baybridge', 800, 1105),
+    R('wet', 'containers', 770, 985), R('cop', 'baybridge', 905, 1075)],
+  B: [R('wet', 'torii', 150, 335), R('drag', 'temple', 110, 245), R('half', 'riverside', 300, 335), R('roll', 'riverelev', 105, 520),
+    R('cop', 'riverelev', 55, 610), R('wet', 'sakura', 55, 385), R('drag', 'temple', 235, 205), R('half', 'riverside', 330, 225),
+    R('roll', 'hillroad', 385, 165), R('wet', 'redbridge', 205, 400)],
+  A: [R('roll', 'bayloop', 880, 560), R('drag', 'eastend', 730, 560), R('cop', 'interchange', 965, 590), R('half', 'bayloop', 820, 640),
+    R('wet', 'eastend', 700, 610), R('roll', 'interchange', 990, 530), R('drag', 'factory', 790, 770), R('cop', 'bayloop', 930, 640),
+    R('half', 'summitramp', 830, 470), R('roll', 'bayloop', 895, 515)],
+  S: [R('half', 'summitroad', 790, 420), R('roll', 'hairpin', 700, 350), R('wet', 'cloudbend', 860, 300), R('cop', 'summitramp', 850, 470),
+    R('drag', 'summitroad', 760, 250), R('half', 'hairpin', 690, 270), R('roll', 'cloudbend', 830, 200), R('wet', 'hairpin', 870, 150),
+    R('cop', 'summitroad', 880, 235), R('half', 'observatory', 905, 105)],
+};
+export const stopOf = (tier, i) => (ROUTE[tier] || ROUTE.D)[Math.max(0, Math.min(9, i | 0))];
+export const locOf = (id) => LOCS[id] || LOCS.alley;
+/* quick race / daily: a place on the route of an open chapter, preferring one whose env fits the race type */
+export const FITS = { roll: ['expressway', 'docks', 'pass'], cop: ['expressway', 'docks', 'pass'] };

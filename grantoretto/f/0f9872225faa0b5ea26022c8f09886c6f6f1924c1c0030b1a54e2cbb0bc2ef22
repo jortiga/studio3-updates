@@ -1,0 +1,250 @@
+// 2D juice layer on the #fx2d canvas: pooled particles (sparks, twinkles, confetti, coins/gems, rings, lens flares,
+// firework shells). The canvas only redraws while something is alive; sprites are pre-rendered once, so a frame is a
+// few hundred drawImage calls at most. Coordinates are CSS pixels.
+const TAU = Math.PI * 2;
+const rand = (a, b) => a + Math.random() * (b - a);
+
+function mk(w, h, draw) { const c = document.createElement('canvas'); c.width = w; c.height = h; draw(c.getContext('2d'), w, h); return c; }
+// white sprites; tinted copies are cached per colour
+const BASE = {
+  dot: mk(64, 64, (g) => { const r = g.createRadialGradient(32, 32, 0, 32, 32, 32); r.addColorStop(0, 'rgba(255,255,255,1)'); r.addColorStop(0.25, 'rgba(255,255,255,.85)'); r.addColorStop(1, 'rgba(255,255,255,0)'); g.fillStyle = r; g.fillRect(0, 0, 64, 64); }),
+  star: mk(64, 64, (g) => {
+    const r = g.createRadialGradient(32, 32, 0, 32, 32, 12); r.addColorStop(0, 'rgba(255,255,255,1)'); r.addColorStop(1, 'rgba(255,255,255,0)'); g.fillStyle = r; g.fillRect(0, 0, 64, 64);
+    g.fillStyle = '#fff'; g.beginPath(); g.moveTo(32, 0); g.quadraticCurveTo(35, 29, 64, 32); g.quadraticCurveTo(35, 35, 32, 64); g.quadraticCurveTo(29, 35, 0, 32); g.quadraticCurveTo(29, 29, 32, 0); g.fill();
+  }),
+  streak: mk(256, 16, (g) => { const r = g.createLinearGradient(0, 0, 256, 0); r.addColorStop(0, 'rgba(255,255,255,0)'); r.addColorStop(0.5, 'rgba(255,255,255,1)'); r.addColorStop(1, 'rgba(255,255,255,0)'); g.fillStyle = r; g.fillRect(0, 0, 256, 16);
+    const v = g.createLinearGradient(0, 0, 0, 16); v.addColorStop(0, 'rgba(0,0,0,1)'); v.addColorStop(0.5, 'rgba(0,0,0,0)'); v.addColorStop(1, 'rgba(0,0,0,1)'); g.globalCompositeOperation = 'destination-out'; g.fillStyle = v; g.fillRect(0, 0, 256, 16); }),
+};
+const tinted = new Map();
+function tint(name, col) {
+  const key = name + col;
+  if (!tinted.has(key)) {
+    const b = BASE[name];
+    tinted.set(key, mk(b.width, b.height, (g, w, h) => { g.drawImage(b, 0, 0); g.globalCompositeOperation = 'source-in'; g.fillStyle = col; g.fillRect(0, 0, w, h); g.globalCompositeOperation = 'lighter'; g.globalAlpha = 0.5; g.drawImage(b, 0, 0); }));
+  }
+  return tinted.get(key);
+}
+const CONF = ['#ff2f9a', '#2fe6ff', '#ffcc33', '#ffffff', '#8a5cff', '#3dffa8'];
+const HOT = ['#ffd27a', '#2fe6ff', '#ffffff'];
+
+export function createJuice(cv) {
+  const g = cv.getContext('2d');
+  const pool = Array.from({ length: 320 }, () => ({ on: false }));
+  let running = false, lastT = 0, dpr = 1;
+  const frames = {}; // coin / gem from the items sheet
+  const sheet = new Image(); sheet.src = 'sprites/ic_items.webp';
+  sheet.onload = () => {
+    const fw = sheet.width / 6, fh = sheet.height;
+    for (const [name, i] of [['coin', 0], ['gem', 1]]) frames[name] = mk(64, Math.round(64 * fh / fw), (c, w, h) => c.drawImage(sheet, fw * i, 0, fw, fh, 0, 0, w, h));
+  };
+  function resize() { dpr = Math.min(devicePixelRatio || 1, 1.75); cv.width = Math.round(innerWidth * dpr); cv.height = Math.round(innerHeight * dpr); }
+  addEventListener('resize', resize); resize();
+  /* UI scale --s: main.js writes it as an inline style on <html>, so read that (no style recalc). getComputedStyle per
+     confetti particle per frame was most of the race-end -> result hitch on a Note 9; the computed fallback is cached */
+  let sCss = 0;
+  addEventListener('resize', () => { sCss = 0; });
+  const S = () => parseFloat(document.documentElement.style.getPropertyValue('--s')) || sCss || (sCss = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--s')) || 1);
+
+  function spawn(o) {
+    let p = pool.find((q) => !q.on);
+    if (!p) return null;
+    for (const k in p) delete p[k];
+    Object.assign(p, { on: true, t: 0, vx: 0, vy: 0, grav: 0, drag: 0, rot: 0, vr: 0, alpha: 1, add: true }, o);
+    return p;
+  }
+  function start() { if (!running) { running = true; lastT = performance.now(); requestAnimationFrame(tick); } }
+
+  const J = {
+    get s() { return S(); },
+    /** radial spark burst */
+    spark(x, y, { n = 14, cols = HOT, speed = 300, size = 6, life = 0.55, grav = 380, spread = TAU, dir = 0 } = {}) {
+      const s = S();
+      for (let i = 0; i < n; i++) {
+        const a = dir + (Math.random() - 0.5) * spread, sp = rand(0.25, 1) * speed * s;
+        spawn({ kind: 'dot', x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, grav: grav * s, drag: 2.2, size: rand(0.5, 1) * size * s, life: rand(0.6, 1) * life, img: tint('dot', cols[i % cols.length]), stretch: 1 });
+      }
+      start();
+    },
+    /** 4-point twinkles (button presses, sparkle trails) */
+    twinkle(x, y, { n = 6, cols = ['#ffffff', '#ffe27a', '#7ae8ff'], r = 26, size = 18, life = 0.5 } = {}) {
+      const s = S();
+      for (let i = 0; i < n; i++) {
+        const a = Math.random() * TAU, d = rand(0.3, 1) * r * s;
+        spawn({ kind: 'star', x: x + Math.cos(a) * d * 0.4, y: y + Math.sin(a) * d * 0.4, vx: Math.cos(a) * d * 2, vy: Math.sin(a) * d * 2 - 20 * s, drag: 3, size: rand(0.5, 1) * size * s, life: rand(0.6, 1) * life, img: tint('star', cols[i % cols.length]), vr: rand(-4, 4), pulse: 1 });
+      }
+      start();
+    },
+    /** expanding shock ring */
+    ring(x, y, { col = '#7ae8ff', r0 = 10, r1 = 180, life = 0.45, width = 10, squash = 1 } = {}) {
+      const s = S();
+      spawn({ kind: 'ring', x, y, r0: r0 * s, r1: r1 * s, life, width: width * s, col, squash });
+      start();
+    },
+    /** anamorphic lens flare: horizontal streak + hot core + ghost dots */
+    flare(x, y, { col = '#7ae8ff', len = 520, life = 0.42, size = 1 } = {}) {
+      const s = S();
+      spawn({ kind: 'flare', x, y, len: len * s, life, img: tint('streak', col), core: tint('dot', '#ffffff'), glow: tint('dot', col), size: size * s });
+      start();
+    },
+    /** confetti from the top edge (or a point) */
+    confetti(n = 70, { x = null, y = null, spread = 1 } = {}) {
+      const s = S(), W = innerWidth;
+      for (let i = 0; i < n; i++) {
+        const fromPt = x != null;
+        const a = -Math.PI / 2 + rand(-0.9, 0.9) * spread, sp = rand(250, 720) * s;
+        spawn({ kind: 'conf', add: false, x: fromPt ? x : rand(0, W), y: fromPt ? y : rand(-60, -10) * s, vx: fromPt ? Math.cos(a) * sp : rand(-40, 40) * s, vy: fromPt ? Math.sin(a) * sp : rand(60, 220) * s,
+          grav: 420 * s, drag: 1.6, w: rand(6, 11) * s, h: rand(3, 6) * s, rot: Math.random() * TAU, vr: rand(-12, 12), flip: rand(5, 14), life: rand(2.2, 3.4), col: CONF[i % CONF.length], sway: rand(0, TAU) });
+      }
+      start();
+    },
+    /** firework shell: rises, then bursts into a ring of sparks + a twinkle tail */
+    firework(x, y, { col = null, delay = 0 } = {}) {
+      const s = S(), c = col || CONF[Math.floor(Math.random() * 5)];
+      spawn({ kind: 'shell', x, y: innerHeight + 10, ty: y, vy: -(innerHeight + 10 - y) / 0.55, life: 0.55, wait: delay, col: c, img: tint('dot', c), size: 10 * s });
+      start();
+    },
+    /** coins falling onto a point (map node) with a bounce + sparkle */
+    coinRain(x, y, n = 14) {
+      const s = S();
+      for (let i = 0; i < n; i++) spawn({ kind: 'drop', add: false, img: null, f: 'coin', x: x + rand(-50, 50) * s, y: y - rand(120, 340) * s, vy: rand(0, 120) * s, grav: 1500 * s, ty: y + rand(-6, 6) * s,
+        size: rand(20, 30) * s, life: 1.6, spin: Math.random() * 6, wait: i * 0.045 });
+      start();
+    },
+    /** coins/gems: burst out from a point, then home in on a counter; onArrive(value) per coin */
+    fly(x, y, tx, ty, n, value, kind, onArrive) {
+      const s = S();
+      let left = value;
+      for (let i = 0; i < n; i++) {
+        const per = i === n - 1 ? left : Math.floor(value / n); left -= per;
+        const a = Math.random() * TAU, sp = (140 + Math.random() * 260) * s;
+        spawn({ kind: 'fly', add: false, f: kind, x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 160 * s, size: (26 + Math.random() * 10) * s, burstT: 0.28 + Math.random() * 0.25,
+          homeT: 0.42 + Math.random() * 0.12, tx, ty, per, onArrive, spin: Math.random() * 6, life: 9 });
+      }
+      J.spark(x, y, { n: 12, cols: ['#ffe27a', '#7ae8ff'], speed: 340, size: 7, grav: 300 });
+    },
+    /** big celebratory burst: ring + rays of twinkles + sparks (rank up, tier unlock) */
+    rankUp(x, y) {
+      J.ring(x, y, { col: '#ffcc33', r1: 260, width: 14, life: 0.6 });
+      J.ring(x, y, { col: '#ff2f9a', r1: 180, width: 8, life: 0.5 });
+      J.spark(x, y, { n: 40, cols: ['#ffcc33', '#ffffff', '#ff2f9a', '#2fe6ff'], speed: 620, size: 9, life: 0.9, grav: 260 });
+      J.twinkle(x, y, { n: 14, r: 120, size: 30, life: 0.9 });
+    },
+    clear() { for (const p of pool) p.on = false; },
+  };
+
+  function tick(now) {
+    const dt = Math.max(0, Math.min(0.05, (now - lastT) / 1000)); lastT = Math.max(lastT, now);
+    g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, cv.width, cv.height);
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    let alive = 0;
+    const s = S();   /* once per frame, not per particle */
+    for (const p of pool) {
+      if (!p.on) continue;
+      alive++;
+      if (p.wait > 0) { p.wait -= dt; continue; }
+      p.t += dt;
+      if (p.kind !== 'fly' && p.t >= p.life) { p.on = false; continue; }
+      const k = 1 - p.t / p.life;
+      if (p.drag) { p.vx *= 1 - Math.min(1, dt * p.drag); p.vy *= 1 - Math.min(1, dt * p.drag); }
+      p.vy += p.grav * dt; p.x += p.vx * dt; p.y += p.vy * dt; p.rot += p.vr * dt;
+      g.globalCompositeOperation = p.add ? 'lighter' : 'source-over';
+      switch (p.kind) {
+        case 'dot': {
+          const sz = p.size * (0.5 + k) * 2;
+          g.globalAlpha = Math.min(1, k * 1.6);
+          const sp = Math.hypot(p.vx, p.vy), st = 1 + Math.min(3, sp / 260);
+          if (st > 1.3) { g.save(); g.translate(p.x, p.y); g.rotate(Math.atan2(p.vy, p.vx)); g.drawImage(p.img, -sz * st / 2, -sz / 2, sz * st, sz); g.restore(); }
+          else g.drawImage(p.img, p.x - sz / 2, p.y - sz / 2, sz, sz);
+          break;
+        }
+        case 'star': {
+          const sz = p.size * (0.4 + Math.sin(Math.min(1, p.t / p.life) * Math.PI) * 0.9);
+          g.globalAlpha = Math.min(1, k * 2);
+          g.save(); g.translate(p.x, p.y); g.rotate(p.rot); g.drawImage(p.img, -sz / 2, -sz / 2, sz, sz); g.restore();
+          break;
+        }
+        case 'ring': {
+          const e = 1 - Math.pow(Math.min(1, k), 3), r = Math.max(0.5, p.r0 + (p.r1 - p.r0) * e);
+          g.globalAlpha = k; g.strokeStyle = p.col; g.lineWidth = p.width * k + 1;
+          g.beginPath(); g.ellipse(p.x, p.y, r, r * Math.abs(p.squash), 0, 0, TAU); g.stroke();
+          g.globalAlpha = k * 0.5; g.lineWidth = p.width * k * 2.5 + 2; g.strokeStyle = '#ffffff'; g.beginPath(); g.ellipse(p.x, p.y, r * 0.96, r * 0.96 * Math.abs(p.squash), 0, 0, TAU); g.stroke();
+          break;
+        }
+        case 'flare': {
+          const a = Math.sin(Math.min(1, p.t / p.life) * Math.PI);
+          g.globalAlpha = a;
+          const L = p.len * (0.6 + 0.5 * (1 - k));
+          g.drawImage(p.img, p.x - L / 2, p.y - 7 * p.size, L, 14 * p.size);
+          g.drawImage(p.img, p.x - L * 0.3, p.y - 2 * p.size, L * 0.6, 4 * p.size);
+          const c = 90 * p.size * (0.6 + a * 0.6);
+          g.drawImage(p.glow, p.x - c, p.y - c, c * 2, c * 2);
+          g.drawImage(p.core, p.x - c * 0.35, p.y - c * 0.35, c * 0.7, c * 0.7);
+          // ghosts mirrored through the screen centre
+          const cx = innerWidth / 2, cy = innerHeight / 2;
+          for (const [f, r] of [[0.5, 14], [-0.3, 26], [-0.8, 10]]) {
+            const gx = cx + (p.x - cx) * f, gy = cy + (p.y - cy) * f;
+            g.globalAlpha = a * 0.35; g.drawImage(p.glow, gx - r * p.size, gy - r * p.size, r * 2 * p.size, r * 2 * p.size);
+          }
+          break;
+        }
+        case 'conf': {
+          p.vx += Math.sin(p.t * 3 + p.sway) * 60 * dt * s;
+          if (p.vy > 260 * s) p.vy = 260 * s;
+          g.globalAlpha = Math.min(1, k * 3);
+          g.save(); g.translate(p.x, p.y); g.rotate(p.rot); g.scale(1, Math.cos(p.t * p.flip));
+          g.fillStyle = p.col; g.fillRect(-p.w / 2, -p.h / 2, p.w, p.h); g.restore();
+          break;
+        }
+        case 'shell': {
+          if (p.y <= p.ty || p.t >= p.life - 0.01) {
+            p.on = false;
+            const cols = [p.col, '#ffffff', p.col];
+            J.spark(p.x, p.y, { n: 34, cols, speed: 420, size: 8, life: 1.1, grav: 140 });
+            J.ring(p.x, p.y, { col: p.col, r1: 120, width: 6, life: 0.5 });
+            J.twinkle(p.x, p.y, { n: 6, r: 90, size: 22, life: 1 });
+            continue;
+          }
+          g.globalAlpha = 1; g.drawImage(p.img, p.x - p.size, p.y - p.size, p.size * 2, p.size * 2);
+          if (Math.random() < 0.6) spawn({ kind: 'dot', x: p.x, y: p.y, vy: 30, size: 3 * s, life: 0.35, img: p.img, grav: 60 });
+          break;
+        }
+        case 'drop': {
+          p.spin += dt * 10;
+          if (p.y >= p.ty && p.vy > 0) {
+            if (!p.bounced) { p.bounced = true; p.vy *= -0.38; p.y = p.ty; J.twinkle(p.x, p.y, { n: 2, r: 20, size: 14, life: 0.35 }); }
+            else { p.vy = 0; p.grav = 0; p.y = p.ty; }
+          }
+          const img = frames.coin;
+          if (img) {
+            g.globalAlpha = Math.min(1, k * 4);
+            const w = p.size * Math.max(0.2, Math.abs(Math.cos(p.spin))), h = p.size * img.height / img.width;
+            g.drawImage(img, p.x - w / 2, p.y - h / 2, w, h);
+          }
+          break;
+        }
+        case 'fly': {
+          p.spin += dt * 9;
+          let x, y, sc = 1;
+          if (p.t < p.burstT) { p.vy += 900 * dt; x = p.x; y = p.y; }
+          else {
+            p.vx = p.vy = 0;
+            if (p.hx == null) { p.hx = p.x; p.hy = p.y; }
+            const q = Math.min(1, (p.t - p.burstT) / p.homeT), e = q * q * (3 - 2 * q);
+            const cx = (p.hx + p.tx) / 2 + (p.hx < p.tx ? -60 : 60), cy = Math.min(p.hy, p.ty) - 80;
+            x = (1 - e) * (1 - e) * p.hx + 2 * (1 - e) * e * cx + e * e * p.tx;
+            y = (1 - e) * (1 - e) * p.hy + 2 * (1 - e) * e * cy + e * e * p.ty;
+            sc = 1 - e * 0.45;
+            if (q >= 1) { p.on = false; p.onArrive && p.onArrive(p.per); J.spark(p.tx, p.ty, { n: 2, cols: ['#ffe68c'], speed: 160, size: 5, grav: 200, life: 0.35 }); continue; }
+          }
+          const img = frames[p.f];
+          if (img) { g.globalAlpha = 1; const w = p.size * sc * Math.max(0.15, Math.abs(Math.cos(p.spin))), h = p.size * sc * img.height / img.width; g.drawImage(img, x - w / 2, y - h / 2, w, h); }
+          break;
+        }
+      }
+    }
+    g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
+    if (alive) requestAnimationFrame(tick);
+    else { running = false; g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, cv.width, cv.height); }
+  }
+  return J;
+}

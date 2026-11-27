@@ -1,0 +1,535 @@
+// City backdrop life: neon signs / lightboxes on the skyline + overpass layers and big video screens (mid buildings and
+// the grandstand roof) that cycle our own art. Everything is baked once into two canvas atlases; each group is one
+// merged quad mesh (one draw call), animated in the shader (buzz, blink, chase, flicker; screens cycle cells with
+// scanlines + a static burst on the cut). World-space quads at the layer depths -> same parallax + fog as the paintings.
+// Pass env: a few lit roadside signs on posts in front of the guardrail.
+import * as THREE from './vendor/three.module.min.js';
+import * as D from './depth.js';
+/* the game's name: the phone app build (build_www.py) sets GT_BUILD.name = 'Gran Toretto'; web and CrazyGames keep Drag Nights Race */
+const GNAME = ((typeof window !== 'undefined' && window.GT_BUILD && window.GT_BUILD.name) || 'Drag Nights Race').toUpperCase();
+
+const JP = '"Yu Gothic UI","Yu Gothic","Hiragino Sans","Noto Sans CJK JP","Noto Sans JP","Meiryo",sans-serif';
+const EN = 'Anton, Impact, "Arial Narrow Bold", sans-serif';
+// fictional shops / brands only
+const H_SIGNS = [
+  ['ラーメン', 'YONAKI NOODLE', '#ff3a6e'], ['カラオケ', 'STAR BOX', '#ffd23a'], ['チューン', 'KAI TUNING', '#2fe6ff'],
+  ['黒鉄ガレージ', 'KUROGANE GARAGE', '#ff8a2a'], ['ホテル', 'NEON MOON', '#c46bff'], ['すし', 'SUSHI 24H', '#3dffa8'],
+  ['ゲーム', 'ARCADE ZONE', '#ff4fd8'], ['居酒屋', 'IZAKAYA HANA', '#ff5a3a'], ['ドリフト', 'DRIFT TIRES', '#7ae8ff'],
+  ['ニトロ', 'NITRO OIL', '#4a8bff'], ['深夜FM', 'MIDNIGHT 88.1', '#ff3aa0'], ['ピザ', 'PIZZA ROCKET', '#ffb02e'],
+  ['コーヒー', 'CAFE 2AM', '#ffe08a'], ['タイヤ', 'GRIP KING', '#3dff7a'], ['ボウリング', 'BOWL 300', '#ff6af0'],
+  ['クラブ', 'CLUB VOLT', '#7a5cff'],
+];
+const LIGHTBOX = [['焼肉', '#ff4040'], ['薬', '#3dd4ff'], ['酒', '#ffcc33'], ['湯', '#ff7ab8'], ['麺', '#ff9a30'], ['24H', '#5aff9a']];
+const V_SIGNS = [['ラーメン', '#ff3a6e'], ['カラオケ', '#ffd23a'], ['ホテル', '#c46bff'], ['居酒屋', '#ff5a3a'], ['ゲーセン', '#ff4fd8'],
+  ['ガレージ', '#ff8a2a'], ['喫茶', '#ffe08a'], ['チューン', '#2fe6ff']];
+// second wave (atlas rows 8-10): EN-first styles, more shops; extra verticals
+const H_SIGNS2 = [
+  ['ヤキトリ', 'TORI BOSS', '#ff7a2a'], ['ネオン', 'NEON NOODLE', '#ff2fb0'], ['スシバー', 'BLUE FIN', '#2fb8ff'], ['ギョウザ', 'GYOZA KING', '#ffd84a'],
+  ['ネットカフェ', 'NET CAFE 24', '#5aff9a'], ['ダンス', 'DANCE HALL Z', '#b05cff'], ['オイル', 'TURBO OIL', '#ff4a4a'], ['ボクシング', 'IRON GYM', '#e8e8ff'],
+  ['ゲーセン', 'PIXEL PALACE', '#3dfff0'], ['ラジオ', 'BAY FM 79.5', '#ff9ad8'], ['パーツ', 'SPEED PARTS', '#ffb02e'], ['バー', 'BAR LUNA', '#9a8cff'],
+];
+const SHOPS2 = { cyan: [['釣具', 'FISH & TACKLE'], ['洗車', 'CAR WASH'], ['電気', 'DENKI TOWN'], ['氷', 'ICE CAFE']],
+  pink: [['ネイル', 'NAIL STUDIO'], ['プリクラ', 'PURI BOOTH'], ['花屋', 'FLOWERS'], ['ケーキ', 'CAKE POP']],
+  yellow: [['うどん', 'UDON YA'], ['カレー', 'CURRY HOUSE'], ['弁当', 'BENTO 24'], ['たこ焼き', 'TAKO TAKO']] };
+const V_SIGNS2 = [['ヤキトリ', '#ff7a2a'], ['スナック', '#ff2fb0'], ['うどん', '#ffd84a'], ['麻雀', '#5aff9a'], ['銭湯', '#2fb8ff'], ['質屋', '#e8e8ff'],
+  ['パーツ', '#ffb02e'], ['ダーツ', '#b05cff'], ['釣具', '#3dfff0'], ['整備', '#ff4a4a']];
+const PASS_SIGNS = [['峠', 'TOUGE PASS', '#ffd23a'], ['頂上 2km', 'SUMMIT', '#7ae8ff'], ['走り屋注意', 'SLOW DOWN', '#ff5a3a'],
+  [GNAME, 'CROWN SUMMIT', '#ff3aa0'], ['展望台', 'OBSERVATORY', '#3dffa8']];
+
+function rr(g, x, y, w, h, r) { g.beginPath(); g.moveTo(x + r, y); g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r); g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath(); }
+function neonText(g, txt, x, y, font, col, blur = 14) {
+  g.font = font; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.shadowColor = col; g.shadowBlur = blur; g.fillStyle = col; g.fillText(txt, x, y); g.fillText(txt, x, y);
+  g.shadowBlur = 0; g.fillStyle = 'rgba(255,255,255,0.85)'; g.fillText(txt, x, y);
+}
+function fitFont(g, txt, base, family, maxW, weight = 'bold') {
+  let s = base; g.font = `${weight} ${s}px ${family}`;
+  while (g.measureText(txt).width > maxW && s > 10) { s -= 2; g.font = `${weight} ${s}px ${family}`; }
+  return `${weight} ${s}px ${family}`;
+}
+
+// ---------------------------------------------------------------- sign atlas (2048 x 1024)
+// rows 0-5: 8 x 6 cells of 256 x 128 (neon signs, lightboxes, pass signs, a dark post cell); bottom band: 96 x 256 verticals
+function signAtlas() {
+  const c = document.createElement('canvas'); c.width = 2048; c.height = 1664;
+  const g = c.getContext('2d');
+  const cells = { h: [], box: [], v: [], pass: [], post: null };
+  let i = 0;
+  const cell = () => { const k = i++; return { x: (k % 8) * 256, y: Math.floor(k / 8) * 128, w: 256, h: 128 }; };
+  for (const [jp, en, col] of H_SIGNS) {
+    const r = cell(), pad = 10;
+    g.fillStyle = '#0a0614'; rr(g, r.x + pad, r.y + pad, r.w - pad * 2, r.h - pad * 2, 10); g.fill();
+    g.lineWidth = 4; g.strokeStyle = col; g.shadowColor = col; g.shadowBlur = 12; rr(g, r.x + pad + 3, r.y + pad + 3, r.w - pad * 2 - 6, r.h - pad * 2 - 6, 8); g.stroke(); g.shadowBlur = 0;
+    neonText(g, jp, r.x + r.w / 2, r.y + 52, fitFont(g, jp, 46, JP, r.w - 44), col);
+    neonText(g, en, r.x + r.w / 2, r.y + 94, fitFont(g, en, 24, EN, r.w - 50, 'normal'), '#ffffff', 8);
+    cells.h.push(r);
+  }
+  for (const [txt, col] of LIGHTBOX) {   // backlit box: bright panel, dark lettering
+    const r = cell(), pad = 18;
+    const gr = g.createLinearGradient(0, r.y, 0, r.y + r.h); gr.addColorStop(0, '#ffffff'); gr.addColorStop(1, col);
+    g.fillStyle = gr; rr(g, r.x + 64 + pad, r.y + pad, r.w - 128 - pad * 2, r.h - pad * 2, 6); g.fill();
+    g.fillStyle = '#14081e'; g.font = fitFont(g, txt, 64, JP, r.w - 170); g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(txt, r.x + r.w / 2, r.y + r.h / 2 + 2);
+    cells.box.push({ x: r.x + 64, y: r.y, w: r.w - 128, h: r.h });
+  }
+  for (const [jp, en, col] of PASS_SIGNS) {
+    const r = cell(), pad = 8;
+    g.fillStyle = '#10204a'; rr(g, r.x + pad, r.y + pad, r.w - pad * 2, r.h - pad * 2, 8); g.fill();
+    g.lineWidth = 5; g.strokeStyle = '#e8ecff'; rr(g, r.x + pad + 5, r.y + pad + 5, r.w - pad * 2 - 10, r.h - pad * 2 - 10, 6); g.stroke();
+    neonText(g, jp, r.x + r.w / 2, r.y + 52, fitFont(g, jp, 44, JP, r.w - 50), col, 8);
+    g.fillStyle = '#e8ecff'; g.font = fitFont(g, en, 22, EN, r.w - 60, 'normal'); g.fillText(en, r.x + r.w / 2, r.y + 94);
+    cells.pass.push(r);
+  }
+  { const r = cell(); g.fillStyle = '#1a1826'; g.fillRect(r.x + 8, r.y + 8, 32, 112); cells.post = { x: r.x + 8, y: r.y + 8, w: 32, h: 112 }; }
+  // shopfront lightboxes: fill the painted (blank) glowing sign panels of city_mid, one colour family each
+  cells.shop = { cyan: [], pink: [], yellow: [] };
+  for (const [fam, base, list] of [['cyan', '#2fe6ff', [['すし', 'SUSHI 24H'], ['ドリフト', 'DRIFT TIRES'], ['薬局', 'PHARMACY'], ['チューン', 'KAI TUNING']]],
+    ['pink', '#ff4fd8', [['カラオケ', 'STAR BOX'], ['ホテル', 'NEON MOON'], ['ゲーム', 'ARCADE ZONE'], ['クラブ', 'CLUB VOLT']]],
+    ['yellow', '#ffd23a', [['ラーメン', 'YONAKI NOODLE'], ['居酒屋', 'IZAKAYA HANA'], ['コーヒー', 'CAFE 2AM'], ['ピザ', 'PIZZA ROCKET']]]]) {
+    for (const [jp, en] of list) {
+      const r = cell(), h = 64;
+      const gr = g.createLinearGradient(0, r.y, 0, r.y + h); gr.addColorStop(0, '#ffffff'); gr.addColorStop(0.35, base); gr.addColorStop(1, base);
+      g.fillStyle = gr; g.fillRect(r.x, r.y, r.w, h);
+      g.fillStyle = '#14081e'; g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.font = fitFont(g, jp, 34, JP, r.w * 0.5); g.fillText(jp, r.x + r.w * 0.3, r.y + h / 2 + 1);
+      g.font = fitFont(g, en, 20, EN, r.w * 0.4, 'normal'); g.fillText(en, r.x + r.w * 0.73, r.y + h / 2 + 1);
+      g.fillStyle = 'rgba(20,8,30,0.6)'; g.fillRect(r.x, r.y, r.w, 3); g.fillRect(r.x, r.y + h - 3, r.w, 3);
+      cells.shop[fam].push({ x: r.x, y: r.y, w: r.w, h });
+    }
+  }
+  // deck banners (512 x 64) for the overpass side face
+  cells.banner = [];
+  [[GNAME + '  1/4 MILE  深夜', '#ff2f9a'], ['KUROGANE BAY EXPRESSWAY  首都高', '#2fe6ff'], ['NITRO OIL  ニトロ', '#4a8bff'], ['KAI TUNING  改', '#ffd23a']].forEach(([txt, col], k) => {
+    const r = { x: (k % 4) * 512, y: 640, w: 512, h: 64 };
+    g.fillStyle = '#0a0614'; g.fillRect(r.x, r.y, r.w, r.h);
+    g.fillStyle = col; g.fillRect(r.x, r.y, 10, r.h); g.fillRect(r.x + r.w - 10, r.y, 10, r.h);
+    neonText(g, txt, r.x + r.w / 2, r.y + r.h / 2 + 1, fitFont(g, txt, 38, JP, r.w - 50), col, 8);
+    cells.banner.push(r);
+  });
+  V_SIGNS.forEach(([txt, col], k) => {
+    const r = { x: k * 112 + 8, y: 768, w: 96, h: 256 }, pad = 6;
+    g.fillStyle = '#0a0614'; rr(g, r.x + pad, r.y + pad, r.w - pad * 2, r.h - pad * 2, 8); g.fill();
+    g.lineWidth = 4; g.strokeStyle = col; g.shadowColor = col; g.shadowBlur = 10; rr(g, r.x + pad + 3, r.y + pad + 3, r.w - pad * 2 - 6, r.h - pad * 2 - 6, 6); g.stroke(); g.shadowBlur = 0;
+    const ch = [...txt], step = Math.min(56, (r.h - 36) / ch.length);
+    ch.forEach((t, j) => neonText(g, t, r.x + r.w / 2, r.y + 18 + step * (j + 0.5), `bold ${Math.round(step * 0.86)}px ${JP}`, col, 10));
+    cells.v.push(r);
+  });
+  V_SIGNS2.forEach(([txt, col], k) => {   // verticals 9-18 continue the band at y 768
+    const r = { x: (k + 8) * 112 + 8, y: 768, w: 96, h: 256 }, pad = 6;
+    g.fillStyle = k % 2 ? '#0a0614' : '#1c0a14'; rr(g, r.x + pad, r.y + pad, r.w - pad * 2, r.h - pad * 2, k % 3 ? 8 : 2); g.fill();
+    g.lineWidth = 3; g.strokeStyle = col; g.shadowColor = col; g.shadowBlur = 8; rr(g, r.x + pad + 3, r.y + pad + 3, r.w - pad * 2 - 6, r.h - pad * 2 - 6, 6); g.stroke(); g.shadowBlur = 0;
+    const ch = [...txt], step = Math.min(56, (r.h - 36) / ch.length);
+    ch.forEach((t, j) => neonText(g, t, r.x + r.w / 2, r.y + 18 + step * (j + 0.5), `bold ${Math.round(step * 0.86)}px ${JP}`, col, 10));
+    cells.v.push(r);
+  });
+  i = 64;   // rows 8-10 (y 1024+): EN-first neon signs + a second set of shopfronts in a dark-panel neon style
+  H_SIGNS2.forEach(([jp, en, col], k) => {
+    const r = cell(), pad = 10;
+    g.fillStyle = ['#0a0614', '#140a06', '#06101a'][k % 3]; rr(g, r.x + pad, r.y + pad, r.w - pad * 2, r.h - pad * 2, k % 2 ? 4 : 14); g.fill();
+    if (k % 2) { g.lineWidth = 3; g.strokeStyle = col; g.shadowColor = col; g.shadowBlur = 10; rr(g, r.x + pad + 4, r.y + pad + 4, r.w - pad * 2 - 8, r.h - pad * 2 - 8, 3); g.stroke(); g.shadowBlur = 0; }
+    neonText(g, en, r.x + r.w / 2, r.y + 50, fitFont(g, en, 40, EN, r.w - 40, 'normal'), col, 14);
+    neonText(g, jp, r.x + r.w / 2, r.y + 92, fitFont(g, jp, 24, JP, r.w - 60), '#ffffff', 6);
+    cells.h.push(r);
+  });
+  for (const fam of ['cyan', 'pink', 'yellow']) {
+    const base = { cyan: '#2fe6ff', pink: '#ff4fd8', yellow: '#ffd23a' }[fam];
+    for (const [jp, en] of SHOPS2[fam]) {
+      const r = cell(), h = 64;
+      g.fillStyle = '#100818'; g.fillRect(r.x, r.y, r.w, h);
+      g.lineWidth = 3; g.strokeStyle = base; g.strokeRect(r.x + 3, r.y + 3, r.w - 6, h - 6);
+      neonText(g, jp, r.x + r.w * 0.28, r.y + h / 2 + 1, fitFont(g, jp, 32, JP, r.w * 0.46), base, 10);
+      neonText(g, en, r.x + r.w * 0.72, r.y + h / 2 + 1, fitFont(g, en, 20, EN, r.w * 0.42, 'normal'), '#ffffff', 6);
+      cells.shop[fam].push({ x: r.x, y: r.y, w: r.w, h });
+    }
+  }
+  // row 11 (y 1408): soft light cells for the area backdrops (drawn additive): round glows + horizontal light streaks
+  i = 88; cells.glow = {};
+  for (const [id, col, kind] of [['red', '255,40,50', 'dot'], ['amber', '255,150,50', 'dot'], ['white', '235,240,255', 'dot'], ['lantern', '255,70,40', 'dot'],
+    ['head', '255,244,215', 'streak'], ['tail', '255,40,40', 'streak'], ['cyan', '80,220,255', 'dot'], ['sodium', '255,170,70', 'streak']]) {
+    const r = cell(), cx = r.x + r.w / 2, cy = r.y + r.h / 2;
+    if (kind === 'dot') {
+      const gr = g.createRadialGradient(cx, cy, 0, cx, cy, 60);
+      gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.12, `rgba(${col},1)`); gr.addColorStop(0.4, `rgba(${col},0.35)`); gr.addColorStop(1, `rgba(${col},0)`);
+      g.fillStyle = gr; g.fillRect(cx - 64, r.y, 128, 128);
+      cells.glow[id] = { x: cx - 64, y: r.y, w: 128, h: 128 };
+    } else {   // streak: bright core line fading at both ends, soft vertical falloff
+      for (let y = 0; y < 128; y++) {
+        const dy = Math.abs(y - 64) / 64, a = Math.exp(-dy * dy * 18);
+        const gr = g.createLinearGradient(r.x, 0, r.x + r.w, 0);
+        gr.addColorStop(0, `rgba(${col},0)`); gr.addColorStop(0.5, `rgba(${dy < 0.08 ? '255,255,255' : col},${a})`); gr.addColorStop(1, `rgba(${col},0)`);
+        g.fillStyle = gr; g.fillRect(r.x, r.y + y, r.w, 1);
+      }
+      cells.glow[id] = r;
+    }
+  }
+  // row 12 (y 1536): expressway direction boards (fictional destinations) for the painted gantries of expressway_mid
+  i = 96; cells.hwy = [];
+  for (const [jp, en, arrow] of [['湾岸線', 'BAYSHORE LOOP', '→'], ['黒鉄港', 'KUROGANE PORT', '↗'], ['空港 5km', 'AIRPORT', '→'], ['都心', 'DOWNTOWN', '↖'],
+    ['頂上峠', 'CROWN SUMMIT', '↗'], ['提灯通り', 'LANTERN ROW', '←']]) {
+    const r = cell(), h = 90, y = r.y + 19;
+    const gr = g.createLinearGradient(0, y, 0, y + h); gr.addColorStop(0, '#1f7a46'); gr.addColorStop(1, '#14603a');
+    g.fillStyle = gr; rr(g, r.x + 2, y, r.w - 4, h, 8); g.fill();
+    g.lineWidth = 4; g.strokeStyle = '#e8f4ec'; rr(g, r.x + 7, y + 5, r.w - 14, h - 10, 6); g.stroke();
+    g.fillStyle = '#f4fff8'; g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.font = fitFont(g, jp, 34, JP, 150); g.fillText(jp, r.x + 98, y + 32);
+    g.font = fitFont(g, en, 20, EN, 160, 'normal'); g.fillText(en, r.x + 98, y + 64);
+    g.font = `bold 54px ${EN}`; g.fillText(arrow, r.x + 214, y + h / 2 + 2);
+    cells.hwy.push({ x: r.x, y, w: r.w, h });
+  }
+  return { canvas: c, cells };
+}
+
+// ---------------------------------------------------------------- screen atlas (1024 x 1024): 4 x 7 cells of 256 x 144
+const SC = { w: 256, h: 144, cols: 4 };
+const scCell = (k) => ({ x: (k % SC.cols) * SC.w, y: Math.floor(k / SC.cols) * SC.h });
+function coverDraw(g, im, x, y, w, h, { fit = 'cover', bg = null, ax = 0.5, ay = 0.3 } = {}) {
+  if (bg) { g.fillStyle = bg; g.fillRect(x, y, w, h); }
+  if (!im) return;
+  const s = fit === 'cover' ? Math.max(w / im.width, h / im.height) : Math.min(w / im.width, h / im.height) * 0.92;
+  const dw = im.width * s, dh = im.height * s;
+  g.save(); g.beginPath(); g.rect(x, y, w, h); g.clip();
+  g.drawImage(im, x + (w - dw) * ax, y + (h - dh) * (fit === 'cover' ? ay : 0.5), dw, dh); g.restore();
+}
+function poster(g, k, title, sub, c1, c2) {
+  const { x, y } = scCell(k), w = SC.w, h = SC.h;
+  const gr = g.createLinearGradient(x, y, x + w, y + h); gr.addColorStop(0, c1); gr.addColorStop(1, c2);
+  g.fillStyle = gr; g.fillRect(x, y, w, h);
+  g.globalAlpha = 0.25; for (let i = 0; i < 9; i++) { g.fillStyle = '#fff'; g.fillRect(x, y + 10 + i * 16, w, 2); } g.globalAlpha = 1;
+  neonText(g, title, x + w / 2, y + h * 0.42, fitFont(g, title, 40, EN, w - 24, 'normal'), '#ffffff', 10);
+  g.fillStyle = '#ffe27a'; g.font = fitFont(g, sub, 22, JP, w - 30); g.textAlign = 'center'; g.fillText(sub, x + w / 2, y + h * 0.74);
+}
+
+// Light life per area backdrop: lists of [x, y, w, h, glow cell, mode, phase?, chance?] in painting tile px (far 2048 x
+// 1365, mid / near = the painting's own px). Modes: 0 buzz, 1 blink, 3 flicker, 5 travel (phase 0..1 = speed, 0.5 = still),
+// 6 lantern sway + candle flicker. Anchors picked from the paintings (tools/raw/<env>_*.png x 4/3 for the far layer).
+const AMB = {
+  // harbor docks: crane warning lights blink red (far cranes + the two terminal gantries), sodium lamps buzz, a tug's
+  // lights crawl across the bay, forklift beacons sweep between the stacks
+  docks: () => ({
+    far: [[303, 713, 30, 30, 'red', 1], [255, 734, 26, 26, 'red', 1], [981, 712, 30, 30, 'red', 1], [937, 735, 26, 26, 'red', 1],
+      [1921, 713, 30, 30, 'red', 1], [1875, 734, 26, 26, 'red', 1], [609, 840, 22, 22, 'red', 1], [1480, 900, 22, 22, 'red', 1],
+      [600, 1120, 46, 18, 'amber', 5, 0.53], [1500, 1150, 40, 16, 'amber', 5, 0.46]],
+    mid: [[128, 10, 40, 40, 'amber', 0], [462, 10, 40, 40, 'amber', 0], [1148, 10, 40, 40, 'amber', 0], [1450, 10, 40, 40, 'amber', 0],
+      [250, 30, 18, 18, 'red', 1], [1330, 30, 18, 18, 'red', 1], [167, 142, 30, 22, 'amber', 0], [370, 142, 30, 22, 'amber', 0],
+      [1163, 142, 30, 22, 'amber', 0], [1373, 142, 30, 22, 'amber', 0], [683, 292, 34, 34, 'amber', 3], [858, 292, 34, 34, 'amber', 3]],
+    near: [[160, 32, 60, 60, 'amber', 0], [765, 32, 60, 60, 'amber', 0], [1410, 32, 60, 60, 'amber', 3]],
+  }),
+  // Lantern Row: lanterns on the bridge and the strings over the roofs flicker like candles and sway, a lantern boat
+  // drifts down the river
+  lantern: () => ({
+    far: [[741, 1104, 44, 44, 'lantern', 6], [883, 1064, 44, 44, 'lantern', 6], [1027, 1051, 44, 44, 'lantern', 6], [1165, 1064, 44, 44, 'lantern', 6],
+      [1307, 1104, 44, 44, 'lantern', 6], [573, 992, 30, 30, 'lantern', 6], [747, 915, 30, 30, 'lantern', 6], [933, 887, 30, 30, 'lantern', 6],
+      [1120, 875, 30, 30, 'lantern', 6], [1880, 912, 30, 30, 'lantern', 6], [1933, 907, 30, 30, 'lantern', 6], [80, 920, 30, 30, 'lantern', 6],
+      [700, 1285, 56, 24, 'amber', 5, 0.47], [1600, 1300, 50, 22, 'amber', 5, 0.53]],
+    mid: [[30, 54, 40, 40, 'lantern', 6], [88, 54, 40, 40, 'lantern', 6], [140, 54, 40, 40, 'lantern', 6], [372, 54, 40, 40, 'lantern', 6], [436, 54, 40, 40, 'lantern', 6], [497, 54, 40, 40, 'lantern', 6], [547, 54, 40, 40, 'lantern', 6], [716, 54, 40, 40, 'lantern', 6], [812, 54, 40, 40, 'lantern', 6], [858, 54, 40, 40, 'lantern', 6], [912, 54, 40, 40, 'lantern', 6], [964, 54, 40, 40, 'lantern', 6], [1012, 54, 40, 40, 'lantern', 6], [1116, 54, 40, 40, 'lantern', 6], [1175, 54, 40, 40, 'lantern', 6], [1234, 54, 40, 40, 'lantern', 6], [1294, 54, 40, 40, 'lantern', 6], [1414, 54, 40, 40, 'lantern', 6], [1464, 54, 40, 40, 'lantern', 6], [1516, 54, 40, 40, 'lantern', 6], [13, 268, 44, 44, 'lantern', 6], [80, 268, 44, 44, 'lantern', 6], [245, 268, 44, 44, 'lantern', 6], [328, 268, 44, 44, 'lantern', 6], [370, 268, 44, 44, 'lantern', 6], [410, 268, 44, 44, 'lantern', 6], [452, 268, 44, 44, 'lantern', 6], [500, 268, 44, 44, 'lantern', 6], [577, 268, 44, 44, 'lantern', 6], [747, 268, 44, 44, 'lantern', 6], [1076, 268, 44, 44, 'lantern', 6], [1117, 268, 44, 44, 'lantern', 6], [1172, 268, 44, 44, 'lantern', 6], [1223, 268, 44, 44, 'lantern', 6], [1272, 268, 44, 44, 'lantern', 6], [1383, 268, 44, 44, 'lantern', 6]],
+    near: [[27, 71, 56, 56, 'lantern', 6], [80, 71, 56, 56, 'lantern', 6], [158, 71, 56, 56, 'lantern', 6], [214, 71, 56, 56, 'lantern', 6], [270, 71, 56, 56, 'lantern', 6], [325, 71, 56, 56, 'lantern', 6], [378, 71, 56, 56, 'lantern', 6], [432, 71, 56, 56, 'lantern', 6], [510, 71, 56, 56, 'lantern', 6], [566, 71, 56, 56, 'lantern', 6], [622, 71, 56, 56, 'lantern', 6], [678, 71, 56, 56, 'lantern', 6], [730, 71, 56, 56, 'lantern', 6], [784, 71, 56, 56, 'lantern', 6], [862, 71, 56, 56, 'lantern', 6], [918, 71, 56, 56, 'lantern', 6], [973, 71, 56, 56, 'lantern', 6], [1028, 71, 56, 56, 'lantern', 6], [1082, 71, 56, 56, 'lantern', 6], [1135, 71, 56, 56, 'lantern', 6], [1213, 71, 56, 56, 'lantern', 6], [1270, 71, 56, 56, 'lantern', 6], [1325, 71, 56, 56, 'lantern', 6], [1380, 71, 56, 56, 'lantern', 6], [1434, 71, 56, 56, 'lantern', 6], [1487, 71, 56, 56, 'lantern', 6]],
+  }),
+  // Bayshore Loop: traffic streams over the suspension bridge and the shore road far below, aircraft-warning lights
+  // blink on the bridge towers and rooftops
+  expressway: () => ({
+    far: [[540, 731, 26, 26, 'red', 1], [1089, 731, 26, 26, 'red', 1], [1637, 731, 26, 26, 'red', 1], [196, 1237, 18, 18, 'red', 1], [663, 1216, 18, 18, 'red', 1], [1257, 1107, 18, 18, 'red', 1], [1511, 1073, 18, 18, 'red', 1], [1964, 1176, 18, 18, 'red', 1], [925, 920, 18, 18, 'red', 1], [1147, 920, 18, 18, 'red', 1], [2007, 1157, 18, 18, 'red', 1], [1046, 797, 54, 9, 'head', 5, 0.605], [118, 797, 54, 9, 'head', 5, 0.61], [1020, 797, 54, 9, 'head', 5, 0.599], [642, 797, 54, 9, 'head', 5, 0.567], [1921, 797, 54, 9, 'head', 5, 0.612], [1559, 797, 54, 9, 'head', 5, 0.593], [1021, 797, 54, 9, 'head', 5, 0.561], [887, 797, 54, 9, 'head', 5, 0.584], [745, 797, 54, 9, 'head', 5, 0.615], [1595, 803, 50, 9, 'tail', 5, 0.39], [294, 803, 50, 9, 'tail', 5, 0.388], [1822, 803, 50, 9, 'tail', 5, 0.388], [7, 803, 50, 9, 'tail', 5, 0.438], [21, 803, 50, 9, 'tail', 5, 0.393], [882, 803, 50, 9, 'tail', 5, 0.438], [679, 803, 50, 9, 'tail', 5, 0.432], [1184, 803, 50, 9, 'tail', 5, 0.399], [814, 803, 50, 9, 'tail', 5, 0.412], [838, 918, 40, 8, 'head', 5, 0.537], [806, 918, 40, 8, 'head', 5, 0.569], [1569, 918, 40, 8, 'head', 5, 0.542], [1479, 918, 40, 8, 'head', 5, 0.547], [596, 918, 40, 8, 'head', 5, 0.541]],
+    mid: [[100, 14, 46, 46, 'white', 0], [790, 14, 46, 46, 'white', 0], [1482, 14, 46, 46, 'white', 0], [214, 175, 14, 14, 'red', 1], [1338, 175, 14, 14, 'red', 1]],
+    near: [[84, 98, 34, 34, 'amber', 0], [280, 98, 34, 34, 'amber', 0], [475, 98, 34, 34, 'amber', 0], [670, 98, 34, 34, 'amber', 0], [865, 98, 34, 34, 'amber', 0], [1060, 98, 34, 34, 'amber', 0], [1256, 98, 34, 34, 'amber', 0], [1452, 98, 34, 34, 'amber', 0]],
+  }),
+};
+
+export function createSigns({ scene, RO, seed = 1, T, midTint, farTint }) {
+  const A = signAtlas();
+  const sTex = new THREE.CanvasTexture(A.canvas); sTex.colorSpace = THREE.NoColorSpace; sTex.anisotropy = 4;
+  const scCanvas = document.createElement('canvas'); scCanvas.width = 1024; scCanvas.height = 1024;
+  const sg = scCanvas.getContext('2d'); sg.fillStyle = '#05030c'; sg.fillRect(0, 0, 1024, 1024);
+  const scTex = new THREE.CanvasTexture(scCanvas); scTex.colorSpace = THREE.NoColorSpace;
+  // screen content: 0 = hero car in its current paint, 1-6 car thumbs, 7-14 portraits, 15-18 posters
+  const NCELL = 19;
+  poster(sg, 15, GNAME, '今夜 ¼ MILE', '#ff2f9a', '#3a0d6e');
+  poster(sg, 16, 'MIDNIGHT CROWN', '最速は誰だ', '#2fe6ff', '#1a1060');
+  poster(sg, 17, 'KUROGANE BAY', 'ナイトレース', '#ffcc33', '#6e1030');
+  poster(sg, 18, 'PERFECT SHIFT', 'シフトを極めろ', '#3dffa8', '#0d2a5e');
+  { // 19: leaderboard (row highlight animates in the shader)
+    const { x, y } = scCell(19), rh = SC.h / 7;
+    sg.fillStyle = '#0a0820'; sg.fillRect(x, y, SC.w, SC.h); sg.fillStyle = '#ff2f9a'; sg.fillRect(x, y, SC.w, rh);
+    sg.fillStyle = '#fff'; sg.font = `normal 15px ${EN}`; sg.textAlign = 'left'; sg.textBaseline = 'middle'; sg.fillText("TONIGHT'S BEST ET  今夜", x + 8, y + rh / 2);
+    [['KAITO', '11.482'], ['MISAKI', '11.517'], ['GORO', '11.603'], ['SHIN', '11.690'], ['EMPRESS', '10.944']].forEach(([n, et], j) => {
+      const yy = y + rh * (j + 1.5);
+      sg.fillStyle = j % 2 ? '#14102e' : '#0e0b24'; sg.fillRect(x, yy - rh / 2, SC.w, rh);
+      sg.fillStyle = '#ffd23a'; sg.fillText(String(j + 1), x + 10, yy); sg.fillStyle = '#e8ecff'; sg.fillText(n, x + 34, yy);
+      sg.fillStyle = '#3dffa8'; sg.textAlign = 'right'; sg.fillText(et + 's', x + SC.w - 10, yy); sg.textAlign = 'left';
+    });
+  }
+  { // 20-21: one 512 px ticker strip (scrolled in the shader across the bottom band of screen 22)
+    const { x, y } = scCell(20);
+    sg.fillStyle = '#ffd23a'; sg.fillRect(x, y, 512, SC.h);
+    sg.fillStyle = '#14081e'; sg.font = `normal 64px ${EN}`; sg.textAlign = 'left'; sg.textBaseline = 'middle';
+    sg.fillText('NIGHT RACE TONIGHT ★ NITRO OIL ★ 速報 ★ ', x + 6, y + SC.h / 2 + 4);
+  }
+  { // 22: news screen background
+    const { x, y } = scCell(22);
+    const gr = sg.createLinearGradient(x, y, x, y + SC.h); gr.addColorStop(0, '#1a2a6e'); gr.addColorStop(1, '#0a0820');
+    sg.fillStyle = gr; sg.fillRect(x, y, SC.w, SC.h);
+    sg.fillStyle = '#ff2040'; sg.fillRect(x + 8, y + 8, 46, 20); sg.fillStyle = '#fff'; sg.font = `normal 15px ${EN}`; sg.textAlign = 'left'; sg.textBaseline = 'middle'; sg.fillText('LIVE', x + 14, y + 18);
+    sg.fillText('KBN NEWS', x + 62, y + 18);
+    sg.font = `bold 26px ${JP}`; sg.fillText('湾岸 ナイトレース', x + 10, y + 56); sg.font = `normal 20px ${EN}`; sg.fillStyle = '#9ad8ff'; sg.fillText('RECORD CROWD AT THE STRIP', x + 10, y + 84);
+  }
+  { // 23: next race (progress bar animates in the shader)
+    const { x, y } = scCell(23);
+    sg.fillStyle = '#12061e'; sg.fillRect(x, y, SC.w, SC.h);
+    neonText(sg, 'NEXT RACE', x + SC.w / 2, y + 36, `normal 34px ${EN}`, '#ff2f9a', 10);
+    sg.fillStyle = '#e8ecff'; sg.font = `normal 18px ${EN}`; sg.textAlign = 'center'; sg.fillText('NEON ALLEY · 1/4 MILE', x + SC.w / 2, y + 72);
+    sg.fillStyle = '#ffd23a'; sg.font = `bold 17px ${JP}`; sg.fillText('エントリー受付中', x + SC.w / 2, y + 96);
+  }
+  const load = (src, k, opts) => { const im = new Image(); im.onload = () => { const { x, y } = scCell(k); coverDraw(sg, im, x, y, SC.w, SC.h, opts); scTex.needsUpdate = true; }; im.src = src; };
+  const BGS = ['#3a0d6e', '#0d2a5e', '#5e0d3a', '#123d4a', '#4a2a0d', '#2a0d4a'];
+  ['car_hero', 'car_red', 'car_yellow', 'car_cyan', 'car_silver', 'car_black'].forEach((c, i) => load(`sprites/thumb_${c}.webp`, 1 + i, { fit: 'contain', bg: BGS[i] }));
+  ['mika_win', 'rei', 'kaito', 'misaki', 'goro', 'shin', 'empress', 'driver'].forEach((n, i) => load(`art/${n}.webp`, 7 + i, { bg: BGS[i % BGS.length], ay: 0.12 }));
+  // hero cell: the player's car sprite recoloured with its paint (mask -> 'color' blend keeps the shading)
+  const tmp = document.createElement('canvas'), tg = tmp.getContext('2d');
+  function setHero(key, hex) {
+    const art = T[key]; if (!art || !art.tex || !art.tex.image) return;
+    const im = art.tex.image, mk = art.mask && art.mask.image;
+    tmp.width = 512; tmp.height = Math.round(512 * im.height / im.width);
+    tg.clearRect(0, 0, tmp.width, tmp.height); tg.globalCompositeOperation = 'source-over'; tg.drawImage(im, 0, 0, tmp.width, tmp.height);
+    if (hex && mk && mk.width > 8) {
+      const m2 = document.createElement('canvas'); m2.width = tmp.width; m2.height = tmp.height; const mg = m2.getContext('2d');
+      mg.drawImage(mk, 0, 0, m2.width, m2.height);
+      const d = mg.getImageData(0, 0, m2.width, m2.height), p = d.data;
+      for (let q = 0; q < p.length; q += 4) { p[q + 3] = p[q]; p[q] = p[q + 1] = p[q + 2] = 255; }
+      mg.putImageData(d, 0, 0); mg.globalCompositeOperation = 'source-in'; mg.fillStyle = hex; mg.fillRect(0, 0, m2.width, m2.height);
+      tg.globalCompositeOperation = 'color'; tg.drawImage(m2, 0, 0); tg.globalCompositeOperation = 'destination-in'; tg.drawImage(im, 0, 0, tmp.width, tmp.height);
+      tg.globalCompositeOperation = 'source-over';
+    }
+    // the painting has empty arches: draw simple wheels from the meta wheel positions
+    for (const wh of (art.meta && art.meta.wheels) || []) {
+      const cx = wh.x * tmp.width, cy = wh.y * tmp.height, r = wh.r * tmp.width;
+      tg.fillStyle = '#0c0a12'; tg.beginPath(); tg.arc(cx, cy, r, 0, 7); tg.fill();
+      const rg = tg.createRadialGradient(cx - r * 0.2, cy - r * 0.2, r * 0.1, cx, cy, r * 0.64); rg.addColorStop(0, '#e8e8f4'); rg.addColorStop(1, '#5a5870');
+      tg.fillStyle = rg; tg.beginPath(); tg.arc(cx, cy, r * 0.62, 0, 7); tg.fill();
+      tg.fillStyle = '#22202c'; tg.beginPath(); tg.arc(cx, cy, r * 0.16, 0, 7); tg.fill();
+    }
+    const { x, y } = scCell(0);
+    const gr = sg.createLinearGradient(x, y, x, y + SC.h); gr.addColorStop(0, '#1a0a3a'); gr.addColorStop(1, hex || '#3a0d6e');
+    sg.fillStyle = gr; sg.fillRect(x, y, SC.w, SC.h);
+    coverDraw(sg, tmp, x, y + 14, SC.w, SC.h - 14, { fit: 'contain' });
+    sg.fillStyle = '#ffffff'; sg.font = `normal 18px ${EN}`; sg.textAlign = 'left'; sg.textBaseline = 'top'; sg.fillText('YOUR RIDE', x + 10, y + 8);
+    scTex.needsUpdate = true;
+  }
+
+  // ---------------------------------------------------------------- shared shader
+  const VS = `attribute vec4 aC, aAnim; attribute vec2 aL; uniform float uDens, uRoofY, uMidK, uFarB, uFarH, uTime, uNearK, uNearCrop; uniform vec2 uMidSz, uNearSz;
+varying vec2 vUv, vL; varying vec4 vAnim; varying vec3 vWp;
+void main(){
+  vUv = uv; vL = aL; vAnim = aAnim;
+  vec3 c = aC.xyz, o = vec3(position.xy, 0.0);
+  float md = aAnim.x;
+  // mode 5: travels along x (speed from the phase, + = right) and wraps inside its tile; mode 6: lantern sway
+  if (md > 4.5 && md < 5.5) { float v = (aAnim.y - 0.5) * 2.0; c.x = mod(c.x + uTime * v * 160.0, aC.w > 3.5 ? uNearSz.x : aC.w > 2.5 ? 2048.0 : uMidSz.x); }
+  if (md > 5.5 && md < 6.5) c.x += sin(uTime * (1.1 + aAnim.y * 0.8) + aAnim.y * 6.28) * 1.6;
+  if (aC.w > 3.5) { c.xy = vec2((aAnim.z * uNearSz.x + c.x) * uNearK, (uNearSz.y * (1.0 - uNearCrop) - c.y) * uNearK); o *= uNearK; }   // near painting tile px
+  else if (aC.w > 2.5) { float kf = uFarH / 1365.0; c.xy = vec2((aAnim.z * 2048.0 + c.x) * kf, uFarB + (1365.0 - c.y) * kf); o *= kf; }   // far painting tile px (2048 x 1365)
+  else if (aC.w > 1.5) c.y += uRoofY;
+  else if (aC.w > 0.5) { c.xy = vec2((aAnim.z * uMidSz.x + c.x) * uMidK, (uMidSz.y - c.y) * uMidK); o *= uMidK; }   // mid painting tile px
+  vec3 p = c + o;
+  vWp = p;
+  gl_Position = aAnim.w > uDens ? vec4(2.0, 2.0, 2.0, 1.0) : projectionMatrix * viewMatrix * vec4(p, 1.0);
+}`;
+  const FS = `${D.FOG_GLSL}
+uniform sampler2D map, map2; uniform vec3 uTint; uniform float uTime, uScreen, uFogK, uCells, uDim, uAdd; varying vec2 vUv, vL; varying vec4 vAnim; varying vec3 vWp;
+float hs(float n){ return fract(sin(n * 91.7) * 43758.5453); }
+vec4 scr(vec2 uv){ return uScreen > 0.5 ? texture2D(map, uv) : texture2D(map2, uv); }
+vec2 cuv(float idx, vec2 l){ vec2 cell = vec2(mod(idx, 4.0), floor(idx / 4.0));
+  vec2 u = (cell * vec2(256.0, 144.0) + vec2(l.x, 1.0 - l.y) * vec2(254.0, 142.0) + 1.0) / 1024.0; return vec2(u.x, 1.0 - u.y); }
+void main(){
+  float t = uTime, ph = vAnim.y, mode = vAnim.x;
+  vec4 c; float k = 1.0;
+  if (uScreen > 0.5 || mode > 8.5) {   // video screen (whole mesh, or per quad in the far group via mode 9)
+    // order: start cell k0 (neighbours get different k0 from build), a per-screen step coprime to N, own period
+    float N = uCells + 4.0, k0 = floor(ph * 64.0), r2 = fract(ph * 64.0);
+    float stp = 1.0 + floor(r2 * (N - 1.0));
+    float tt = t / (4.0 + r2 * 3.0) + r2 * 9.0;
+    float idx = mod(floor(tt) * stp + k0, N);
+    vec2 l = vL;
+    if (idx < uCells - 0.5) c = scr(cuv(idx, l));
+    else if (idx < uCells + 0.5) {   // leaderboard with a moving highlight row
+      c = scr(cuv(19.0, l));
+      if (floor((1.0 - l.y) * 7.0) == 1.0 + mod(floor(t * 1.2 + r2 * 5.0), 5.0)) c.rgb += vec3(0.2, 0.12, 0.32);
+    } else if (idx < uCells + 1.5) {   // news + scrolling ticker band
+      c = scr(cuv(22.0, l));
+      if (l.y < 0.28) { float u = fract(l.x * 0.5 + t * 0.07 + r2); c = scr(cuv(u < 0.5 ? 20.0 : 21.0, vec2(fract(u * 2.0), l.y / 0.28))); }
+    } else if (idx < uCells + 2.5) {   // live speed graph
+      float x = l.x * 6.0 + t * 1.2 + r2 * 20.0;
+      float f = 0.2 + 0.6 * (0.5 + 0.32 * sin(x) + 0.16 * sin(x * 2.7 + 1.3));
+      float ln = 1.0 - smoothstep(0.0, 0.03, abs(l.y - f));
+      float grid = max(step(0.94, fract(l.x * 8.0)), step(0.92, fract(l.y * 5.0)));
+      c = vec4(vec3(0.02, 0.04, 0.1) + vec3(0.05, 0.12, 0.22) * grid + vec3(0.06, 0.3, 0.18) * step(l.y, f) + vec3(0.35, 1.0, 0.6) * ln, 1.0);
+    } else {   // next race + countdown bar
+      c = scr(cuv(23.0, l));
+      if (l.y > 0.1 && l.y < 0.18 && l.x > 0.08 && l.x < 0.92) c.rgb = mix(vec3(0.12, 0.08, 0.22), vec3(1.0, 0.2, 0.6), step((l.x - 0.08) / 0.84, fract(t / 12.0 + r2)));
+    }
+    float cut = 1.0 - smoothstep(0.0, 0.035, fract(tt));
+    float nz = hs(floor(vL.y * 60.0) + floor(t * 30.0) * 3.1 + vL.x * 0.0);
+    c.rgb = mix(c.rgb, vec3(nz * 0.8), cut);
+    float sl = mode > 8.5 ? 0.04 : 0.18;   // far screens: scanlines would alias at that size
+    c.rgb *= 1.0 - sl + sl * sin(vL.y * 140.0 + t * 6.0);
+    c.rgb *= 1.15 + 0.06 * sin(t * 40.0 + ph * 9.0);
+    if (hs(floor(t * 9.0) + ph * 13.0) < 0.03) c.rgb *= 0.35;   // occasional flicker
+    float b = step(0.045, vL.x) * step(vL.x, 0.955) * step(0.075, vL.y) * step(vL.y, 0.925);
+    c = vec4(mix(vec3(0.03, 0.02, 0.06), c.rgb, b), 1.0);
+  } else {
+    c = texture2D(map, vUv);
+    if (mode > 5.5) k = 0.8 + 0.2 * sin(t * 7.0 + ph * 40.0) * sin(t * 2.3 + ph * 9.0);                 // lantern candle flicker
+    else if (mode > 4.5) k = 1.0;                                                                     // travelling light
+    else if (mode > 3.5) k = 0.14;   // unlit tonight
+    else if (mode > 2.5) k = hs(floor(t * 14.0) + ph * 31.0) < 0.07 ? 0.25 : 1.0;                       // flicker
+    else if (mode > 1.5) k = 0.55 + 0.9 * (1.0 - smoothstep(0.0, 0.25, fract(vL.x - t * (0.5 + ph * 0.4))));  // chase sweep
+    else if (mode > 0.5) k = mix(0.12, 1.0, step(0.3, fract(t * (0.6 + ph * 0.5) + ph)));            // blink
+    else k = 1.0 + 0.05 * sin(t * 50.0 + ph * 20.0);                                                  // mains buzz
+    float lum = max(c.r, max(c.g, c.b));
+    c.rgb *= mode > 0.5 && uAdd > 0.5 ? k : mix(1.0, k, smoothstep(0.15, 0.4, lum));   // panels stay dark, the neon pulses
+  }
+  c.rgb *= uTint * uDim;
+  float f = fogF(vWp) * uFogK;
+  c.rgb = uAdd > 0.5 ? c.rgb * c.a * (1.0 - f) : mix(c.rgb, fogCol(vWp), f);
+  gl_FragColor = c;
+}`;
+  const mats = [];
+  const mkMat = (tex, screen, fogK, tint, add = false) => {
+    const m = new THREE.ShaderMaterial({
+      uniforms: { ...D.SH, map: { value: tex }, uScreen: { value: screen ? 1 : 0 }, uFogK: { value: fogK }, uCells: { value: NCELL },
+        uDens: { value: 1 }, uRoofY: { value: 6 }, uMidK: { value: 0.05 }, uMidSz: { value: new THREE.Vector2(1536, 497) }, uNearSz: { value: new THREE.Vector2(1536, 387) }, uNearK: { value: 0.01 }, uNearCrop: { value: 0 }, uFarB: { value: 0 }, uFarH: { value: 100 }, uDim: { value: 1 }, map2: { value: null },
+        uAdd: { value: add ? 1 : 0 }, uTint: tint || { value: new THREE.Color(1, 1, 1) } },
+      vertexShader: VS, fragmentShader: FS, transparent: true, depthTest: false, depthWrite: false,
+      blending: add ? THREE.AdditiveBlending : THREE.NormalBlending,
+    });
+    mats.push(m); return m;
+  };
+  // ---------------------------------------------------------------- quads -> one mesh per group
+  function group(quads, mat, order) {
+    const n = quads.length, P = new Float32Array(n * 12), UV = new Float32Array(n * 8), C = new Float32Array(n * 16), AN = new Float32Array(n * 16), L = new Float32Array(n * 8), I = [];
+    quads.forEach((q, i) => {
+      const hw = q.w / 2, hh = q.h / 2;
+      P.set([-hw, -hh, 0, hw, -hh, 0, hw, hh, 0, -hw, hh, 0], i * 12);
+      const r = q.r || { x: 0, y: 0, w: 1024, h: 1024 }, W = q.aw || 2048, H = q.ah || 1664;
+      const u0 = r.x / W, u1 = (r.x + r.w) / W, v0 = 1 - (r.y + r.h) / H, v1 = 1 - r.y / H;
+      UV.set([u0, v0, u1, v0, u1, v1, u0, v1], i * 8);
+      L.set([0, 0, 1, 0, 1, 1, 0, 1], i * 8);
+      for (let k = 0; k < 4; k++) { C.set([q.x, q.y, q.z, q.anchor || 0], i * 16 + k * 4); AN.set([q.mode || 0, q.ph || 0, q.tile || 0, q.tier || 0], i * 16 + k * 4); }
+      I.push(i * 4, i * 4 + 1, i * 4 + 2, i * 4, i * 4 + 2, i * 4 + 3);
+    });
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(P, 3)); g.setAttribute('uv', new THREE.BufferAttribute(UV, 2));
+    g.setAttribute('aC', new THREE.BufferAttribute(C, 4)); g.setAttribute('aAnim', new THREE.BufferAttribute(AN, 4)); g.setAttribute('aL', new THREE.BufferAttribute(L, 2));
+    g.setIndex(I);
+    const m = new THREE.Mesh(g, mat); m.frustumCulled = false; m.renderOrder = order;
+    return m;
+  }
+  let rs = (seed * 2654435761) >>> 0;
+  const rnd = () => { rs = (rs + 0x6D2B79F5) >>> 0; let t = rs; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  const pick = (a) => a[Math.floor(rnd() * a.length)];
+  const meshes = [];
+  const sMat = mkMat(sTex, false, 0.6), sMatMid = mkMat(sTex, false, 0.85, midTint), scMat = mkMat(scTex, true, 0.5);
+  const sMatFar = mkMat(sTex, false, 0.55, farTint); sMatFar.uniforms.map2.value = scTex; sMatFar.uniforms.uDim.value = 0.78;   // far: signs + screens, one draw call
+  // hand-picked mounts on the city_far painting (tile px, 2048 x 1365): its 6 blank glowing wall panels become video
+  // screens; vertical neon down tower faces; framed billboards standing on roof lines (bottom y = roof)
+  const FAR_SCREENS = [[305, 1162, 410, 1208], [168, 1235, 258, 1285], [768, 1255, 872, 1305], [1132, 1180, 1214, 1230], [1616, 1162, 1716, 1225], [1786, 1232, 1870, 1278]];
+  const FAR_VERT = [[531, 1035, 16, 90], [737, 1100, 13, 76], [1525, 1045, 16, 90], [1917, 1130, 12, 66]];
+  const FAR_ROOF = [[260, 1068, 70], [125, 1122, 64], [890, 1178, 72], [1416, 1080, 68], [1761, 1075, 58]];
+  // hand-picked mounts on the city_mid painting (tile px, 1536 x 497): its blank glowing shop panels, the pillar faces,
+  // the overpass deck's side face between the bolt plates
+  const SHOPS = [[207, 295, 318, 320, 'pink'], [393, 306, 493, 332, 'pink'], [575, 296, 698, 322, 'yellow'], [772, 295, 874, 320, 'cyan'],
+    [1007, 298, 1121, 324, 'pink'], [1198, 298, 1314, 324, 'yellow'], [1450, 295, 1628, 320, 'cyan']];
+  const PILLARS = [127, 532, 950, 1421];
+  const DECK = [[78, 255], [612, 760], [962, 1140]];
+  let farMesh = null, quality = 2, scrN = 0;
+  const sph = () => (((scrN++) * 5 + 3) % 64 + rnd() * 0.95) / 64;   // screen phase: start cell differs from the neighbour
+  const smode = (p) => (rnd() < 0.1 ? 4 : rnd() < p ? 0 : 1 + Math.floor(rnd() * 3));
+  // area backdrops (docks / lantern / expressway): additive light life anchored in painting tile px, one draw call per
+  // layer: crane warning lights, lantern glow + sway, headlights streaming along the roads below the expressway
+  const gFar = mkMat(sTex, false, 0.5, farTint, true), gMid = mkMat(sTex, false, 0.75, midTint, true), gNear = mkMat(sTex, false, 0.5, null, true);
+  function ambient(spec, L) {
+    const out = [];
+    for (const [key, anchor, z, t0, t1, mat, order] of [['far', 3, L.farZ + 1, -4, 7, gFar, RO.far + 0.5], ['mid', 1, L.midZ + 0.3, -5, 16, gMid, RO.mid + 0.5],
+      ['near', 4, L.nearZ + 0.05, -14, 60, gNear, RO.near + 0.5]]) {
+      const list = spec[key]; if (!list || !list.length) continue;
+      const q = [];
+      for (let tile = t0; tile < t1; tile++) {
+        for (const a of list) {
+          const [x, y, w, h, cell, mode, p] = a;
+          if (a[7] && rnd() > a[7]) continue;   // optional presence chance per tile
+          q.push({ x, y, z, w, h, r: A.cells.glow[cell], anchor, tile, mode, ph: p === undefined ? rnd() : p, tier: rnd() * 0.7 });
+        }
+      }
+      out.push(group(q, mat, order));
+    }
+    return out;
+  }
+  function build(env, L) {   // L: { nearZ, midZ, farZ }
+    for (const m of meshes) { scene.remove(m); m.geometry.dispose(); }
+    meshes.length = 0; farMesh = null;
+    const X0 = -220, X1 = 900;
+    if (AMB[env]) meshes.push(...ambient(AMB[env](rnd), L));
+    if (env === 'expressway') {   // direction boards on the two painted gantries (their green boards key out with the green screen)
+      const q = [];
+      for (let tile = -5; tile < 16; tile++) for (const [x0, y0, x1, y1] of [[305, 55, 560, 145], [997, 55, 1252, 145]]) {
+        q.push({ x: (x0 + x1) / 2, y: (y0 + y1) / 2, z: L.midZ + 0.3, w: x1 - x0 + 2, h: y1 - y0 + 2, r: pick(A.cells.hwy), anchor: 1, tile, mode: 0, ph: rnd(), tier: 0 });
+      }
+      meshes.push(group(q, sMatMid, RO.mid + 0.4));
+    }
+    else if (env === 'pass') {
+      const q = [];
+      for (let x = X0 + rnd() * 30; x < X1; x += 45 + rnd() * 40) {
+        const r = pick(A.cells.pass), z = L.nearZ + 0.6, h = 1.3, w = h * 2, y = 2.7 + rnd() * 0.5;
+        q.push({ x, y, z, w, h, r, mode: rnd() < 0.2 ? 3 : 0, ph: rnd(), tier: rnd() * 0.6 });
+        q.push({ x, y: (y - h / 2) / 2, z: z - 0.02, w: 0.12, h: y - h / 2, r: A.cells.post, tier: q[q.length - 1].tier });
+      }
+      meshes.push(group(q, sMat, RO.near + 0.6));
+    } else if (env === 'city') {   // shop lightboxes / roof screens / skyline signs are painted-in for the CITY only (docks/lantern have their own ambient life)
+      const mid = [], z = L.midZ + 0.3;
+      for (let tile = -5; tile < 16; tile++) {
+        for (const [x0, y0, x1, y1, fam] of SHOPS) {   // shop lightboxes exactly over the painted panels
+          mid.push({ x: (x0 + x1) / 2, y: (y0 + y1) / 2, z, w: x1 - x0 + 2, h: y1 - y0 + 2, r: pick(A.cells.shop[fam]), anchor: 1, tile,
+            mode: rnd() < 0.08 ? 4 : rnd() < 0.15 ? 3 : rnd() < 0.1 ? 1 : 0, ph: rnd(), tier: rnd() * 0.5 });
+        }
+        for (const px of PILLARS) if (rnd() < 0.55) mid.push({ x: px, y: 268, z, w: 30, h: 80, r: pick(A.cells.v), anchor: 1, tile, mode: smode(0.5), ph: rnd(), tier: rnd() });
+        for (const [x0, x1] of DECK) if (rnd() < 0.5) {
+          const cx = (x0 + x1) / 2, w = Math.min(x1 - x0 - 16, 170), r = pick(A.cells.banner), tr = rnd();
+          mid.push({ x: cx, y: 163, z, w, h: w / 8, r, anchor: 1, tile, mode: rnd() < 0.5 ? 2 : 0, ph: rnd(), tier: tr });
+          for (const sg of [-1, 1]) mid.push({ x: cx + sg * (w / 2 + 2), y: 163, z, w: 4, h: w / 8 + 8, r: A.cells.post, anchor: 1, tile, tier: tr });   // brackets
+        }
+      }
+      meshes.push(group(mid, sMatMid, RO.mid + 0.5));
+      // big screens standing on the grandstand roof: steel legs down to the roof girder + a thick bezel
+      const roof = [], legs = [];
+      for (let x = X0 + 20 + rnd() * 20; x < X1; x += 75 + rnd() * 60) {
+        const w = 5.4, h = w * 144 / 256, tier = rnd() * 0.7, by = 0.7;
+        roof.push({ x, y: by + h / 2, z: L.nearZ + 0.4, w, h, anchor: 2, ph: sph(), tier, r: { x: 0, y: 0, w: 1024, h: 1024 }, aw: 1024, ah: 1024 });
+        for (const sg of [-0.32, 0.32]) legs.push({ x: x + sg * w, y: by / 2 - 0.15, z: L.nearZ + 0.38, w: 0.16, h: by + 0.3, r: A.cells.post, anchor: 2, tier });
+        legs.push({ x, y: by + 0.02, z: L.nearZ + 0.38, w: w * 0.7, h: 0.1, r: A.cells.post, anchor: 2, tier });
+      }
+      meshes.push(group(legs, sMat, RO.near + 0.45), group(roof, scMat, RO.near + 0.5));
+      // skyline (far layer): same parallax as the painting (anchored in its tile px), dimmer + fogged
+      const far = [], fz = L.farZ + 1, SCR = { x: 0, y: 0, w: 1024, h: 1024 };
+      for (let tile = -4; tile < 7; tile++) {
+        for (const [x0, y0, x1, y1] of FAR_SCREENS) far.push({ x: (x0 + x1) / 2, y: (y0 + y1) / 2, z: fz, w: x1 - x0 + 2, h: y1 - y0 + 2, r: SCR, aw: 1024, ah: 1024, anchor: 3, tile, mode: 9, ph: sph(), tier: rnd() * 0.6 });
+        for (const [x, y, w, h] of FAR_VERT) if (rnd() < 0.75) far.push({ x, y, z: fz, w, h, r: pick(A.cells.v), anchor: 3, tile, mode: smode(0.5), ph: rnd(), tier: rnd() });
+        for (const [x, roofY, w] of FAR_ROOF) if (rnd() < 0.7) {
+          const h = w / 2, tier = rnd(), by = roofY - 5;   // bottom edge 5 px above the roof, on two legs
+          far.push({ x, y: by - h / 2, z: fz, w, h, r: pick(A.cells.h), anchor: 3, tile, mode: smode(0.6), ph: rnd(), tier });
+          for (const sg of [-0.3, 0.3]) far.push({ x: x + sg * w, y: roofY - 2.5, z: fz, w: 2.5, h: 6, r: A.cells.post, anchor: 3, tile, tier });
+        }
+      }
+      meshes.push(farMesh = group(far, sMatFar, RO.far + 0.5));
+    }
+    for (const m of meshes) scene.add(m);
+    if (farMesh) farMesh.visible = quality > 0;
+  }
+  return {
+    build, setHero,
+    /** quality: 0 LOW / 1 MED / 2 HIGH -> fraction of signs drawn */
+    setQuality(q) { quality = q; for (const m of mats) m.uniforms.uDens.value = [0.4, 0.72, 1][q]; if (farMesh) farMesh.visible = q > 0; },   // skyline: off on LOW
+    /** layer geometry from layout(): grandstand roof top y, far layer bottom + height */
+    setLayout(roofY, midH, farB, farH, midW = 1536, midPx = 497, near = null) {
+      for (const m of mats) {
+        const u = m.uniforms; u.uRoofY.value = roofY; u.uMidK.value = midH / midPx; u.uMidSz.value.set(midW, midPx); u.uFarB.value = farB; u.uFarH.value = farH;
+        if (near) { u.uNearSz.value.set(near.w, near.h); u.uNearK.value = near.fullH / near.h; u.uNearCrop.value = near.crop; }
+      }
+    },
+  };
+}

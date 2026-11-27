@@ -1,0 +1,230 @@
+{
+  "car_neon": {
+    "file": "car_neon.webp",
+    "frames": 1,
+    "w": 644,
+    "h": 200
+  },
+  "car_hero": {
+    "file": "car_hero.webp",
+    "frames": 1,
+    "w": 644,
+    "h": 195
+  },
+  "car_silver": {
+    "file": "car_silver.webp",
+    "frames": 1,
+    "w": 644,
+    "h": 185
+  },
+  "car_yellow": {
+    "file": "car_yellow.webp",
+    "frames": 1,
+    "w": 644,
+    "h": 183
+  },
+  "car_red": {
+    "file": "car_red.webp",
+    "frames": 1,
+    "w": 644,
+    "h": 202
+  },
+  "car_cyan": {
+    "file": "car_cyan.webp",
+    "frames": 1,
+    "w": 644,
+    "h": 176
+  },
+  "car_black": {
+    "file": "car_black.webp",
+    "frames": 1,
+    "w": 644,
+    "h": 194
+  },
+  "car_cop": {
+    "file": "car_cop.webp",
+    "frames": 1,
+    "w": 644,
+    "h": 208
+  },
+  "car_hyper": {
+    "file": "car_hyper.webp",
+    "frames": 1,
+    "w": 644,
+    "h": 176
+  },
+  "car_drift": {
+    "file": "car_drift.webp",
+    "frames": 1,
+    "w": 644,
+    "h": 202
+  },
+  "wheel": {
+    "file": "wheel.webp",
+    "frames": 1,
+    "w": 259,
+    "h": 260
+  },
+  "wheel2": {
+    "file": "wheel2.webp",
+    "frames": 1,
+    "w": 255,
+    "h": 260
+  },
+  "tree": {
+    "file": "tree.webp",
+    "frames": 1,
+    "w": 229,
+    "h": 644
+  },
+  "city_far": {
+    "file": "city_far.jpg",
+    "frames": 1,
+    "w": 2048,
+    "h": 1365
+  },
+  "city_mid": {
+    "file": "city_mid.webp",
+    "frames": 1,
+    "w": 1536,
+    "h": 497
+  },
+  "city_near": {
+    "file": "city_near.webp",
+    "frames": 1,
+    "w": 1536,
+    "h": 387
+  },
+  "road": {
+    "file": "road.jpg",
+    "frames": 1,
+    "w": 2048,
+    "h": 1365
+  },
+  "pass_far": {
+    "file": "pass_far.jpg",
+    "frames": 1,
+    "w": 2048,
+    "h": 1365
+  },
+  "pass_mid": {
+    "file": "pass_mid.webp",
+    "frames": 1,
+    "w": 1536,
+    "h": 599
+  },
+  "pass_near": {
+    "file": "pass_near.webp",
+    "frames": 1,
+    "w": 1536,
+    "h": 258
+  },
+  "docks_far": {
+    "file": "docks_far.jpg",
+    "frames": 1,
+    "w": 2048,
+    "h": 1365
+  },
+  "docks_mid": {
+    "file": "docks_mid.webp",
+    "frames": 1,
+    "w": 1536,
+    "h": 456
+  },
+  "docks_near": {
+    "file": "docks_near.webp",
+    "frames": 1,
+    "w": 1536,
+    "h": 373
+  },
+  "lantern_far": {
+    "file": "lantern_far.jpg",
+    "frames": 1,
+    "w": 2048,
+    "h": 1365
+  },
+  "lantern_mid": {
+    "file": "lantern_mid.webp",
+    "frames": 1,
+    "w": 1536,
+    "h": 470
+  },
+  "lantern_near": {
+    "file": "lantern_near.webp",
+    "frames": 1,
+    "w": 1536,
+    "h": 387
+  },
+  "expressway_far": {
+    "file": "expressway_far.jpg",
+    "frames": 1,
+    "w": 2048,
+    "h": 1365
+  },
+  "expressway_mid": {
+    "file": "expressway_mid.webp",
+    "frames": 1,
+    "w": 1536,
+    "h": 501
+  },
+  "expressway_near": {
+    "file": "expressway_near.webp",
+    "frames": 1,
+    "w": 1536,
+    "h": 194
+  },
+  "garage_far": {
+    "file": "garage_far.jpg",
+    "frames": 1,
+    "w": 2048,
+    "h": 1365
+  },
+  "garage_mid": {
+    "file": "garage_mid.webp",
+    "frames": 1,
+    "w": 1536,
+    "h": 483
+  },
+  "garage_near": {
+    "file": "garage_near.webp",
+    "frames": 1,
+    "w": 1536,
+    "h": 277
+  },
+  "rims_rare": {
+    "file": "rims_rare.webp",
+    "frames": 6,
+    "w": 241,
+    "h": 260
+  },
+  "rims_drop": {
+    "file": "rims_drop.webp",
+    "frames": 6,
+    "w": 242,
+    "h": 260
+  },
+  "rims_drop2": {
+    "file": "rims_drop2.webp",
+    "frames": 6,
+    "w": 241,
+    "h": 260
+  },
+  "rims_drop3": {
+    "file": "rims_drop3.webp",
+    "frames": 6,
+    "w": 244,
+    "h": 260
+  },
+  "ic_items": {
+    "file": "ic_items.webp",
+    "frames": 6,
+    "w": 115,
+    "h": 132
+  },
+  "title_bg": {
+    "file": "title_bg.jpg",
+    "frames": 1,
+    "w": 1280,
+    "h": 1920
+  }
+}

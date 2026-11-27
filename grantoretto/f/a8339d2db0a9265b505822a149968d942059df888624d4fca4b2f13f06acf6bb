@@ -1,0 +1,180 @@
+// Drag Nights Race platform layer for the store apps and web-portal builds (added by build_www.py; the game folder is
+// never edited). Reads window.GT_BUILD (written into ad-ids.js by build_www.py, or by portal.json "flags"):
+//   { target: 'app' | 'crazygames', forceLandscape: bool }   'app' resolves to 'android' / 'ios' at runtime.
+// It does:
+//  - Between-race ads: the RACE AGAIN / NEXT RIVAL / RETRY button on the result screen may show one interstitial
+//    (app: window.GTAds from ads.js, AdMob) or a CrazyGames midgame ad. Never before the 3rd finished race, at most one
+//    every 3 minutes, never during a race or on menu/navigation buttons. Input is blocked and every WebAudio context is
+//    suspended while the ad is up; the button's normal action runs when it closes.
+//  - x2 COINS (store apps only): window.GTReward { can(), show() } for the result-screen button in game/ui.js. show()
+//    plays an AdMob rewarded ad behind the same input blocker and audio mute, resolves true when the reward was earned,
+//    and restarts the between-race gap so no interstitial follows right after it. Browsers (CrazyGames, the test link)
+//    get no GTReward, so they never show the button or any ad wording (like Runebound, whose web builds have no ads).
+//  - CrazyGames: window.__portalReady (loadingStop when the game has booted) and happytime() on a boss win or a new
+//    daily medal. gameplayStart/Stop and the mute setting are handled by the shared portal shim.
+//  - forceLandscape (web only, phones): a "rotate your device" overlay in portrait. Off in this build (user, 2026-11-12:
+//    portrait is fine), the code path stays for later.
+//  - App: menu music without a tap (MainActivity allows gesture-free media), tried on load and again at 0.8 s / 2.5 s
+//    (MOBILE_PERFORMANCE.md).
+//  - LIVE Engine Sim keep-up check: if the browser reports audio underruns (AudioContext.playbackStats or
+//    renderCapacity, where supported) the engine sound switches to its cheap wavetable source for the rest of the session
+//    (Audio.setOption({liveWavetables: true}); it applies from the next engine build, i.e. the next race).
+(() => {
+  const B = window.GT_BUILD = Object.assign({ target: 'web', forceLandscape: false }, window.GT_BUILD || {});
+  const Cap = window.Capacitor;
+  const native = !!(Cap && Cap.isNativePlatform && Cap.isNativePlatform());
+  if (B.target === 'app') B.target = native ? Cap.getPlatform() : 'web';
+  B.native = native;
+  document.documentElement.dataset.build = B.target;
+  const CG = B.target === 'crazygames' && window.CrazyGames && window.CrazyGames.SDK;
+  const G = () => (window.__g && window.__g.G) || null;
+  const coarse = (() => { try { return matchMedia('(pointer: coarse)').matches; } catch (e) { return false; } })();
+
+  // ---------- boot: CrazyGames loadingStop once the game left its loading screen ----------
+  window.__portalReady = new Promise((resolve) => {
+    const t = setInterval(() => { const g = G(); if (g && g.state !== 'loading') { clearInterval(t); resolve(); } }, 200);
+  });
+
+  // ---------- audio helpers ----------
+  const ctxs = () => window.__audioCtxs || [];
+  let adMuted = false;
+  // While an ad is up every context is suspended and its resume() is a no-op, so neither the game nor the audiofix tap
+  // handler can wake it (same trick as the CrazyGames portal shim's mute).
+  const noResume = () => Promise.resolve();
+  const muteAll = (on) => {
+    adMuted = on;
+    for (const c of ctxs()) {
+      try {
+        if (on) { if (!Object.prototype.hasOwnProperty.call(c, 'resume')) c.resume = noResume; if (c.state === 'running') c.suspend().catch(() => {}); }
+        else { if (c.resume === noResume) delete c.resume; if (c.state !== 'closed' && !document.hidden) c.resume().catch(() => {}); }
+      } catch (e) { /* closed */ }
+    }
+  };
+
+  // ---------- between-race ads ----------
+  const GAP = +(new URLSearchParams(location.search).get('gtadgap') || 180000);   // ms between ads (CrazyGames midgame rule; AdMob the same). ?gtadgap=ms: tests only
+  const FIRST_AFTER = +(new URLSearchParams(location.search).get('gtadfirst') || 3);   // finished races before the first ad (?gtadfirst: tests)
+  let lastAd = Date.now(), races = 0, prevState = '', pass = false, busy = false;
+  const blocker = document.createElement('div');
+  blocker.style.cssText = 'position:fixed;inset:0;z-index:2147483000;background:rgba(0,0,0,.001);display:none;touch-action:none';
+  for (const ev of ['pointerdown', 'pointerup', 'click', 'touchstart', 'keydown']) blocker.addEventListener(ev, (e) => { e.preventDefault(); e.stopPropagation(); }, true);
+
+  const dbg = /[?&]cgdebug/.test(location.search);
+  function showAd() {
+    if (window.GT_BUILD && window.GT_BUILD.ads === false) return Promise.resolve();   // CrazyGames basic launch: no ads allowed (flip to true for full launch)
+    if (dbg) console.log('[gt] between-race ad requested', CG ? 'crazygames midgame' : 'admob interstitial');
+    if (CG) {
+      return new Promise((resolve) => {
+        let done = false;
+        const end = () => { if (done) return; done = true; resolve(); };
+        try {
+          CG.ad.requestAd('midgame', { adStarted: () => muteAll(true), adFinished: end, adError: end });
+        } catch (e) { end(); }
+        setTimeout(end, 60000);   // never leave the player stuck behind the blocker
+      });
+    }
+    if (window.GTAds && window.GTAds.interstitial) {
+      muteAll(true);
+      /* bug 11-22 (user: the ad plays and the race starts behind it): a long ad (2 min autoplay) outlasted the old 90 s cap, which then
+         started the race under the ad. Now only a 10 min safety cap, and a timeout never starts the race (resolves 'timeout') */
+      return Promise.race([window.GTAds.interstitial(), new Promise((r) => setTimeout(() => r('timeout'), 600000))]);
+    }
+    return Promise.resolve();
+  }
+  addEventListener('click', (e) => {
+    const btn = e.target && e.target.closest && e.target.closest('#againBtn');
+    if (!btn || pass) return;
+    const g = G();
+    if (busy) { e.preventDefault(); e.stopImmediatePropagation(); return; }
+    if (!g || g.state !== 'result' || races < FIRST_AFTER || Date.now() - lastAd < GAP) return;
+    if (!(CG || (window.GTAds && window.GTAds.ready))) return;
+    e.preventDefault(); e.stopImmediatePropagation();
+    busy = true; lastAd = Date.now();
+    document.body.appendChild(blocker); blocker.style.display = 'block';
+    showAd().catch(() => {}).then((res) => {
+      muteAll(false);
+      blocker.style.display = 'none'; busy = false;
+      if (res === 'timeout') return;   /* the ad may still be up: the player taps the button again */
+      pass = true; try { btn.click(); } finally { pass = false; }
+    });
+  }, true);
+
+  // ---------- rewarded x2 COINS (store apps only) ----------
+  if (native) {
+    window.GTReward = {
+      can: () => !busy && !!(window.GTAds && window.GTAds.canReward && window.GTAds.canReward()),
+      show: async () => {
+        if (busy || !window.GTReward.can()) return false;
+        busy = true; document.body.appendChild(blocker); blocker.style.display = 'block'; muteAll(true);
+        let ok = false;
+        try { ok = !!(await Promise.race([window.GTAds.rewarded(), new Promise((r) => setTimeout(() => r(false), 600000))])); } catch (e) { /* */ }
+        muteAll(false); blocker.style.display = 'none'; busy = false; lastAd = Date.now();
+        if (dbg) console.log('[gt] rewarded x2 coins:', ok);
+        return ok;
+      },
+    };
+  }
+
+  // ---------- race results: count races, CrazyGames happytime ----------
+  setInterval(() => {
+    const g = G(); if (!g) return;
+    if (g.state === 'result' && prevState !== 'result') {
+      races++;
+      if (CG) setTimeout(() => {
+        const ban = document.getElementById('resBanner'), unlock = document.querySelector('#resReward .unlock');
+        if ((ban && /BOSS DOWN/.test(ban.textContent)) || (unlock && unlock.textContent.trim())) { if (dbg) console.log('[gt] happytime'); try { CG.game.happytime(); } catch (e) { /* */ } }
+      }, 1200);
+    }
+    prevState = g.state;
+  }, 250);
+
+  // ---------- app: menu music without a tap ----------
+  if (native) {
+    const kick = () => { try { const s = window.__g && window.__g.snd; if (s) { s.ok = false; s.init(); } } catch (e) { /* */ } if (!adMuted) for (const c of ctxs()) if (c.state === 'suspended' && !document.hidden) c.resume().catch(() => {}); };
+    addEventListener('load', () => { kick(); setTimeout(kick, 800); setTimeout(kick, 2500); });
+  }
+
+  // ---------- LIVE Engine Sim keep-up check ----------
+  let lastUnder = null, lightened = false;
+  setInterval(() => {
+    if (lightened) return;
+    const g = G(); if (!g || g.state !== 'race' || g.paused) return;
+    import('./audio.js').then((m) => {
+      const A = m.Audio || m.default; const c = A && A.context; if (!c || lightened) return;
+      let under = null;
+      if (c.playbackStats && typeof c.playbackStats.underrunEvents === 'number') under = c.playbackStats.underrunEvents;
+      else if (c.renderCapacity && c.__gtCap) under = c.__gtCap.u;
+      else if (c.renderCapacity && c.renderCapacity.start && !c.__gtCap) {
+        c.__gtCap = { u: 0 };
+        try { c.renderCapacity.addEventListener('update', (ev) => { if (ev.underrunRatio > 0.02) c.__gtCap.u++; }); c.renderCapacity.start({ updateInterval: 1 }); } catch (e) { /* */ }
+      }
+      if (under == null) return;
+      if (lastUnder != null && under - lastUnder >= 6) {   // 6+ glitches in ~3 s of racing: the worklet can't keep up
+        lightened = true;
+        try { A.setOption({ liveWavetables: true }); console.info('[gt] engine sound: wavetable source (audio underruns)'); } catch (e) { /* */ }
+      }
+      lastUnder = under;
+    }).catch(() => {});
+  }, 3000);
+
+  // ---------- rotate overlay (web, phones, portrait) when forceLandscape ----------
+  if (B.forceLandscape && !native && coarse) {
+    const css = document.createElement('style');
+    css.textContent = '#gtRotate{position:fixed;inset:0;z-index:2147482000;display:none;flex-direction:column;align-items:center;justify-content:center;gap:18px;'
+      + 'background:radial-gradient(circle at 50% 40%,#2a1060 0,#07061a 70%);color:#fff;font:700 22px "Barlow Condensed",sans-serif;letter-spacing:3px;text-align:center}'
+      + '#gtRotate svg{width:84px;height:84px;stroke:#2fe6ff;fill:none;stroke-width:1.6;filter:drop-shadow(0 0 10px #ff2f8e);animation:gtRot 2.2s ease-in-out infinite}'
+      + '@keyframes gtRot{0%,30%{transform:rotate(0)}60%,100%{transform:rotate(-90deg)}}';
+    document.head.appendChild(css);
+    const ov = document.createElement('div'); ov.id = 'gtRotate';
+    ov.innerHTML = '<svg viewBox="0 0 24 24"><rect x="7" y="2.5" width="10" height="19" rx="2"/><path d="M11 18.5h2"/></svg><div>ROTATE YOUR DEVICE</div>';
+    const check = () => {
+      if (!document.body) return;
+      if (!ov.parentNode) document.body.appendChild(ov);
+      const portrait = innerHeight > innerWidth;
+      ov.style.display = portrait ? 'flex' : 'none';
+      const g = G();
+      if (portrait && g && !g.paused && (g.state === 'race' || g.state === 'stage')) dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape', key: 'Escape' }));
+    };
+    addEventListener('resize', check); addEventListener('orientationchange', check); addEventListener('DOMContentLoaded', check);
+  }
+})();

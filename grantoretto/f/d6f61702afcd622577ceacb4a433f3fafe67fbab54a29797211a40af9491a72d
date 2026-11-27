@@ -1,0 +1,1230 @@
+// 2.5D cars: the painted side sprite lofted into a real body (tumblehome greenhouse, rounded roof, plan-view taper),
+// the painting projected on both sides, edge colours (sprites/cars3d.json, baked by tools/car_mesh.py) on the
+// hood/roof/trunk/front/rear, cel-shaded with an ink hull. Wheels are real cylinders (tread + painted rim cap) driven
+// in the vertex shader (spin, hub height, tire squash), all 4 in one draw call. Plus the suspension model.
+import * as THREE from './vendor/three.module.min.js';
+import * as D from './depth.js';
+
+let DATA = null;
+/* painted surfaces per car (sprites/paint_surfaces.json, written by the dev paint editor's save): { car_key: ['hood', 'face'] } */
+export let PAINT = {};
+export async function load3D() {
+  try { const r = await fetch('sprites/cars3d.json', { cache: 'no-cache' }); DATA = r.ok || r.status === 0 ? await r.json() : null; } catch { DATA = null; }
+  try { const r = await fetch('sprites/paint_surfaces.json', { cache: 'no-cache' }); PAINT = r.ok ? await r.json() : {}; } catch { PAINT = {}; }
+  return DATA;
+}
+
+// ---------- suspension + body tuning: derived automatically per car, optional overrides only ----------
+// fz/fp/fr: heave / pitch / roll natural frequency (Hz), z*: damping ratio, pitchK: rad of squat per g, squat: m of heave
+// per g, rollK: torque-reaction roll (rad at 1 g of drive force), droop: front travel before the wheels leave the road
+// (m), launchKick / shiftKick: pitch-rate impulses (rad/s), ride: ride-height offset (m, + = higher).
+// Defaults come from the sprite (length, height/length = how tall the car stands) and the physics spec (torque per kg:
+// stronger cars kick harder at launch and lift the nose). SUSP_OVERRIDE[key] only for cars that need it.
+export const SUSP_OVERRIDE = {};
+export function suspOf(key, d, spec) {
+  const tall = Math.min(1.3, Math.max(0.8, (d.h * d.s) / d.len / 0.3)); // body height / length vs a typical coupe
+  const pw = spec ? Math.min(1, Math.max(0, (spec.tq / spec.mass - 0.3) / 0.2)) : 0.3; // 0 = weak D car, 1 = S monster
+  const len = Math.min(1.15, Math.max(0.85, d.len / 4.4));
+  return { fz: 1.95 / Math.sqrt(len), zz: 0.34, fp: 1.6 / Math.sqrt(len) * (1.05 - 0.1 * tall), zp: 0.28, fr: 2.4, zr: 0.3,
+    pitchK: 0.036 * tall + 0.01 * pw, squat: 0.012, rollK: 0.012 + 0.006 * pw, droop: 0.075 - 0.02 * pw,
+    launchKick: 0.1 + 0.62 * pw, shiftKick: 0.24 + 0.08 * pw, ride: 0, ...(SUSP_OVERRIDE[key] || {}) };
+}
+
+// ---------- shaders ----------
+const BODY_VS = `attribute vec3 eu; attribute vec3 hn; attribute float lat; uniform float hull, uHW;
+varying vec2 vUv; varying vec3 vEu, vWp, vN, vLp, vNl, vVm; varying float vLat;
+void main(){
+  vUv = uv; vEu = eu; vLp = position; vLat = lat; vNl = normal;
+  { vec3 d = cameraPosition - (modelMatrix * vec4(position, 1.0)).xyz;   /* view direction in the car's own frame (x = length, z = width): front views vs side-on */
+    vVm = vec3(dot(modelMatrix[0].xyz, d), dot(modelMatrix[1].xyz, d), dot(modelMatrix[2].xyz, d)); }
+  /* (the old nose slide toward the near flank plane is gone: with the full mirrored body the real 3D nose reads right from
+     ahead, and the slide squashed it into a swept-back wedge at 30-60 deg, User 2026-11-14) */
+  vec3 p = position;
+  vec4 wp = modelMatrix * vec4(p + hn * hull, 1.0); vWp = wp.xyz;
+  vN = normalize(mat3(modelMatrix) * normal);
+  gl_Position = projectionMatrix * viewMatrix * wp;
+}`;
+/* FACE_OLD (user 2026-11-15: match the Nov 12 cars): nose / tail faces = the Nov 12 look, the painting's front / rear edge
+   column per height stretched across the face (its lamp + highlight bands run across the nose), no shader grille, pill
+   lamps or projected head lens. Cars with a painted nose projection (hero) keep theirs */
+const FACE_OLD = true;
+const BODY_FS = `${D.FOG_GLSL}
+${D.LAMP_GLSL}
+uniform sampler2D map, mask, nmap, edge; uniform vec3 paint, paint2, inkCol;
+uniform float recolor, lumMed, lumHi, uHW, opacity, fadeY, flash, sweep, wx0, ww, shineOff, dim, metal, pearl, chrome, lightK, ripple, uTime, isHull;
+uniform vec4 uCapF, uCapR;   /* nose / tail face: bottom y, top y, tip half width, lamp row y */
+uniform vec4 uFaceF, uFaceR;   /* nose / tail face body colour (a = 1 body paint, recolourable) */
+uniform sampler2D uLensTex; uniform vec4 uLensF, uLensR; uniform float uLensU, uLensK;
+uniform sampler2D uProjF, uProjT; uniform float uProjOn; uniform vec4 uProjFR, uProjTR; uniform vec2 uProjFY[6];
+/* front view height fit: world y -> painting v, piecewise linear through (y, v) pairs (PROJ fy) */
+float projFV(float y) { float r = uProjFY[0].y;
+  for (int i = 1; i < 6; i++) { if (y >= uProjFY[i - 1].x) r = mix(uProjFY[i - 1].y, uProjFY[i].y, clamp((y - uProjFY[i - 1].x) / max(uProjFY[i].x - uProjFY[i - 1].x, 1e-4), 0.0, 1.0)); }
+  return r; }   /* projection painting (PROJ): front view (half width, y0, y1, nose-half start x), top view (x0, x1, half width, blend power) */
+uniform vec3 uBandP[8], uBandO[8]; uniform float uBandX, uBandT; uniform sampler2D uBandTex; uniform vec4 uCover;   /* front lamp + grille band (BAND in carGeo): (s, bottom y, top y) control points along s = |z| + depth behind the nose (uBandX); uBandX < -50 = none */
+vec2 bandOld(float s) { vec2 r = uBandO[0].yz;   /* the band the painted texture was cut for (BAND_FIT): texture rows follow it */
+  for (int i = 1; i < 8; i++) { float t = clamp((s - uBandO[i - 1].x) / max(uBandO[i].x - uBandO[i - 1].x, 1e-4), 0.0, 1.0); if (s >= uBandO[i - 1].x) r = mix(uBandO[i - 1].yz, uBandO[i].yz, t); }
+  return r; }
+vec2 bandAt(float s) { vec2 r = uBandP[0].yz;
+  for (int i = 1; i < 8; i++) { float t = clamp((s - uBandP[i - 1].x) / max(uBandP[i].x - uBandP[i - 1].x, 1e-4), 0.0, 1.0); if (s >= uBandP[i - 1].x) r = mix(uBandP[i - 1].yz, uBandP[i].yz, t); }
+  return r; }
+float aaS(float e, float x) { float w = max(fwidth(x), 1e-5); return smoothstep(e - w, e + w, x); }   /* painted head lens cut-out; outer edge z, width, bottom y, top y (width 0 = none); u of its front end; its uv rect on the flank painting (u0, row0, du, drow) */
+uniform sampler2D uHoodTex, uFaceTex, uGlassTex, uHeadTex, uSideTex; uniform float uHoodOn, uFaceOn, uGlassOn, uHeadOn, uHeadU, uSideOn; uniform vec4 uHoodR, uFacePR, uGlassR;   /* painted hood / front face (car_<key>_hood|face.webp: colour over paint mask) */
+uniform float uTintW, uBeltY, uDecal, uStripeY, uDoorX, uRoundY; uniform vec3 uDecalCol; uniform sampler2D uDecalTex;   // cosmetics
+varying vec2 vUv; varying vec3 vEu, vWp, vN, vLp, vNl, vVm; varying float vLat;
+void main(){
+#ifdef F_HULL
+  gl_FragColor = vec4(mix(inkCol * dim, fogCol(vWp), fogF(vWp)), 1.0);
+#else
+  /* 0 = side-on (race / staging camera), 1 = looking at the nose or tail (front / rear 3/4, dead-front, garage turntable) */
+  float endV = smoothstep(0.3, 0.7, abs(normalize(vVm).x));
+  float sw = min(vEu.z, 1.0);
+  vec2 uv = vUv;
+  if (ripple > 0.0) uv.x += sin(vWp.y * 38.0 + uTime * 4.0) * 0.005 * ripple;
+  vec4 tx = texture2D(map, uv);
+  /* painted SIDE layer (dev paint editor, user 2026-11-15: "can i open that and edit straight"): a layer over the whole side
+     painting in its own uv (colour top half, paint mask bottom half), both flanks; the outline (alpha) stays the painting's */
+  float sM = -1.0;
+#ifdef F_SIDE
+  if (uSideOn > 0.5) { float sv = clamp(1.0 - uv.y, 0.0, 1.0); vec4 sc = texture2D(uSideTex, vec2(uv.x, 1.0 - sv * 0.5)), sm = texture2D(uSideTex, vec2(uv.x, 0.5 - sv * 0.5));
+    tx.rgb = tx.rgb * (1.0 - sc.a) + sc.rgb; if (sm.a > 0.5) sM = sm.r / sm.a; }
+#endif
+  /* optional paint-over of a painted side lamp rect (uCover: u0, row0, du, drow; z = 0 off, currently unused): the body
+     paint just above / below it, blended down the rect, on both flanks; mask / normals read there too */
+#ifdef F_COVER
+  if (uCover.z > 0.0 && sw > 0.5 && vEu.z < 1.5) { vec2 cq = vec2((uv.x - uCover.x) / uCover.z, (1.0 - uv.y - uCover.y) / uCover.w);
+    if (cq.x >= 0.0 && cq.x <= 1.0 && cq.y >= 0.0 && cq.y <= 1.0) {
+      vec2 uA = vec2(uv.x, 1.0 - (uCover.y - 0.011)), uB = vec2(uv.x, 1.0 - (uCover.y + uCover.w + 0.011));
+      vec4 pc = mix(texture2D(map, uB), texture2D(map, uA), 0.6 * (1.0 - smoothstep(0.0, 0.35, cq.y)));   /* mostly the fender paint below, the shoulder above only near the top */
+      float fe = smoothstep(0.0, 0.1, cq.x) * smoothstep(0.0, 0.08, cq.y) * smoothstep(0.0, 0.08, 1.0 - cq.y);   /* feather into the painting at the rect's edges */
+      tx = mix(tx, pc, fe); uv = mix(uv, uB, step(0.5, fe)); } }
+#endif
+  float cut = step(1.5, vEu.z) * step(vEu.z, 2.75);   /* wing / strut / bar plates: cut out like the painting, soft alpha edge (no stair steps) */
+  if (cut > 0.5 && tx.a < 0.08) discard;
+  vec4 ec = texture2D(edge, vEu.xy);
+  /* painted surfaces (dev paint editor, user 2026-11-15): the hood (top, windshield base -> nose tip; u along x, v across z)
+     replaces the baked edge colour: colour in the top half, paint mask in the bottom half (white = body paint, recoloured;
+     black = fixed detail; grey = glass), same as ec.a. The front face: below, after the side / edge mix */
+  float hP = 0.0, pD = 0.0, fM = -1.0; vec4 hl = vec4(0.0), fL = vec4(0.0);   /* fL / fM: the FRONT layer, re-applied over the hero's projected nose */   /* pD: painted fixed-detail colour (editor layer) -> little added shine, so black paints black, not grey */
+#ifdef F_HOOD
+  if (uHoodOn > 0.5 && vEu.z < 1.5 && vEu.y < 0.125 && vEu.x >= uHoodR.x && vEu.x <= uHoodR.y) {
+    float hu = (vEu.x - uHoodR.x) / max(uHoodR.y - uHoodR.x, 1e-4), hz = clamp((vLp.z / uHoodR.z + 1.0) * 0.5, 0.004, 0.996);
+    vec4 lc = texture2D(uHoodTex, vec2(hu, 1.0 - hz * 0.5)), lm = texture2D(uHoodTex, vec2(hu, 0.5 - hz * 0.5));   /* premultiplied */
+    ec.rgb = ec.rgb * (1.0 - lc.a) + lc.rgb;
+    if (lm.a > 0.5) { float mv = lm.r / lm.a; if (mv > 0.3 && mv < 0.7) hP = 1.0; else { ec.a = mv > 0.5 ? 1.0 : 0.0; pD = lc.a * step(mv, 0.3); } } }   /* grey mask = remove the hood paint, show the side painting's projection there */
+#endif
+  /* painted windshield (dev paint editor, user 2026-11-15: "add windshield too ... remove some or edit the mask"): the front
+     glass band seen from ahead (u across z, screen right = far side; v = roof front edge at the top -> windshield base).
+     Mask white = body paint (pillars, a sun strip: lit + recoloured like the hood); black = glass: the baked glass colour
+     is lit as before and the painted difference from it is added like the old streaks (seed = glass + the Nov 12 streaks,
+     so a seed renders exactly as before; painting glass colour over a streak removes it). gT / gD feed the glass code below */
+  float gT = 0.0, gA = 0.0, gS = 0.0, gW = 1.0; vec3 gC = vec3(0.0), gD = vec3(0.0);
+#ifdef F_GLASS
+  if (uGlassOn > 0.5 && vEu.z < 1.5 && vEu.y < 0.125 && vEu.x >= uGlassR.x && vEu.x <= uGlassR.y) {
+    float gu = clamp(0.5 - vLp.z / (2.0 * uGlassR.z), 0.0, 1.0), gv = clamp((vEu.x - uGlassR.x) / max(uGlassR.y - uGlassR.x, 1e-4), 0.004, 0.996);
+    vec4 lc = texture2D(uGlassTex, vec2(gu, 1.0 - gv * 0.5)), lm = texture2D(uGlassTex, vec2(gu, 0.5 - gv * 0.5));   /* premultiplied */
+    gT = 1.0; gA = lc.a; gC = lc.a > 0.001 ? lc.rgb / lc.a : vec3(0.0); gS = step(0.5, lm.a);
+    if (gS > 0.5) ec.a = lm.r / lm.a > 0.5 ? 1.0 : 0.5; }
+#endif
+  /* flank loft past the painted outline (a column's loft spans its whole run, but the painted nose / tail recedes at an
+     intake or under a lip, and edge-on corners sample a blurred mip that mixes in the transparent texels past the tip):
+     it took the hood edge colour = a flat fin beside the bumper. Use the baked front / rear face colour at that height */
+  float ext = sw > 0.5 && vEu.z < 1.5 ? 1.0 - smoothstep(0.2, 0.6, tx.a) : 0.0;   /* edge-on corners: mip alpha falls off */
+  vec4 fcE = texture2D(edge, vec2(clamp(1.0 - uv.y, 0.0, 1.0), (uv.x > 0.5 ? 1.5 : 2.5) / 8.0));   /* front / rear face colour at this height */
+  if (ext > 0.0) tx = vec4(mix(tx.rgb, fcE.rgb, ext), 1.0);
+  float sk = sw * smoothstep(0.2, 0.6, tx.a); // 1 = painted side, 0 = edge colour (top / caps / wells)
+  /* shoulder band (0 < sw < 1, where the flank rolls into the hood / roof / trunk): the painting there is its dark ink
+     outline, which became a black line along the hood (Seiryu, Aozora). Ink-dark painted pixels take the top colour */
+  if (sw > 0.001 && sw < 0.999 && vEu.z < 1.5) { float le = dot(ec.rgb, vec3(0.299, 0.587, 0.114)), lp = dot(tx.rgb, vec3(0.299, 0.587, 0.114));
+    sk *= smoothstep(0.3, 0.65, lp / max(le, 0.03)); }
+  if (hP > 0.5) sk = 1.0;
+  float capK = 1.0;
+  vec3 col = mix(ec.rgb, tx.rgb, sk);
+  float mk = mix(step(0.75, ec.a), mix(sM >= 0.0 ? sM : texture2D(mask, uv).r, step(0.75, fcE.a), ext), sk);
+  /* painted front face (dev paint editor): every forward-facing surface of the nose (end cap, the loft's underside rising
+     to the bumper, the steep hood front), seen from ahead: u across z (screen right = far side), v = height top -> bottom.
+     Colour + mask only; the lighting keeps its side / top split (sk) */
+#ifdef F_FACE
+  if (uFaceOn > 0.5 && vEu.z < 1.5 && (vEu.y > 0.125 || vEu.z > 0.5) && vLp.x > uFacePR.w && normalize(vNl).x > 0.55) {   /* not the steep hood front (top row): that is the hood's */
+    float fu = clamp(0.5 - vLp.z / (2.0 * uFacePR.x), 0.0, 1.0), fv = clamp((uFacePR.z - vLp.y) / max(uFacePR.z - uFacePR.y, 1e-3), 0.004, 0.996);
+    vec4 lc = texture2D(uFaceTex, vec2(fu, 1.0 - fv * 0.5)), lm = texture2D(uFaceTex, vec2(fu, 0.5 - fv * 0.5));   /* premultiplied */
+    col = col * (1.0 - lc.a) + lc.rgb; fL = lc; if (lm.a > 0.5) { mk = step(0.5, lm.r / lm.a); fM = mk; pD = max(pD, lc.a * (1.0 - mk)); } }
+#endif
+  /* painted headlights (HEADLIGHTS layer, user: "headlight should be front view" / "up more"): the FRONT view mapping on every
+     forward-facing surface of the nose INCLUDING the steep hood front (the upper nose), glowing, applied after the lighting */
+#ifdef F_HEAD
+  if (uHeadOn > 0.5 && vEu.z < 1.5 && vLp.x > uFacePR.w && normalize(vNl).x > 0.55) {
+    float hu2 = clamp(0.5 - vLp.z / (2.0 * uFacePR.x), 0.0, 1.0), hv2 = clamp((uFacePR.z - vLp.y) / max(uFacePR.z - uFacePR.y, 1e-3), 0.004, 0.996);
+    hl = texture2D(uHeadTex, vec2(hu2, 1.0 - hv2 * 0.5)); }
+#endif
+  /* nose / tail faces: the end caps AND the steep front of the loft's top (where the hood drops to the bumper the top
+     surface faces forward). Clean, symmetric construction (Codex review 2026-11-14): reading the painting inside the
+     edge across the width smeared the side-view bumper into horizontal streaks, and the per-height front column put white
+     lamp / highlight bands right across the face. Now: one body colour (uFaceF / uFaceR, the paint of the nose / tail
+     column), only real dark painted bands (lip, intake) kept as clean bands, an inset grille / diffuser, and a pair of
+     mirrored lamps that continue the painted lens on each corner */
+  float faceOld = ${FACE_OLD ? '1.0' : '0.0'} * (1.0 - step(0.5, uProjOn));
+  float capRow = step(0.15, vEu.y) * step(vEu.y, 0.35);
+  float steep = step(vEu.y, 0.1) * smoothstep(0.45, 0.7, abs(normalize(vN).x)) * step(0.36, abs(vEu.x - 0.5));
+  float wF = (1.0 - step(0.5, sw)) * max(capRow, steep) * (1.0 - faceOld);
+#ifdef F_CAPS
+  if (wF > 0.0) {
+    float fr = capRow > 0.5 ? (vEu.y < 0.25 ? 1.0 : -1.0) : sign(vEu.x - 0.5);
+    vec4 cp = fr > 0.0 ? uCapF : uCapR, fc = fr > 0.0 ? uFaceF : uFaceR;
+    float le = dot(ec.rgb, vec3(0.299, 0.587, 0.114));
+    float dkB = capRow * (1.0 - step(0.75, ec.a)) * (1.0 - smoothstep(0.07, 0.13, le));   /* a dark painted band (lip / intake) */
+    col = mix(col, mix(fc.rgb, ec.rgb, dkB), capRow); mk = mix(mk, fc.a * (1.0 - dkB), capRow);
+    float hy = clamp((vLp.y - cp.x) / max(cp.y - cp.x, 0.01), 0.0, 1.0), lz = clamp(abs(vLp.z) / max(cp.z, 0.05), 0.0, 1.0);
+    float onP = (1.0 - dkB) * wF;   /* the steep top too: on a blunt nose (Red, Drift) the loft's top drops down the whole nose face and the cap is a thin strip */
+    /* grille (front) / diffuser (rear): a rounded inset opening with a lit upper lip, a shadowed top inside, a mesh
+       (front) or vertical fins (rear) that get darker toward the centre = depth */
+    vec2 gq = vec2(lz / 0.5, (hy - 0.24) / 0.12);   /* a little narrower: a full-width black opening read as a pasted-on pill */
+    float gd = pow(pow(abs(gq.x), 4.0) + pow(abs(gq.y), 4.0), 0.25);
+    float gi = (1.0 - smoothstep(0.93, 1.0, gd)) * onP;
+    float lip = smoothstep(0.98, 1.02, gd) * (1.0 - smoothstep(1.06, 1.14, gd)) * step(0.0, gq.y) * onP;
+    float sur = smoothstep(0.93, 0.97, gd) * (1.0 - smoothstep(1.06, 1.12, gd)) * onP;   /* dark surround (bezel) around the opening */
+    vec2 mq = vec2(vLp.z, vLp.y) * 62.0;
+    float mesh = fr > 0.0 ? step(0.62, abs(fract(mq.x + mq.y) - 0.5) * 2.0) * step(0.62, abs(fract(mq.x - mq.y) - 0.5) * 2.0)
+                          : step(0.72, fract(vLp.z * 22.0));
+    vec3 gcol = mix(vec3(0.045, 0.045, 0.055), vec3(0.15, 0.15, 0.17) * (0.55 + 0.45 * gd), mesh) * (1.0 - 0.55 * smoothstep(0.35, 0.95, gq.y));   /* dark grey, not pure black */
+    col = mix(col, gcol, gi); mk *= 1.0 - gi;
+    col = mix(col, vec3(0.025, 0.025, 0.03), sur * 0.85); mk *= 1.0 - sur * 0.85;
+    capK = mix(1.0, (1.0 - 0.3 * smoothstep(0.4, 1.0, lz)) * (0.86 + 0.22 * smoothstep(0.5, 0.8, hy)) * (1.0 + 0.25 * lip), wF);
+  }
+#endif
+  /* head / tail lamps: a mirrored pair on the lamp row (uCapF.w / uCapR.w) wherever the unpainted surface (hood front,
+     nose / tail cap) faces the end, 0.48-0.92 of the half width: housing + lens + a bright inner unit, the same on both
+     sides. The painted lens on each flank corner (mirrored on the far flank) keeps the painting. Faded out side-on
+     (endV): there the near one showed as a white sliver past the painted lens at the race / start-line camera */
+  vec4 lensC = vec4(0.0);
+#if defined(F_CAPS) || defined(F_BAND)
+  if (vEu.z < 1.5) { vec3 nl = normalize(vNl); float lzz = abs(vLp.z) / max(uHW, 0.01);
+    float fF = smoothstep(0.3, 0.55, nl.x), fR = smoothstep(0.3, 0.55, -nl.x), lw = (1.0 - sk) * endV * max(fF, fR);
+    /* front band (user reference 2026-11-14, hero): ONE continuous unit across the nose = the grille between the lamps at
+       lamp height, running straight into the two swept lamps, which wrap round the corners onto the flanks over the
+       painted side lamp. One ink outline round it all, drawn over the paint. Lamp: dark housing, two faceted chrome
+       projector bowls with a bulb, (hero: the painted texture BAND_TEX instead), clear glass top band + highlight, white DRL trim
+       along the bottom (bulbs + DRL are the only near-white = bloom). Mirrored on both sides */
+#ifdef F_BAND
+    if (uBandX > -50.0) {
+      float az = abs(vLp.z), bs = az + max(0.0, uBandX - vLp.x);
+      vec2 bt = bandAt(bs);
+      float sJ = uBandP[1].x, sE = uBandP[7].x, dY = min(vLp.y - bt.x, bt.y - vLp.y), dE = min(dY, sE - bs);
+      float aa = max(fwidth(dE), 1e-4), RIM = uBandT > 0.5 ? 0.014 : 0.011;   /* bolder ink round the painted band (user: 39's ~3-4 px outline) */
+      float bA = smoothstep(-RIM - aa, -RIM + aa, dE);
+      /* side-on the flank keeps the ORIGINAL painted side lamp (user 2026-11-14: the side view was fine): the band's flank
+         part fades in only as the view turns toward the nose, fully original up to ~15 deg off the side, full band by ~30 */
+      if (uBandT > 0.5) bA *= smoothstep(0.26, 0.5, abs(normalize(vVm).x));   /* whole band: side-on (race / staging camera) = the original painting */
+      if (bA > 0.0) {
+        float v = clamp((vLp.y - bt.x) / max(bt.y - bt.x, 0.01), 0.0, 1.0);
+        vec3 ink = vec3(0.086, 0.067, 0.118), c;
+        /* proportions measured on the user's target (39.webp, head-on, in body half widths -> m): grille to |z| 0.35, taller
+           than the lamp's inner tip; lamp to the corner, tallest at the outer end, lower edge dipping in the middle; bowls at
+           s 0.565 / 0.715, a white glass brow along the top (no amber: it comes from the painted texture) */
+        if (uBandT > 0.5) {   /* painted band texture (sprites/car_hero_front.webp, cut from the user's repaint; tools/make_hero_front.py):
+             top half = the face seen head-on (u = |z| / 0.86 m, v = world y 0.78 .. 0.52 m), bottom half = the flank strip
+             (u = corner .. rear tip, v = band top .. bottom); face vs flank by which way the surface faces. Kept just under
+             the bloom core so only its whites (glass brow, chrome) glint */
+          vec2 bo = bandOld(bs); float yv = clamp((0.78 - mix(bo.x, bo.y, v)) / 0.26, 0.0, 1.0);   /* this height in the band -> the same height in the band the texture was cut for */
+          vec3 tf = texture2D(uBandTex, vec2(clamp(az / 0.86, 0.0, 0.999), yv * 0.5)).rgb;
+          vec3 ts = texture2D(uBandTex, vec2(clamp((bs - uBandP[5].x) / max(sE - uBandP[5].x, 0.01), 0.0, 0.999), 0.5 + (1.0 - v) * 0.4995)).rgb;
+          c = mix(ts, tf, max(smoothstep(0.3, 0.5, nl.x), 1.0 - smoothstep(uBandP[5].x - 0.08, uBandP[5].x, bs))) * 0.95;
+          /* one straight slanted seam between grille and lamp (user drawing, v15): grille side = the painted grille's last
+             clean column carried on (slats stay straight), lamp side = the lamp; a thin ink line along the seam */
+          float sm2 = bs - (0.345 + 0.075 * v);
+          if (sm2 < 0.0) c = texture2D(uBandTex, vec2(min(az, 0.2) / 0.86, clamp((0.78 - mix(uBandO[0].y, uBandO[0].z, v)) / 0.26, 0.0, 1.0) * 0.5)).rgb * 0.95;   /* rows through the grille's own fit (the lamp tip's fit shifted the slats into stubs) */   /* a clean mid-grille column: slats end straight at the seam */
+          if (sm2 >= 0.0) c = mix(vec3(0.03, 0.03, 0.04), c, max(smoothstep(0.05, 0.1, sm2), aaS(0.8, v)));   /* lamp's inner end: plain black housing under the brow (the painted tip / chrome bar read as stubs) */
+          c = mix(c, vec3(0.03, 0.025, 0.04), 1.0 - aaS(0.008, abs(sm2)));   /* the flank strip only past the corner (it bled amber into the grille on the sloped nose) */
+        } else if (bs < sJ) {   /* grille: 4 thin light slats on black, thin dark-grey surround, centre bar */
+          float tri = abs(fract(v * 4.0 + 0.5) - 0.5) * 2.0;
+          c = mix(vec3(0.012, 0.012, 0.018), vec3(0.42, 0.43, 0.48) + vec3(0.12) * step(0.5, fract(v * 4.0 + 0.5)), aaS(0.8, tri) * aaS(0.08, v) * (1.0 - aaS(0.92, v)));
+          c = mix(c, vec3(0.2, 0.2, 0.24), 1.0 - aaS(0.006, az)); c = mix(c, ink, aaS(0.006, az) * (1.0 - aaS(0.009, az)));
+          c = mix(c, vec3(0.16, 0.16, 0.2), 1.0 - aaS(0.008, dY));
+          c = mix(c, ink, aaS(sJ - 0.01, bs));   /* ink edge where the grille meets the lamp tip */
+        } else {
+          float lu = (bs - sJ) / max(sE - sJ, 0.01);   /* 0 at the grille .. 1 at the flank tip */
+          c = vec3(0.016, 0.016, 0.024) + vec3(0.035, 0.035, 0.045) * smoothstep(0.35, 0.75, v);   /* deep glossy black housing */
+          /* grey-silver reflector behind the bowls, fading into the black housing (39: not white) */
+          float rf = smoothstep(sJ + 0.06, sJ + 0.14, bs) * (1.0 - smoothstep(0.76, 0.8, bs)) * smoothstep(0.12, 0.26, v) * (1.0 - smoothstep(0.68, 0.8, v));
+          c = mix(c, vec3(0.36, 0.37, 0.41) + vec3(0.12) * (1.0 - abs(v - 0.5) * 2.2) + vec3(0.04) * sin(bs * 90.0), rf * 0.9);
+          for (int k = 0; k < 2; k++) {   /* projector: mid-grey chrome bowl with a few bright facets, a big dark glass lens with a crescent reflection */
+            float sc = k == 0 ? 0.535 : 0.715, r = k == 0 ? 0.05 : 0.08, vv = k == 0 ? 0.55 : 0.44;
+            vec2 bq = vec2((bs - sc) * (k == 0 ? 1.0 : 0.72), vLp.y - mix(bt.x, bt.y, vv)); float dd = length(bq) / r;
+            float an = atan(bq.y, bq.x) / 6.2832 * 10.0, fa = fract(an), facet = abs(fa - 0.5) * 2.0, hot = step(0.62, fract(sin(floor(an) * 12.9898 + float(k) * 4.1) * 43758.5));
+            vec3 chr = vec3(0.34 + 0.16 * facet + 0.18 * hot * facet) * (0.85 + 0.2 * smoothstep(0.6, 1.0, dd)) + vec3(0.0, 0.01, 0.025);
+            c = mix(c, chr, 1.0 - aaS(1.0, dd));
+            c = mix(c, vec3(0.03, 0.03, 0.045), aaS(0.92, dd) * (1.0 - aaS(1.0, dd)) * 0.8);   /* soft dark edge into the housing */
+            c = mix(c, vec3(0.022, 0.026, 0.04) + vec3(0.03, 0.04, 0.06) * smoothstep(0.52, 0.2, dd), 1.0 - aaS(0.52, dd));   /* dark glass lens */
+            c = mix(c, vec3(0.5, 0.51, 0.56), aaS(0.52, dd) * (1.0 - aaS(0.58, dd)));   /* thin silver ring */
+            c = mix(c, vec3(0.3, 0.31, 0.35), aaS(0.17, dd) * (1.0 - aaS(0.24, dd)));   /* inner projector ring */
+            vec2 nd = bq / max(length(bq), 1e-5);
+            float cres = aaS(0.32, dd) * (1.0 - aaS(0.46, dd)) * smoothstep(0.1, 0.7, dot(nd, normalize(vec2(-0.6, 0.8))));
+            c = mix(c, vec3(0.62, 0.64, 0.7), cres); }   /* crescent reflection on the lens (upper inner side) */
+          c = mix(c, vec3(0.58, 0.6, 0.66) * (0.75 + 0.25 * smoothstep(0.0, 0.5, lu)), aaS(0.8, v) * smoothstep(0.0, 0.06, lu));   /* white glass brow along the top */
+          c = mix(c, vec3(0.8, 0.82, 0.86), exp(-pow((v - 0.9) / 0.035, 2.0)) * 0.8 * smoothstep(0.05, 0.2, lu) * (1.0 - smoothstep(0.85, 1.0, lu)));
+          c = mix(c, vec3(0.6, 0.62, 0.68), aaS(sJ + 0.012, bs) * (1.0 - aaS(sJ + 0.06, bs)) * aaS(0.4, v) * (1.0 - aaS(0.5, v)));   /* small chrome bar at the inner tip */
+          c = mix(c, vec3(0.42, 0.52, 0.7), aaS(0.08, v) * (1.0 - aaS(0.11, v)) * smoothstep(0.03, 0.08, lu) * (1.0 - smoothstep(0.9, 0.97, lu)));   /* dim cool LED line */
+        }
+        c = mix(ink, c, smoothstep(-aa, aa, dE));
+        lensC = vec4(c, bA);
+      }
+      fF = 0.0; lw = (1.0 - sk) * endV * fR;   /* the plain shader lamp stays on the tail only */
+    }
+#endif
+    /* painted head lens (uLensF.y > 0): projected from ahead onto the forward-facing face, lateral |z| -> lens length (its
+       front end at the corner, so it continues the flank lens round the corner), height -> the painted rows. Both corners
+       share it = mirrored. Composited after lighting in its own painted colours + a lit core */
+#ifdef F_LENS
+    if (uLensF.y > 0.0 && faceOld < 0.5) {
+      vec2 lt = vec2(1.0 - (uLensF.x - abs(vLp.z)) / uLensF.y, 1.0 - (vLp.y - uLensF.z) / (uLensF.w - uLensF.z));
+      float inR = step(0.0, lt.x) * step(lt.x, 1.0) * step(0.0, lt.y) * step(lt.y, 1.0);
+      vec4 lp = texture2D(uLensTex, clamp(lt, 0.0, 1.0) * vec2(1.0, 0.5));   /* top half of the texture: the face lamp (bowls) */
+      float onF = max(1.0 - sk, step(uLensU, uv.x) * step(0.5, sw));   /* the face, and the rounded flank corner ahead of the painted lens */
+      lensC = vec4(lp.rgb, lp.a * inR * onF * endV * smoothstep(0.15, 0.4, nl.x));
+      /* the flank lens too (user 2026-11-14: "the headlight is not full"): the same filled cut-out over the painted one,
+         so the side lamp and the face lamp are one full, matching lamp (no dark divider stripes on either) */
+      vec2 lf = vec2((uv.x - uLensR.x) / uLensR.z, (1.0 - uv.y - uLensR.y) / uLensR.w);
+      float inF = step(0.0, lf.x) * step(lf.x, 1.0) * step(0.0, lf.y) * step(lf.y, 1.0) * step(0.5, sk);
+      /* bottom half: the flank lamp (housing + glass + trim, no bowls). On the rounded corner ahead of it the lamp's last
+         inside column runs on round the corner (no torn notch between the flank and the face lamp) */
+      float cor = step(uLensU, uv.x) * step(0.5, sk) * step(lensC.a, 0.5) * step(0.0, lf.y) * step(lf.y, 1.0);
+      if (cor > 0.0) { lf.x = min(lf.x, uLensK); inF = 1.0; }
+      if (inF > 0.0) { vec4 lq2 = texture2D(uLensTex, vec2(lf.x, 0.5 + 0.5 * clamp(lf.y, 0.0, 1.0))); lensC = vec4(lq2.rgb, lq2.a); }
+      /* upper grille between the two lamps (user reference 2026-11-14): across the nose face from the centre to under the
+         inner end of each lamp, dark horizontal slats in a thin chrome surround with an ink outline, split by a centre bar */
+      if (lensC.a < 0.5) {
+        float hb = uLensF.w - uLensF.z, gy0 = uLensF.z + 0.3 * hb, gy1 = uLensF.z + 0.86 * hb, gz1 = uLensF.x - uLensF.y * 0.8, az = abs(vLp.z);
+        float dE = min(min(vLp.y - gy0, gy1 - vLp.y), gz1 - az);   /* distance inside the box edge (m) */
+        float onG = step(0.0, dE) * (1.0 - sk) * endV * smoothstep(0.15, 0.4, nl.x);
+        if (onG > 0.0) {
+          float qy = (vLp.y - gy0) / (gy1 - gy0), sl = fract(qy * 5.0);
+          vec3 gc = mix(vec3(0.035, 0.035, 0.045), vec3(0.17, 0.17, 0.2) + vec3(0.2) * smoothstep(0.62, 0.7, sl) * (1.0 - smoothstep(0.72, 0.8, sl)), step(0.42, sl));   /* slats with a lit top edge */
+          float bar = 1.0 - step(0.016, az);
+          gc = mix(gc, vec3(0.5, 0.52, 0.58), bar * step(0.007, az));
+          gc = mix(gc, vec3(0.5, 0.52, 0.6), 1.0 - step(0.011, dE));   /* chrome surround */
+          gc = mix(gc, vec3(0.086, 0.067, 0.118), 1.0 - step(0.006, dE));   /* ink outline */
+          gc = mix(gc, vec3(0.086, 0.067, 0.118), step(0.016, az) * (1.0 - step(0.021, az)));   /* ink beside the centre bar */
+          lensC = vec4(gc, onG); }
+      }
+      fF = 0.0; lw =(1.0 - sk) * endV * max(fF, fR);   /* the plain lamp stays on the tail only */
+    }
+#endif
+#ifdef F_CAPS
+    vec2 lq = vec2((lzz - 0.7) / 0.22, (vLp.y - (fF > fR ? uCapF.w : uCapR.w)) / 0.04);
+    float ld = pow(pow(abs(lq.x), 3.0) + pow(abs(lq.y), 3.0), 1.0 / 3.0);
+    lw *= 1.0 - faceOld;
+    float lH = (1.0 - smoothstep(1.06, 1.16, ld)) * lw, lL = (1.0 - smoothstep(0.76, 0.86, ld)) * lw;
+    vec3 lc = fF > fR ? mix(vec3(0.5, 0.58, 0.72), vec3(0.96, 0.98, 1.0), 1.0 - smoothstep(0.15, 0.6, length(lq - vec2(0.3, 0.0))))
+                      : mix(vec3(0.4, 0.02, 0.04), vec3(0.98, 0.14, 0.12), 1.0 - smoothstep(0.2, 0.8, abs(lq.y)));
+    float led = lL * smoothstep(0.28, 0.4, lq.y) * (1.0 - smoothstep(0.55, 0.66, lq.y)) * step(fR, fF);   /* head lamp: a bright LED strip along the top of the lens */
+    col = mix(col, vec3(0.03, 0.03, 0.04), lH); col = mix(col, lc, lL); col = mix(col, vec3(1.0), led * 0.9); mk *= 1.0 - lH; capK = mix(capK, 1.15, lL);
+#endif
+  }
+#endif
+  float glass = (1.0 - sk) * step(0.3, ec.a) * step(ec.a, 0.7);
+  /* projection painting (user 2026-11-15, hero): painted FRONT and TOP orthographic views projected onto the body,
+     blended with the side painting by the local surface normal (triplanar-style); transparent pixels fall back. The front
+     view only on the nose half. Faded out side-on (race / staging camera = the original side painting), the top view also
+     shows when looking down (garage). Body-paint pixels (purple) stay recolourable through the paint mask */
+#ifdef F_PROJ
+  if (uProjOn > 0.5 && vEu.z < 1.5) {
+    vec3 pn = normalize(vNl); float kp = uProjTR.w;
+    /* front: nose-facing surfaces, weighted harder than the flank (lamps sit on the corner, no smear); above the hood's
+       leading edge (uProjFY[2].x) only steep forward-facing surfaces (the hood top is the top view's) */
+    float wF = 2.0 * pow(max(pn.x, 0.0), 2.0) * smoothstep(uProjFR.w - 0.7, uProjFR.w + 0.5, vLp.x) * mix(1.0, smoothstep(0.65, 0.9, pn.x), smoothstep(uProjFY[3].x - 0.02, uProjFY[3].x + 0.04, vLp.y));
+    float tu = (vLp.x - uProjTR.x) / (uProjTR.y - uProjTR.x);
+    float nose = step(1.5, uProjOn);   /* uProjOn 2 = nose only (v17, user 2026-11-15): the front view's lamps + grille + bumper below the
+                                          hood's leading edge, no top view; hood / windshield / roof keep the original look */
+    wF *= 1.0 - nose * smoothstep(uProjFY[3].x + 0.004, uProjFY[3].x + 0.02, vLp.y);
+    float wT = (1.0 - nose) * pow(max(pn.y, 0.0), kp) * smoothstep(0.0, 0.06, tu) * smoothstep(0.04, 0.12, 1.0 - tu), wS = pow(abs(pn.z), kp) + pow(max(-pn.x, 0.0), kp);   /* top view: its own lamp blocks at the ends masked */
+    vec4 pf = texture2D(uProjF, vec2(0.5 - vLp.z / (2.0 * uProjFR.x), projFV(vLp.y)));
+    vec4 pt = texture2D(uProjT, vec2(tu, 0.5 + vLp.z / (2.0 * uProjTR.z))); pt.rgb *= 0.82;   /* hood / roof as dark as the v16 tops */
+    vec3 vm = normalize(vVm);
+    float see = max(smoothstep(0.26, 0.5, abs(vm.x)), smoothstep(0.55, 0.85, abs(vm.y)));
+    float aF = wF * pf.a, aT = wT * pt.a, sw2 = max(wF + wT + wS, 1e-4);
+    float ff = smoothstep(0.7, 0.9, pn.x);   /* v18 (user): surfaces facing forward (nose face, grille, bumper) show the front at every view angle,
+                                               only the flank / corner wrap keeps the side-on fade (painted side lamp side-on) */
+    float pa = clamp((aF + aT) / sw2, 0.0, 1.0) * (ff + (1.0 - ff) * see);
+    if (pa > 0.001) {
+      vec3 pc = (pf.rgb * aF + pt.rgb * aT) / max(aF + aT, 1e-4);
+      float pmx = max(pc.r, max(pc.g, pc.b)), psat = (pmx - min(pc.r, min(pc.g, pc.b))) / max(pmx, 1e-3);
+      float pk = smoothstep(0.2, 0.4, psat) * step(pc.g, pc.b) * step(pc.g, pc.r);   /* purple body paint -> recolourable */
+      pc *= mix(1.0, 0.86, nose);   /* nose mode: lamps / amber just under the bloom core (no warm glow) */
+      col = mix(col, pc, pa); mk = mix(mk, pk, pa); glass *= 1.0 - pa;
+    }
+    if (fL.a > 0.0) col = col * (1.0 - fL.a) + fL.rgb; if (fM >= 0.0) mk = fM;   /* the painted FRONT layer stays on top of the projection (all cars editable) */
+  }
+#endif
+  /* windshield / rear glass top bands: the A / C pillars at the sides are paint (the glass spanned the whole roof width) */
+  float pil = glass * smoothstep(0.86, 0.92, vLat) * (1.0 - gS);   /* a custom windshield mask decides pillar / glass itself */   /* lat = 1 at the top's outer edge: thin pillars only (0.55 HW made 40 % of the glass body colour) */
+  if (pil > 0.0) { vec4 pc = texture2D(edge, vec2(vEu.x, 5.5 / 8.0)); col = mix(col, pc.rgb, pil * step(0.9, pc.a)); mk = mix(mk, 1.0, pil * step(0.9, pc.a)); glass *= 1.0 - pil * step(0.9, pc.a); }
+  /* windshield layer colour: on glass the baked glass colour stays the lit base and the painted difference is added like the
+     streaks (the procedural streaks fade out under it); on body paint (pillars, a sun strip) it is a plain colour layer */
+  if (gT > 0.5 && gA > 0.001) { if (glass > 0.5) { gD = (gC - col) * gA; gW = 1.0 - gA; } else col = mix(col, gC, gA); }
+  float m = mk * recolor;
+  if (m > 0.003) {
+    float l = dot(col, vec3(0.299, 0.587, 0.114));
+    float t = l / (2.0 * lumMed);
+    /* very dark factory paint (black, navy): the painting's shading spans 10x its median (near-black shadow bands, grey
+       reflections), which a linear map turns into black / white patches in GOLD or pearl. Log-compress it to a gentle
+       body ramp; the painted white streaks stay highlights and the thin ink lines stay dark */
+    float dk = 1.0 - smoothstep(0.1, 0.22, lumMed);
+#ifdef F_DARK
+    if (dk > 0.0) {
+      float td = 0.5 + 0.17 * clamp(log2(max(l, 0.004) / lumMed) * 0.5, -1.0, 1.0) + 0.5 * smoothstep(lumHi * 0.8, lumHi * 2.0, l);
+      /* ink stays dark, but only THIN ink: the Kuroshio's broad black reflections (door, quarter) are paint and turned
+         into dark smears in GOLD / chrome. A pixel whose taps 3 texels away are all near-black too is a broad reflection:
+         a shadow tone of the new paint */
+      vec2 o3 = vec2(3.0 / 644.0, 3.0 / 196.0);
+      float nb = max(max(dot(texture2D(map, uv + vec2(o3.x, 0.0)).rgb, vec3(0.299, 0.587, 0.114)), dot(texture2D(map, uv - vec2(o3.x, 0.0)).rgb, vec3(0.299, 0.587, 0.114))),
+                     max(dot(texture2D(map, uv + vec2(0.0, o3.y)).rgb, vec3(0.299, 0.587, 0.114)), dot(texture2D(map, uv - vec2(0.0, o3.y)).rgb, vec3(0.299, 0.587, 0.114))));
+      float ink = mix(0.06, 0.3, sk * (1.0 - smoothstep(0.02, 0.045, nb)));
+      t = mix(t, mix(ink, td, smoothstep(0.01, 0.022, l)), dk);
+    }
+#endif
+    t = mix(min(t, 0.85), t, sk);
+    t = mix(t, min(t, 0.5), (1.0 - sk) * smoothstep(0.5, 0.9, abs(normalize(vN).x)));   /* nose / tail faces: one big lit plane, keep metallics off white */   /* caps / tops are one flat colour across the car: no white-hot highlight band */
+    vec2 pu = vec2(uv.x, mix(vLp.z * 0.25 + 0.5, uv.y, sk));
+    vec3 base = paint;
+    if (pearl > 0.0) base = mix(paint, paint2, smoothstep(0.15, 1.05, t * 0.8 + (pu.x - 0.35) * 0.7 + (pu.y - 0.5) * 0.4));
+    float tt = t * (1.0 + 0.2 * metal) - 0.12 * metal;
+    vec3 p = base * clamp(0.08 + 1.84 * tt, 0.0, 1.15);
+    p = mix(p, vec3(1.0), smoothstep(0.8 - 0.15 * metal, 1.7, tt) * 0.92);
+    /* chrome (LIQUID / TITANIUM CHROME): a mirror, not a pale grey with flakes. Sharp sky / horizon / ground bands: the
+       painting's own light ramp gives the shape, a dark horizon line under the beltline and a bright sky band above it
+       give the mirror read; tops reflect the sky (capped so they never clip) */
+    if (chrome > 0.0) {
+      float hz = (vLp.y - uBeltY * 0.82) / max(uBeltY, 0.1);
+      float env = mix(0.1 + 0.3 * smoothstep(-0.6, -0.2, hz), 1.0, smoothstep(-0.01, 0.02, hz)) * (1.0 - 0.75 * exp(-pow(hz / 0.04, 2.0)));
+      env = mix(0.8, env, sk);
+      float lr = smoothstep(0.2, 0.4, t) * 0.55 + smoothstep(0.6, 0.78, t) * 0.45;
+      vec3 pc = base * (0.04 + 1.1 * mix(lr, env, 0.65));
+      p = mix(p, mix(pc, vec3(min(dot(pc, vec3(0.333)) * 1.1, 1.0)), 0.15), chrome);
+    }
+    /* metal flake: fine, sparse sparkle (the 2-texel grid at +0.22 read as static / dust in the garage) */
+    float fl = fract(sin(dot(floor(pu * vec2(560.0, 170.0)), vec2(12.9898, 78.233))) * 43758.5453);
+    p += (metal + pearl * 0.5) * (1.0 - chrome) * step(0.94, fl) * 0.13 * clamp(t + 0.2, 0.0, 1.0);
+    col = mix(col, p, m);
+  }
+  // cosmetics: window tint (painted side glass above the beltline + the glass top bands), decals on the painted body
+  if (uTintW > 0.0) {
+    float lg = dot(col, vec3(0.299, 0.587, 0.114));
+    float sideGlass = sk * (1.0 - smoothstep(0.2, 0.45, mk)) * step(uBeltY, vLp.y) * (1.0 - smoothstep(0.3, 0.55, lg));
+    col = mix(col, col * 0.18 + vec3(0.008, 0.008, 0.016), uTintW * clamp(sideGlass + glass, 0.0, 1.0));
+  }
+  if (uDecal > 0.5) {
+    float body = sk * smoothstep(0.4, 0.7, mk);
+    float dy = vLp.y - uStripeY, dd = 0.0;
+    if (uDecal < 1.5) dd = 1.0 - smoothstep(0.035, 0.042, abs(dy));
+    else if (uDecal < 2.5) dd = (1.0 - smoothstep(0.018, 0.024, abs(dy - 0.045))) + (1.0 - smoothstep(0.018, 0.024, abs(dy + 0.045)));
+    else { vec2 q = (vec2(vLp.x - uDoorX, vLp.y - uRoundY)) / 0.42 + 0.5;
+      if (q.x > 0.0 && q.x < 1.0 && q.y > 0.0 && q.y < 1.0) { vec4 dt = texture2D(uDecalTex, q); col = mix(col, dt.rgb, dt.a * body); } }
+    col = mix(col, uDecalCol, clamp(dd, 0.0, 1.0) * body);
+  }
+  vec3 Ng = normalize(vN); if (!gl_FrontFacing) Ng = -Ng;
+  vec3 nm = texture2D(nmap, uv).xyz * 2.0 - 1.0;
+  vec3 N = normalize(Ng + vec3(nm.xy, 0.0) * sk * abs(Ng.z) * 1.4);
+  vec3 V = normalize(cameraPosition - vWp);
+  vec3 dif = vec3(0.0), difG = vec3(0.0); float spec = 0.0, specG = 0.0, rim = 0.0;
+  vec2 nxy = normalize(nm.xy + vec2(1e-4)); float edge = smoothstep(0.3, 0.85, length(nm.xy)) * sk;
+  for (int i = 0; i < ${D.NL}; i++) {
+    vec3 L = uLamp[i].xyz - vWp; float d2 = dot(L, L); L *= inversesqrt(d2);
+    float att = uLamp[i].w * 34.0 / (d2 + 10.0);
+    dif += uLampCol * (max(dot(N, L), 0.0) * att);
+    difG += uLampCol * (max(dot(Ng, L), 0.0) * att);
+    vec3 H = normalize(L + V);
+    float s1 = max(dot(N, H), 0.0), s2 = s1 * s1, s4 = s2 * s2, s8 = s4 * s4, s16 = s8 * s8;   /* x^48 and x^24 by squaring (perf: no log2 / exp2 per lamp) */
+    float g1 = max(dot(Ng, H), 0.0), g2 = g1 * g1, g4 = g2 * g2, g8 = g4 * g4;
+    spec += s16 * s16 * s16 * att;
+    specG += g8 * g8 * g8 * att;
+    rim += att * max(dot(nxy, normalize(L.xy + vec2(1e-4))), 0.0) * edge;
+  }
+  float bodyM = max(mk, 0.2);
+  // painted side: normal-mapped diffuse + clear coat + rim (as the old sprite)
+  vec3 side = col * (0.66 + dif * 0.95 * lightK) + uLampCol * (spec * (0.6 + 0.4 * metal) * bodyM + rim * 1.3) * lightK;
+  // top / front / rear: 3-tone cel ramp + a hard anime highlight; glass gets dark with two streaks
+  float lt = 0.42 + 0.36 * Ng.y - 0.1 * abs(Ng.x) + dot(difG, vec3(0.33)) * 0.8 * lightK;
+  float tone = 0.58 + 0.26 * smoothstep(0.44, 0.5, lt) + 0.2 * smoothstep(0.88, 0.94, lt);
+  /* from the nose / tail the hood is seen across its width: the hard cel steps and highlight flipped on every painted
+     step of the near hood outline = horizontal streaks over one half. Softer ramp + a broad highlight there */
+  float endT = endV * (1.0 - sk) * step(vEu.z, 1.5);
+  float ltE = 0.45 + 0.4 * Ng.y + dot(difG, vec3(0.33)) * 0.35 * lightK;   /* lamp light at a third: a hood crease under a lamp read as a fold */
+  tone = mix(tone, 0.6 + 0.4 * smoothstep(0.2, 1.0, ltE), endT);
+  float hiG = mix(smoothstep(0.32, 0.38, specG), smoothstep(0.15, 0.7, specG) * 0.55, endT);
+  tone *= 1.0 - 0.24 * smoothstep(0.5, 0.9, abs(Ng.x)) * (1.0 - smoothstep(0.12, 0.35, abs(Ng.y))) * (1.0 - smoothstep(0.15, 0.85, vLp.y));   /* nose / tail faces darken toward the road (not one flat slab) */
+  vec3 cc = col / (1.0 + 0.3 * col);   /* soft roll-off: white / pale caps keep their cel tones instead of clipping */
+  vec3 top = cc * tone * capK + uLampCol * hiG * (0.35 + 0.3 * metal) * lightK * (0.4 + 0.6 * max(bodyM, glass)) * (1.0 - 0.55 * dot(cc, vec3(0.333)));
+  /* hood / roof / trunk depth: at the race camera the top's width projects almost straight up the screen, so one flat
+     colour read as a slab standing on the painted flank. Lit near the near edge, a soft lengthwise sheen, falling off
+     toward the far edge (games only ever view the near side) */
+  { float q = 0.5 + 0.5 * clamp(vLp.z / max(uHW, 0.01), -1.0, 1.0);
+    float dS = (1.0 - sk) * step(vEu.z, 1.5) * (1.0 - capRow) * (1.0 - glass);
+    float sideD = mix(0.56, 1.02, smoothstep(0.02, 0.85, q)) + 0.16 * exp(-pow((q - 0.7) / 0.05, 2.0)) + 0.07 * exp(-pow((q - 0.38) / 0.08, 2.0));
+    /* seen from the nose / tail the same falloff made the far half of the hood dark and the sheen a hard stripe off the
+       centre line: there it is a symmetric crown instead (bright along the centre, rolling off evenly to both edges) */
+    float lq = abs(vLp.z) / max(uHW, 0.01), crown = 1.0 - 0.2 * lq * lq + 0.06 * exp(-pow(lq / 0.18, 2.0));
+    top *= mix(1.0, mix(sideD, crown, endV), dS); }
+  float st = fract(vLp.x * 0.55 + vLp.z * 0.35);   /* Nov 12 windshield (user 2026-11-15): parallel diagonal streaks; the mirrored abs(z) version made a V */
+  top += glass * ((step(0.1, st) * step(st, 0.17) + step(0.24, st) * step(st, 0.27)) * vec3(0.32, 0.36, 0.48) * gW + gD) * max(Ng.y, 0.0);
+  side = mix(side, col * (0.66 + dif * 0.95 * lightK), pD * 0.9); top = mix(top, cc * tone * capK, pD * 0.9);   /* painted detail: lit, but no gloss / rim */
+  col = mix(top, side, sk);
+  if (lensC.a > 0.0) {   /* painted head lens: its own colours, a little lit, the pale glass glowing (bright core for the bloom) */
+    float ll = dot(lensC.rgb, vec3(0.299, 0.587, 0.114)), core = smoothstep(0.72, 0.95, ll);
+    vec3 lc = lensC.rgb * (0.95 + 0.25 * lightK) * (1.0 + 0.6 * core) + vec3(0.9, 0.95, 1.0) * core * core * 0.35;
+    col = mix(col, lc, lensC.a); }
+  col = col * (1.0 - hl.a) + hl.rgb * (1.1 + 0.5 * lightK);   /* painted headlights (dev editor HEADLIGHTS layer): unlit, bright enough for the bloom */
+  float wx =wx0 + uv.x * ww;
+  float ph = fract((wx + uv.y * 1.2 - shineOff) / 22.0);
+  col += uLampCol * (smoothstep(0.0, 0.025, ph) * (1.0 - smoothstep(0.025, 0.09, ph))) * (0.3 + 0.2 * metal) * bodyM * (1.0 - pD) * sk * (0.25 + 0.75 * smoothstep(0.02, 0.45, N.y)) * lightK;
+  col += exp(-pow(((1.0 - uv.x) + uv.y * 0.35 - sweep) * 16.0, 2.0)) * 0.42 * bodyM * (1.0 - pD);   // shine sweeps front -> back
+  col = mix(col, vec3(1.0), flash);
+  col *= dim * (1.0 - 0.4 * step(2.25, vEu.z) * step(vEu.z, 2.75));   /* far-side wing plate / strut: a darker copy */
+  col = mix(col, fogCol(vWp), fogF(vWp));
+  float a = opacity * mix(1.0, smoothstep(0.12, 0.6, tx.a), cut); if (fadeY > 0.0) a *= 1.0 - smoothstep(0.0, fadeY, -vWp.y);
+  gl_FragColor = vec4(col, a);
+#endif
+}`;
+
+const WHEEL_VS = `attribute float wpart, wi; uniform vec4 uHub[4], uRad; uniform vec2 uSpin; uniform float uHW;
+varying vec2 vUv; varying float vPart; varying vec3 vWp, vN;
+void main(){
+  int i = int(wi + 0.5);
+  vec4 hub = uHub[0]; float r = uRad.x;
+  if (i == 1) { hub = uHub[1]; r = uRad.y; } else if (i == 2) { hub = uHub[2]; r = uRad.z; } else if (i == 3) { hub = uHub[3]; r = uRad.w; }
+  float a = (i == 0 || i == 2) ? uSpin.x : uSpin.y;
+  float cs = cos(a), sn = sin(a);
+  vec3 p = vec3(position.x * cs - position.y * sn, position.x * sn + position.y * cs, position.z);
+  vec3 n = vec3(normal.x * cs - normal.y * sn, normal.x * sn + normal.y * cs, normal.z);
+  float fl = -(r - hub.w); // flattened contact patch + sidewall bulge
+  if (p.y < fl) { float d = fl - p.y; p.y = fl; p.z += sign(position.z) * d * 0.6; }
+  vUv = uv; vPart = wpart;
+  vec3 q = p + hub.xyz;
+  vec4 wp = modelMatrix * vec4(q, 1.0); vWp = wp.xyz;
+  vN = normalize(mat3(modelMatrix) * n);
+  gl_Position = projectionMatrix * viewMatrix * wp;
+}`;
+const WHEEL_FS = `${D.FOG_GLSL}
+${D.LAMP_GLSL}
+uniform sampler2D map, mapB; uniform float blur, dim, opacity, fadeY, lightK;
+varying vec2 vUv; varying float vPart; varying vec3 vWp, vN;
+void main(){
+  vec3 N = normalize(vN); if (!gl_FrontFacing) N = -N;
+  vec3 col;
+  if (vPart > 0.5 && vPart < 1.5) {
+    vec4 c = mix(texture2D(map, vUv), texture2D(mapB, vUv), blur);
+    col = mix(vec3(0.035, 0.03, 0.045), c.rgb, c.a);
+  } else if (vPart < 0.5) {
+    float g = step(0.55, fract(vUv.x * 46.0)) * (1.0 - smoothstep(0.1, 0.6, blur));
+    col = mix(vec3(0.075, 0.07, 0.085), vec3(0.03, 0.028, 0.036), g) * (0.75 + 0.5 * smoothstep(0.1, 0.0, abs(vUv.y - 0.5) - 0.38));
+  } else col = vec3(0.025, 0.022, 0.03);
+  vec3 dif = vec3(0.0);
+  for (int i = 0; i < ${D.NL}; i++) {
+    vec3 L = uLamp[i].xyz - vWp; float d2 = dot(L, L);
+    dif += uLampCol * (uLamp[i].w * max(dot(N, L * inversesqrt(d2)), 0.0) * 30.0 / (d2 + 10.0));
+  }
+  col *= (0.7 + 0.18 * N.y + dif * 0.9 * lightK) * dim;
+  col = mix(col, fogCol(vWp), fogF(vWp));
+  float a = opacity; if (fadeY > 0.0) a *= 1.0 - smoothstep(0.0, fadeY, -vWp.y);
+  gl_FragColor = vec4(col, a);
+}`;
+
+/* the painted hood / face uniforms are SHARED objects per car (edge.userData.paintU): the editor swaps in a live canvas
+   texture once and every material of that car (body, reflection, hull) follows */
+function paintUniforms(edgeTex) {
+  const U = edgeTex.userData && edgeTex.userData.paintU;
+  if (U) return { uHoodTex: U.hoodTex, uHoodOn: U.hoodOn, uHoodR: U.hoodR, uFaceTex: U.faceTex, uFaceOn: U.faceOn, uFacePR: U.faceR, uGlassTex: U.glassTex, uGlassOn: U.glassOn, uGlassR: U.glassR, uHeadTex: U.headTex, uHeadOn: U.headOn, uHeadU: U.headU, uSideTex: U.sideTex, uSideOn: U.sideOn };
+  return { uHoodTex: { value: null }, uHoodOn: { value: 0 }, uHoodR: { value: new THREE.Vector4() }, uFaceTex: { value: null }, uFaceOn: { value: 0 }, uFacePR: { value: new THREE.Vector4(1, 0, 1, 0) }, uGlassTex: { value: null }, uGlassOn: { value: 0 }, uGlassR: { value: new THREE.Vector4() }, uHeadTex: { value: null }, uHeadOn: { value: 0 }, uHeadU: { value: 2 }, uSideTex: { value: null }, uSideOn: { value: 0 } };
+}
+/* perf (Note 9, 2026-11-15): BODY_FS is one big uber-shader; on Mali its size alone (registers) halved the garage fps even
+   where a feature was switched off by a uniform. Each material now compiles only the blocks its car can use (#ifdef F_*),
+   decided from what the car has when it is built; the output is the same. The dev paint editor (?edit, no GT_BUILD) keeps
+   every layer block so it can switch layers on live */
+const EDIT_ALL = (() => { try { return !window.GT_BUILD && new URLSearchParams(location.search).has('edit'); } catch { return false; } })();
+function bodyDefines(art, edgeTex, hull) {
+  if (hull) return { F_HULL: '' };
+  const u = edgeTex.userData || {}, d = {};
+  const has = EDIT_ALL ? ['hood', 'face', 'glass', 'head', 'side'] : (u.paintHas || []);
+  for (const k of has) d['F_' + k.toUpperCase()] = '';
+  if (u.cover && u.cover[2] > 0) d.F_COVER = '';
+  if (u.bandX !== undefined && u.bandX > -50) d.F_BAND = '';
+  if (u.projF) d.F_PROJ = '';
+  if (!FACE_OLD || u.projF) d.F_CAPS = '';
+  if (d.F_CAPS !== undefined && u.lensF && u.lensF[1] > 0) d.F_LENS = '';
+  if (((art.meta.paint && art.meta.paint.lum_med) || 0.4) < 0.22) d.F_DARK = '';   /* dk = 1 - smoothstep(0.1, 0.22, lumMed) is 0 above */
+  /* one fixed order: three.js keys a program on the defines in insertion order, so the same set in another order (cars list
+     their layers in different orders) compiled again */
+  const o = {}; for (const k of ['F_SIDE', 'F_COVER', 'F_HOOD', 'F_GLASS', 'F_FACE', 'F_HEAD', 'F_CAPS', 'F_BAND', 'F_LENS', 'F_PROJ', 'F_DARK']) if (k in d) o[k] = '';
+  return o;
+}
+/* the variants a race / garage visit can need, predicted without building the car (carGeo sets the same userData): compiled
+   in the background once the menu is up, so the first rival or garage switch does not stall on a shader compile */
+export function warmBodies(renderer, cam, arts) {
+  const sc = new THREE.Scene(), geo = new THREE.PlaneGeometry(0.01, 0.01), seen = new Set();
+  for (const [key, art] of Object.entries(arts)) {
+    if (!art || !art.meta) continue;
+    const u = { paintHas: (PAINT[key] || []).filter((k) => ['hood', 'face', 'glass', 'head', 'side'].includes(k)) };
+    if (PROJ[key]) u.projF = true; else if (BAND[key]) u.bandX = 0;
+    const d = bodyDefines(art, { userData: u }, false), id = JSON.stringify(d);
+    if (seen.has(id)) continue; seen.add(id);
+    const m = new THREE.Mesh(geo, bodyMat(art, { userData: {} }, {})); m.material.defines = d; m.frustumCulled = false; sc.add(m);
+  }
+  const h = new THREE.Mesh(geo, bodyMat(Object.values(arts).find((a) => a && a.meta), { userData: {} }, { hull: true })); h.frustumCulled = false; sc.add(h);
+  return (renderer.compileAsync ? renderer.compileAsync(sc, cam) : Promise.resolve(renderer.compile(sc, cam))).catch(() => {}).then(() => seen.size);
+}
+export function bodyMat(art, edgeTex, { refl = false, hull = false } = {}) {
+  return new THREE.ShaderMaterial({ defines: bodyDefines(art, edgeTex, hull),
+    uniforms: { ...D.SH, map: { value: art.tex }, mask: { value: art.mask }, nmap: { value: art.nmap }, edge: { value: edgeTex },
+      lightK: { value: refl ? 0.6 : 1 }, ripple: { value: refl ? 1 : 0 }, paint: { value: new THREE.Color(1, 1, 1) }, paint2: { value: new THREE.Color(1, 1, 1) },
+      metal: { value: 0 }, pearl: { value: 0 }, chrome: { value: 0 }, recolor: { value: 0 }, lumMed: { value: (art.meta.paint && art.meta.paint.lum_med) || 0.4 },
+      lumHi: { value: (art.meta.paint && art.meta.paint.lum_hi) || 0.8 }, uHW: { value: (edgeTex.userData && edgeTex.userData.HW) || 1 },
+      uCapF: { value: new THREE.Vector4(...((edgeTex.userData && edgeTex.userData.capF) || [0, 1, 1, -9])) }, uCapR: { value: new THREE.Vector4(...((edgeTex.userData && edgeTex.userData.capR) || [0, 1, 1, -9])) },
+      uFaceF: { value: new THREE.Vector4(...((edgeTex.userData && edgeTex.userData.faceF) || [0.35, 0.35, 0.4, 1])) }, uFaceR: { value: new THREE.Vector4(...((edgeTex.userData && edgeTex.userData.faceR) || [0.35, 0.35, 0.4, 1])) },
+      opacity: { value: refl ? 0.4 : 1 }, fadeY: { value: refl ? 0.95 : 0 }, flash: { value: 0 }, sweep: { value: -2 }, wx0: { value: 0 }, ww: { value: 4 },
+      shineOff: { value: 11 }, dim: { value: 1 }, hull: { value: hull ? 0.022 : 0 }, isHull: { value: hull ? 1 : 0 }, inkCol: { value: new THREE.Color(0.035, 0.02, 0.06) },
+      uLensTex: { value: (edgeTex.userData && edgeTex.userData.lensTex) || null }, uLensF: { value: new THREE.Vector4(...((edgeTex.userData && edgeTex.userData.lensF) || [0, 0, 0, 1])) }, uLensU: { value: (edgeTex.userData && edgeTex.userData.lensU) || 2 }, uLensK: { value: (edgeTex.userData && edgeTex.userData.lensK) || 1 }, uBandX: { value: edgeTex.userData && edgeTex.userData.bandX !== undefined ? edgeTex.userData.bandX : -99 }, uProjOn: { value: edgeTex.userData && edgeTex.userData.projF ? (edgeTex.userData.projNose ? 2 : 1) : 0 }, uProjF: { value: (edgeTex.userData && edgeTex.userData.projF) || null }, uProjT: { value: (edgeTex.userData && edgeTex.userData.projT) || null }, uProjFR: { value: new THREE.Vector4(...((edgeTex.userData && edgeTex.userData.projFR) || [1, 0, 1, 0])) }, uProjTR: { value: new THREE.Vector4(...((edgeTex.userData && edgeTex.userData.projTR) || [0, 1, 1, 4])) }, uProjFY: { value: ((edgeTex.userData && edgeTex.userData.projFY) || [[0, 0], [1, 1], [2, 2], [3, 3], [4, 4], [5, 5]]).map(([a, b]) => new THREE.Vector2(a, b)) }, uBandT: { value: edgeTex.userData && edgeTex.userData.bandTex ? 1 : 0 }, uCover: { value: new THREE.Vector4(...((edgeTex.userData && edgeTex.userData.cover) || [0, 0, 0, 0])) }, uBandTex: { value: (edgeTex.userData && edgeTex.userData.bandTex) || null }, uBandP: { value: (edgeTex.userData && edgeTex.userData.bandP) || [0, 1, 2, 3, 4, 5, 6, 7].map(() => new THREE.Vector3()) }, uBandO: { value: (edgeTex.userData && (edgeTex.userData.bandO || edgeTex.userData.bandP)) || [0, 1, 2, 3, 4, 5, 6, 7].map(() => new THREE.Vector3()) }, uLensR: { value: new THREE.Vector4(...((edgeTex.userData && edgeTex.userData.lensR) || [2, 2, 1, 1])) },
+      ...paintUniforms(edgeTex),
+      uTintW: { value: 0 }, uBeltY: { value: 0 }, uDecal: { value: 0 }, uStripeY: { value: 0 }, uDoorX: { value: 0 }, uRoundY: { value: 0 }, uDecalCol: { value: new THREE.Color(1, 1, 1) }, uDecalTex: { value: null } },
+    vertexShader: BODY_VS, fragmentShader: BODY_FS, transparent: true, depthTest: true, depthWrite: true,
+    side: hull ? THREE.BackSide : THREE.FrontSide,
+  });
+}
+export function wheelMat3(tex, texB, shared, { refl = false } = {}) {
+  return new THREE.ShaderMaterial({
+    uniforms: { ...D.SH, ...shared, map: { value: tex }, mapB: { value: texB }, blur: shared.blur, dim: { value: 1 }, lightK: { value: refl ? 0.45 : 1 },
+      opacity: { value: refl ? 0.3 : 1 }, fadeY: { value: refl ? 0.8 : 0 } },
+    vertexShader: WHEEL_VS, fragmentShader: WHEEL_FS, transparent: true, depthTest: true, depthWrite: true,
+  });
+}
+
+// ---------- geometry ----------
+const hexCols = (s) => { const n = s.length / 8, o = new Uint8Array(n * 4); for (let i = 0; i < n * 4; i++) o[i] = parseInt(s.substr(i * 2, 2), 16); return o; };
+// Fallback profile straight from the sprite alpha (procedural cars, or no cars3d.json entry)
+function profileFromImage(img, meta) {
+  const w = img.width, h = img.height, c = document.createElement('canvas'); c.width = w; c.height = h;
+  const g = c.getContext('2d', { willReadFrequently: true }); g.drawImage(img, 0, 0);
+  const d = g.getImageData(0, 0, w, h).data, top = [], bot = [];
+  for (let x = 0; x < w; x++) {
+    let t = -1, b = -1;
+    for (let y = 0; y < h; y++) if (d[(y * w + x) * 4 + 3] > 127) { if (t < 0) t = y; b = y + 1; }
+    for (const wh of meta.wheels) { const cx = wh.x * w, r = wh.r * w * 1.1, dx = x - cx; if (Math.abs(dx) < r && b > 0) b = Math.min(b, Math.round(wh.y * h - Math.sqrt(r * r - dx * dx))); }
+    top.push(t); bot.push(b);
+  }
+  const grey = '5a5a66ff'.repeat(128);
+  return { w, h, belt: Math.round(h * 0.45), top, bot, wing: [], struts: [], colTop: grey, colWing: grey, colFront: grey.slice(0, 64 * 8), colRear: grey.slice(0, 64 * 8) };
+}
+// Ramer-Douglas-Peucker over a profile -> column indices to keep
+function rdp(arr, a, b, tol, keep) {
+  let best = -1, bi = -1;
+  for (let i = a + 1; i < b; i++) {
+    const t = (i - a) / (b - a), dv = Math.abs(arr[i] - (arr[a] + (arr[b] - arr[a]) * t));
+    if (dv > best) { best = dv; bi = i; }
+  }
+  if (best > tol) { keep.add(bi); rdp(arr, a, bi, tol, keep); rdp(arr, bi, b, tol, keep); }
+}
+
+/* cars that get the painted face lamp (null = all); rolled out one car at a time while the user reviews each */
+const LENS_CARS = ['car_hero'];
+/* front lamp + grille band per car (replaces the lens cut-out): (s, bottom y, top y) in m, s = |z| + depth behind the nose
+   front at the lamp row. [0] centre, [1] grille / lamp join, [2] lamp inner tip, [3..5] to the corner (tallest at the outer end),
+   [6] onto the flank, [7] its rear tip (swept up, over the painted side lamp: the side half of the texture is the
+   lamp's glass + chrome continuing along the fender, user 2026-11-14) */
+/* projection painting per car (user 2026-11-15): front / top orthographic paintings (tools/make_hero_views.py) fitted to
+   the mesh: front = half width fw (m), y fy0..fy1; top = x from the tail (-len + tx0) to tx1 (0 = nose tip), half width tw;
+   k = normal blend power (higher = harder transitions). PROJ_ON[key] = false keeps the old band hack */
+const PROJ_ON = { car_hero: 'nose' };   /* true = full front + top projection, 'nose' = v17 nose only, false = v16 band */   /* projection test off: user prefers the v16 band (2026-11-15) */
+const PROJ_ALL = { car_hero: { front: 'sprites/car_hero_frontview.webp', top: 'sprites/car_hero_topview.webp', fw: 0.84 * 1.44 / 1.31 * 1.05, fy0: 0.1, fy1: 1.38,
+    /* height fit (world y m, painting v from the bottom), measured: tyre bottom, bumper lip, lamp bottom, hood leading edge
+       (= lamp top / brow), windshield base, roof (painting 710 px tall: 655, 410, 320, 205, 10 px from the top) */
+    fy: [[0.1, 0], [0.15, 0.077], [0.615, 0.423], [0.76, 0.549], [0.98, 0.711], [1.378, 0.986]], tx0: 0, tx1: 0, tw: 0.84 * 1.04, k: 3 } };
+const PROJ = Object.fromEntries(Object.entries(PROJ_ALL).filter(([k]) => PROJ_ON[k]));
+/* painted texture for the band (layout in tools/make_hero_front.py); a car without one draws the procedural lamp + grille */
+const BAND_TEX = { car_hero: 'sprites/car_hero_front.webp' };
+/* v15 (user drawing 2026-11-14): one clean wedge, straight edges: top inner end -> corner -> flank tip, bottom inner end
+   -> corner -> pointed rear tip; grille the same height as the inner end (no step). Points between are collinear */
+const BAND = { car_hero: [[0, 0.555, 0.7], [0.325, 0.555, 0.7], [0.327, 0.555, 0.7], [0.61, 0.566, 0.7386], [0.8, 0.5734, 0.7645], [0.84, 0.575, 0.77], [0.95, 0.6177, 0.7704], [1.33, 0.765, 0.772]] };
+/* the band the painted texture is mapped through (straight lines too, so the painted brow / LED stay straight); the shader maps texture rows through it, so BAND can be
+   resized (v14: taller, measured on the user's 45 deg view) without repainting */
+const BAND_FIT = { car_hero: [[0, 0.57, 0.66], [0.325, 0.57, 0.66], [0.327, 0.59, 0.665], [0.61, 0.5762, 0.7108], [0.8, 0.5669, 0.7415], [0.84, 0.565, 0.748], [0.95, 0.6038, 0.7487], [1.33, 0.738, 0.751]] };
+/* cut the painted lens around [c, r] out of the side painting: RGBA DataTexture (row 0 = top), alpha = lens + ink outline */
+function lensCut(img, hc, hr) {
+  const W = img.width, H = img.height, x0 = Math.max(0, hc - 100), x1 = Math.min(W - 1, hc + 30), y0 = Math.max(0, hr - 40), y1 = Math.min(H - 1, hr + 35);
+  const ww = x1 - x0 + 1, wh = y1 - y0 + 1, cv = document.createElement('canvas'); cv.width = ww; cv.height = wh;
+  const g = cv.getContext('2d', { willReadFrequently: true }); g.drawImage(img, -x0, -y0);
+  const d = g.getImageData(0, 0, ww, wh).data, n = ww * wh, A = new Uint8Array(n);
+  const ok = (i) => d[i * 4 + 3] > 128 && (0.299 * d[i * 4] + 0.587 * d[i * 4 + 1] + 0.114 * d[i * 4 + 2]) / 255 > 0.16;
+  let seed = -1;
+  for (let rd = 0; rd < 6 && seed < 0; rd++) for (let dy = -rd; dy <= rd && seed < 0; dy++) for (let dx = -rd; dx <= rd; dx++) {
+    const x = hc - x0 + dx, y = hr - y0 + dy; if (x >= 0 && y >= 0 && x < ww && y < wh && ok(y * ww + x)) { seed = y * ww + x; break; } }
+  if (seed < 0) return null;
+  const q = [seed]; A[seed] = 1;
+  while (q.length) { const i = q.pop(), x = i % ww, y = (i - x) / ww;
+    for (const [nx, ny] of [[x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]]) { if (nx < 0 || ny < 0 || nx >= ww || ny >= wh) continue; const j = ny * ww + nx; if (!A[j] && ok(j)) { A[j] = 1; q.push(j); } } }
+  let bx0 = ww, by0 = wh, bx1 = -1, by1 = -1;
+  for (let i = 0; i < n; i++) if (A[i]) { const x = i % ww, y = (i - x) / ww; bx0 = Math.min(bx0, x); bx1 = Math.max(bx1, x); by0 = Math.min(by0, y); by1 = Math.max(by1, y); }
+  if (bx1 - bx0 > 95 || by1 - by0 > 34 || bx1 - bx0 < 8) return null;   /* leaked into the body (or a speck) */
+  /* holes (divider bars, ink inside the lens): everything inside the bbox the outside cannot reach */
+  const bw = bx1 - bx0 + 1, bh = by1 - by0 + 1, O = new Uint8Array(bw * bh), oq = [];
+  for (let x = 0; x < bw; x++) for (const y of [0, bh - 1]) { const k = y * bw + x; if (!A[(by0 + y) * ww + bx0 + x] && !O[k]) { O[k] = 1; oq.push(k); } }
+  for (let y = 0; y < bh; y++) for (const x of [0, bw - 1]) { const k = y * bw + x; if (!A[(by0 + y) * ww + bx0 + x] && !O[k]) { O[k] = 1; oq.push(k); } }
+  while (oq.length) { const k = oq.pop(), x = k % bw, y = (k - x) / bw;
+    for (const [nx, ny] of [[x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]]) { if (nx < 0 || ny < 0 || nx >= bw || ny >= bh) continue; const j = ny * bw + nx; if (!O[j] && !A[(by0 + ny) * ww + bx0 + nx]) { O[j] = 1; oq.push(j); } } }
+  /* output (user 2026-11-14: "the headlight is not full"): a FULL, clean lamp redrawn from the lens shape, not the raw
+     painting (its dark divider bars read as stripes / gaps and its flood-fill edge was ragged). The lens = the convex hull
+     of the filled shape (straight crisp edges), drawn at 4x from its distance field: a closed solid ink rim, a cool steel
+     reflector shading in from the rim, a white-hot core (bloom) with three projector bowls in it */
+  const P2 = 3, tw = bw + P2 * 2, th = bh + P2 * 2, SC = 4;
+  const inL = (x, y) => { const bxx = x - bx0, byy = y - by0; if (bxx < 0 || byy < 0 || bxx >= bw || byy >= bh) return false; return A[y * ww + x] || !O[byy * bw + bxx]; };
+  const pts = [], cx = [], cy = [];
+  for (let y = 0; y < bh; y++) for (let x = 0; x < bw; x++) if (inL(bx0 + x, by0 + y)) { pts.push([x + P2, y + P2], [x + P2 + 1, y + P2], [x + P2, y + P2 + 1], [x + P2 + 1, y + P2 + 1]); }
+  for (let x = 0; x < bw; x++) { let t = -1, b2 = -1; for (let y = 0; y < bh; y++) if (inL(bx0 + x, by0 + y)) { if (t < 0) t = y; b2 = y + 1; } if (t >= 0) { cx.push(x + P2 + 0.5); cy.push(P2 + (t + b2) / 2); } }
+  pts.sort((p, q) => p[0] - q[0] || p[1] - q[1]);
+  const crs = (o, a2, b3) => (a2[0] - o[0]) * (b3[1] - o[1]) - (a2[1] - o[1]) * (b3[0] - o[0]), lo = [], up = [];
+  for (const p of pts) { while (lo.length > 1 && crs(lo[lo.length - 2], lo[lo.length - 1], p) <= 0) lo.pop(); lo.push(p); }
+  for (let k = pts.length - 1; k >= 0; k--) { const p = pts[k]; while (up.length > 1 && crs(up[up.length - 2], up[up.length - 1], p) <= 0) up.pop(); up.push(p); }
+  const hull = lo.slice(0, -1).concat(up.slice(0, -1)), E = [];
+  for (let k = 0; k < hull.length; k++) { const p = hull[k], q = hull[(k + 1) % hull.length], dx = q[0] - p[0], dy = q[1] - p[1], ln = Math.hypot(dx, dy) || 1; E.push([p[0], p[1], -dy / ln, dx / ln]); }
+  /* signed distance (px, + inside): the hull is CCW in y-down = inward normal (-dy, dx) */
+  const sdf = (x, y) => { let m = 1e9; for (const [ex, ey, nx, ny] of E) m = Math.min(m, (x - ex) * nx + (y - ey) * ny); return m; };
+  let sx = 0, sy = 0, sxx = 0, sxy = 0; for (let k = 0; k < cx.length; k++) { sx += cx[k]; sy += cy[k]; sxx += cx[k] * cx[k]; sxy += cx[k] * cy[k]; }
+  const nC = cx.length, slope = (nC * sxy - sx * sy) / Math.max(1e-6, nC * sxx - sx * sx), icp = (sy - slope * sx) / nC;   /* the lens centre line */
+  let dMax = 0; for (let y = 0; y < th; y += 0.5) for (let x = 0; x < tw; x += 0.5) dMax = Math.max(dMax, sdf(x, y));
+  const ss = (e0, e1, v) => { const t = Math.min(1, Math.max(0, (v - e0) / (e1 - e0))); return t * t * (3 - 2 * t); };
+  /* lamp design (user reference 2026-11-14, a modern projector unit in anime line art): a near-black housing, a clear
+     glass band along the top with a long soft highlight, two faceted chrome reflector bowls with a small bulb each (the
+     outer one bigger), an amber turn-signal block at the outer corner, a thin white DRL trim along the lower edge. Only
+     the bulbs and the DRL are near white (the shader's bloom core). Two versions: rows 0..TH-1 the face lamp, TH.. the
+     flank lamp (no bowls: housing, glass and trim only, its bowls stretched along the flank) */
+  const xa = cx[0], xb = cx[cx.length - 1], TW = tw * SC, TH = th * SC, out = new Uint8Array(TW * TH * 2 * 4);
+  const colTB = []; for (let X2 = 0; X2 < TW; X2++) { const fx = (X2 + 0.5) / SC; let t = -1, b2 = -1; for (let fy = 0; fy < th; fy += 0.125) if (sdf(fx, fy) > 0) { if (t < 0) t = fy; b2 = fy; } colTB.push([t, b2]); }
+  const midOf = (f) => { const X2 = Math.max(0, Math.min(TW - 1, Math.round((xa + (xb - xa) * f) * SC))), [t, b2] = colTB[X2]; return t < 0 ? [icp + slope * (xa + (xb - xa) * f), dMax] : [(t + b2) / 2, (b2 - t) / 2]; };
+  const bowls = [[0.36, 0.74], [0.64, 0.9]].map(([f, k]) => { const [my, hh] = midOf(f); return [xa + (xb - xa) * f, my + hh * 0.1, hh * k]; });
+  const TAU = Math.PI * 2;
+  for (let half = 0; half < 2; half++) for (let Y2 = 0; Y2 < TH; Y2++) for (let X2 = 0; X2 < TW; X2++) {
+    const fx = (X2 + 0.5) / SC, fy = (Y2 + 0.5) / SC, o = ((Y2 + half * TH) * TW + X2) * 4, sd = sdf(fx, fy);
+    if (sd < -2.4) continue;
+    const inn = ss(-0.15, 0.25, sd), [t, b2] = colTB[X2], u = (fx - xa) / Math.max(1, xb - xa);
+    const vn = t < 0 ? 0 : (2 * (fy - t) / Math.max(0.5, b2 - t) - 1);   /* -1 top .. 1 bottom of the lens at this column */
+    let r = 30 + 8 * vn, g = 30 + 8 * vn, bb = 38 + 8 * vn;   /* housing */
+    const mix3 = (c, k) => { r += (c[0] - r) * k; g += (c[1] - g) * k; bb += (c[2] - bb) * k; };
+    if (!half) for (const [bx, by, br] of bowls) { const dx = fx - bx, dy = fy - by, dd = Math.hypot(dx, dy) / br;
+      if (dd > 1.08) continue;
+      const fa = ((Math.atan2(dy, dx) + TAU) % TAU) / TAU * 8, fc = fa - Math.floor(fa), facet = 0.55 + 0.45 * Math.abs(fc - 0.5) * 2 * (0.7 + 0.3 * dd);
+      const ch = 95 + 85 * facet * (1 - 0.35 * ss(0.7, 1.0, dd)) * (0.75 + 0.25 * Math.max(0, -dy / br));   /* faceted chrome bowl, lit from above */
+      mix3([ch, ch + 3, ch + 10], 1 - ss(0.94, 1.0, dd));
+      mix3([18, 18, 24], ss(0.86, 0.93, dd) * (1 - ss(1.0, 1.08, dd)));   /* bowl rim line */
+      mix3([40, 42, 52], ss(0.3, 0.34, dd) * (1 - ss(0.38, 0.42, dd)));   /* projector ring */
+      mix3([255, 252, 244], 1 - ss(0.26, 0.31, dd)); }   /* bulb */
+    if (half && u > 0.03 && u < 0.17 && vn > -0.4 && vn < 0.58) {   /* amber turn-signal block, ribbed: on the flank lamp's rear end = the
+       unit's outer corner seen from ahead (at the face lamp's outer end it sat in the middle of the wrap-around unit) */
+      const rib = 0.82 + 0.18 * Math.abs(((fx * 1.3 + fy) % 1.2) / 1.2 - 0.5) * 2, edgeK = ss(0.03, 0.05, u) * (1 - ss(0.15, 0.17, u)) * ss(-0.4, -0.32, vn) * (1 - ss(0.5, 0.58, vn));
+      mix3([214 * rib, 118 * rib, 32 * rib], edgeK); }
+    const gl = ss(-0.3, -0.55, vn);   /* clear glass band along the top */
+    mix3([92, 96, 112], gl * 0.85);
+    mix3([186, 190, 204], Math.exp(-Math.pow((vn + 0.74) / 0.09, 2)) * ss(0.03, 0.15, u) * (1 - ss(0.88, 0.99, u)) * 0.9);   /* its long soft highlight */
+    mix3([246, 249, 255], ss(0.58, 0.64, vn) * (1 - ss(0.76, 0.82, vn)) * ss(0.02, 0.08, u) * (1 - ss(0.95, 0.99, u)));   /* DRL trim */
+    out[o] = Math.round(22 + (r - 22) * inn); out[o + 1] = Math.round(17 + (g - 17) * inn); out[o + 2] = Math.round(30 + (bb - 30) * inn);
+    out[o + 3] = Math.round(255 * ss(-2.4, -1.8, sd));   /* rim: ~2 px of solid ink, anti-aliased */
+  }
+  const tex = new THREE.DataTexture(out, TW, TH * 2, THREE.RGBAFormat);
+  tex.magFilter = tex.minFilter = THREE.LinearFilter; tex.generateMipmaps = false; tex.flipY = false; tex.needsUpdate = true;
+  return { tex, w: tw, h: th, x0: x0 + bx0 - P2, y0: y0 + by0 - P2 };
+}
+
+const cache = {};
+// key, len (m), art {tex, meta}; returns { body: BufferGeometry, wheels: BufferGeometry, edge: DataTexture, dims }
+const PLAN_BOX = true;   /* false = the rounded nose / tail corners (Nov 13 - 15) */
+export const geoCache = (key) => cache[key] || null;   /* built car (main.js prewarm), null if not built yet */
+export function carGeo(key, len, art) {
+  if (cache[key]) return cache[key];
+  const t0 = performance.now();
+  const meta = art.meta;
+  const P = (DATA && DATA[key]) || profileFromImage(art.tex.image, meta);
+  const w = P.w, h = P.h, s = len / w;
+  const ws = meta.wheels;
+  const rr = ws[0].r * len, rf = ws[1].r * len, rW = (rr + rf) / 2, fyA = (ws[0].y + ws[1].y) / 2;
+  const X = (col) => -len + col * s, Y = (row) => rW + (fyA * h - row) * s;
+  const HW = len * 0.2;
+  let c0 = 0, c1 = w - 1;
+  while (c0 < w && (P.top[c0] < 0 || P.bot[c0] - P.top[c0] < 3)) c0++;
+  while (c1 > 0 && (P.top[c1] < 0 || P.bot[c1] - P.top[c1] < 3)) c1--;
+  /* a stray last column far below the nose tip (red / drift: a splitter pixel at 192 under a 132 tip) lofted into a slanted
+     full-width flat board ahead of the bumper (user 2026-11-15) -> end the body at the real tip */
+  while (c1 > c0 + 4 && P.top[c1] - P.top[c1 - 1] > h * 0.1) c1--;
+  /* Tsurugi (user 2026-11-15: "extra plane bumper"): a whole run of low splitter columns (top 164-177) ahead of the 122 tip,
+     each a pixel apart so the step test above misses it -> end the body where that low run starts */
+  for (let k = c1; k > c1 - Math.round(w * 0.04) && k > c0 + 4; k--) if (P.top[k] - P.top[k - 1] > h * 0.1) {
+    let low = true; for (let j = k; j <= c1; j++) if (P.top[j] < P.top[k - 1] + h * 0.08) { low = false; break; }
+    if (low) { c1 = k - 1; break; } }
+  /* plan view: the nose / tail corners round in over the overhang (a full-width loft to the tip made the bumper a flat
+     box standing out ahead of the painted outline). Parabolic corner, so the painting on the flank wraps around it without
+     smearing: tip half width 0.58 HW, corner depth up to 0.42 HW but never into the wheel arch */
+  const archF = ws[1].arch ? ws[1].arch[2] : (ws[1].x + ws[1].r * 1.15) * w, archR = ws[0].arch ? ws[0].arch[0] : (ws[0].x - ws[0].r * 1.15) * w;
+  const rcF = Math.max(2 * s, Math.min(HW * 0.42, (c1 - archF) * s * 0.9)), rcR = Math.max(2 * s, Math.min(HW * 0.42, (archR - c0) * s * 0.9));
+  /* PLAN_BOX (user 2026-11-15: match the Nov 12 cars): the Nov 12 plan taper, a near-full-width boxy nose / tail (-13 % over
+     the last 10 % at the nose, -10 % over the first 7 % at the tail) instead of the parabolic rounded corners below */
+  const hwBox = (u) => HW * (1 - 0.13 * Math.pow(Math.min(1, Math.max(0, (u - 0.9) / 0.1)), 2) - 0.1 * Math.pow(Math.min(1, Math.max(0, (0.07 - u) / 0.07)), 2));
+  const hwRound = (u) => { const dF = (c1 - u * w) * s, dR = (u * w - c0) * s;
+    const f = Math.max(0, 1 - dF / rcF), r = Math.max(0, 1 - dR / rcR);
+    return HW * (1 - 0.42 * f * f * Math.min(1, rcF / (HW * 0.42)) - 0.42 * r * r * Math.min(1, rcR / (HW * 0.42))); };
+  const hwAt = PLAN_BOX ? hwBox : hwRound;
+  const beltY = Y(P.belt);
+
+  // ----- edge colour texture: rows 0 top, 1 front, 2 rear, 3 dark well, 4 wing top, 5 pillars, 6 wing element -----
+  const EW = 128, EH = 8, ed = new Uint8Array(EW * EH * 4);
+  const put = (row, src, n) => { for (let i = 0; i < EW; i++) { const j = Math.min(n - 1, Math.floor(i * n / EW)); ed.set(src.subarray(j * 4, j * 4 + 4), (row * EW + i) * 4); } };
+  const cTop = hexCols(P.colTop), cFront = hexCols(P.colFront), cRear = hexCols(P.colRear), cWing = hexCols(P.colWing);
+  put(0, cTop, cTop.length / 4); put(1, cFront, cFront.length / 4); put(2, cRear, cRear.length / 4); put(4, cWing, cWing.length / 4);
+  for (let i = 0; i < EW; i++) ed.set([16, 13, 22, 0], (3 * EW + i) * 4);
+  for (let i = 0; i < EW; i++) {   /* row 5: the nearest roof / hood paint either side of a glass top band (pillar colour) */
+    const o = (k) => (0 * EW + k) * 4, isP = (k) => ed[o(k) + 3] === 255;
+    let a = i, b = i; while (a >= 0 && !isP(a)) a--; while (b < EW && !isP(b)) b++;
+    const src = a < 0 && b >= EW ? null : a < 0 ? [b, b, 0] : b >= EW ? [a, a, 0] : [a, b, (i - a) / Math.max(1, b - a)];
+    if (!src) { ed.set([90, 90, 102, 0], (5 * EW + i) * 4); continue; }
+    for (let ch = 0; ch < 3; ch++) ed[(5 * EW + i) * 4 + ch] = Math.round(ed[o(src[0]) + ch] * (1 - src[2]) + ed[o(src[1]) + ch] * src[2]);
+    ed[(5 * EW + i) * 4 + 3] = 255;
+  }
+  const edge = new THREE.DataTexture(ed, EW, EH, THREE.RGBAFormat);
+  edge.magFilter = edge.minFilter = THREE.LinearFilter; edge.generateMipmaps = false; edge.flipY = false; edge.needsUpdate = true;
+  const ROW = (r) => (r + 0.5) / EH;
+
+  const pos = [], nor = [], uvs = [], eus = [], lats = [], idx = [];
+  let nv = 0;
+  const V = (x, y, z, sw, eux, row) => { pos.push(x, y, z); nor.push(0, 0, 0); uvs.push((x + len) / len, 1 - (fyA * h - (y - rW) / s) / h); eus.push(eux, ROW(row), sw); lats.push(1);
+    return nv++; };
+  const quad = (a, b, c, d) => idx.push(a, b, c, a, c, d);
+
+  // ----- body loft -----
+  const keep = new Set([c0, c1]);
+  rdp(P.top, c0, c1, 1.5, keep); rdp(P.bot, c0, c1, 1.5, keep); if (P.topC) rdp(P.topC, c0, c1, 1.5, keep);
+  for (let c = c0; c <= c1; c += 18) keep.add(c);
+  for (let c = c0; c <= c1; c++) if ((c1 - c) * s < rcF || (c - c0) * s < rcR) { if ((c - c0) % 3 === 0 || (c1 - c) % 3 === 0) keep.add(c); }   /* rounded corners need rings */
+  const cols = [...keep].sort((a, b) => a - b);
+  const RN = 9; // near-half ring verts, index 8 = roof centre (shared)
+  const ringZY = new Float32Array(RN * 3);
+  const topC = P.topC || P.top;   /* car_mesh: hood centre line without the painted steps (near edge keeps the painted outline) */
+  const ring = (col, tp = P.top, hwf = hwAt) => {
+    const u = col / w, hw = hwf(u), yB = Y(P.bot[col]), yT = Y(tp[col]), H = yT - yB;
+    const rb = Math.min(0.06, H * 0.2), cr = Math.min(0.026, H * 0.08), yS = yT - cr - rb;
+    const t = Math.min(1, Math.max(0, (yS - beltY) / 0.32)), hwX = hw * (1 - 0.2 * t), zc = hwX - rb;
+    const ch = Math.min(0.04, H * 0.1);
+    const R = [[hw - ch, yB, 1], [hw, yB + ch, 1], [hw, Math.max(yB + ch, Math.min(beltY, yS)), 1], [hwX, yS, 1],
+      [zc + rb * 0.7071, yS + rb * 0.7071, 1], [zc, yT - cr, 0], [zc * 0.6, yT - cr * 0.36, 0], [zc * 0.25, yT - cr * 0.06, 0], [0, yT, 0]];
+    for (let k = 0; k < RN; k++) { ringZY[k * 3] = R[k][0]; ringZY[k * 3 + 1] = R[k][1]; ringZY[k * 3 + 2] = R[k][2]; }
+  };
+  const loopIdx = []; // per column: 17 vertex indices (near 0..8, far 7..0)
+  const ringN = new Float32Array(RN * 3), ringC = new Float32Array(RN * 3);
+  for (const col of cols) {
+    ring(col); ringN.set(ringZY); ring(col, topC); ringC.set(ringZY);   /* near: painted outline; centre: topC */
+    const x = X(col), u = col / w, ids = [];
+    for (let k = 0; k < RN; k++) { const R = k <= 5 ? ringN : ringC, f = k === 6 ? 0.5 : 0;   /* near flank + near top edge: painted; k6 half way */
+      const yy = f ? (ringN[k * 3 + 1] + ringC[k * 3 + 1]) / 2 : R[k * 3 + 1], zz = f ? (ringN[k * 3] + ringC[k * 3]) / 2 : R[k * 3];
+      ids.push(V(x, yy, zz, R[k * 3 + 2], u, 0)); }
+    /* far half = an exact mirror of the near half across z = 0 (User 2026-11-14: "build it symmetrically as a model"): same
+       width profile, the painting mirrored on the far flank; welded at the roof centre (k = 8). Only the far shoulder / top
+       edge (k >= 3) follows the smooth centre-line outline (topC), so no painted vent steps poke above the near hood side-on */
+    for (let k = RN - 2; k >= 0; k--) { const n = ids[k], c = k >= 3;   /* far shoulder / top edge: the smooth centre-line outline (topC), no painted vent steps above the near hood */
+      ids.push(V(x, c ? ringC[k * 3 + 1] : pos[n * 3 + 1], -(c ? ringC[k * 3] : pos[n * 3 + 2]), eus[n * 3 + 2], u, 0)); }
+    const zc5 = Math.max(1e-3, ringN[5 * 3]);
+    for (const id of ids) lats[id] = Math.min(1, Math.abs(pos[id * 3 + 2]) / zc5);   /* top: 0 centre line .. 1 outer edge */
+    loopIdx.push(ids);
+  }
+  const NL = RN * 2 - 1;
+  for (let i = 0; i < cols.length - 1; i++) {
+    const A = loopIdx[i], B = loopIdx[i + 1];
+    for (let k = 0; k < NL; k++) { const k2 = (k + 1) % NL; quad(A[k], B[k], B[k2], A[k2]); }
+  }
+  const loftEnd = idx.length, loftVerts = nv;
+  // end caps: horizontal strips pairing near/far verts; colours from the front / rear rows of the painting
+  const capVerts = [];
+  for (const [ci, row, sgn] of [[0, 2, -1], [cols.length - 1, 1, 1]]) {
+    const L = loopIdx[ci], ids = [];
+    for (let k = 0; k < NL; k++) {
+      const vi = L[k], y = pos[vi * 3 + 1];
+      const prow = fyA * h - (y - rW) / s;
+      ids.push(V(pos[vi * 3], y, pos[vi * 3 + 2], 0, Math.min(1, Math.max(0, prow / h)), row));
+      capVerts.push([nv - 1, vi, sgn]);
+    }
+    for (let k = 0; k < RN - 1; k++) { // near k <-> far (NL-1-k)
+      const a = ids[k], b = ids[k + 1], fa = ids[NL - 1 - k], fb = ids[NL - 2 - k];
+      if (sgn > 0) quad(a, fa, fb, b); else quad(a, b, fb, fa);
+    }
+    // bottom strip (near 0 - far 0) is already the loft's bottom face
+  }
+  // ----- rear wing -----
+  /* the painted wing is a side view drawn a little in perspective (near end plate + the element receding to the far
+     plate): lofting it made a long solid slab and doubled plates. Clean build: the painted end plate is a cut-out on the
+     near flank and a darker copy on the far flank; one thin element of a single colour (edge row 6: body paint ->
+     recolour, carbon / black stays dark) spans the width between them, inside the painted outline. Plates have soft
+     alpha edges (BODY_FS cut) */
+  if (P.wing.length > 4) {
+    const wl = P.wing, hwW = (x) => Math.min(HW * 0.9, hwAt(Math.max(x, c0 + 2) / w) * 0.94), th = Math.max(3, Math.round(h * 0.028));
+    const wAt = (x) => { let best = wl[0]; for (const q of wl) if (Math.abs(q[0] - x) < Math.abs(best[0] - x)) best = q; return best; };
+    const wx0 = wl[0][0], wx1 = wl[wl.length - 1][0];
+    /* chord = the near end plate: from the tail end past the tallest painted column until it drops under half height
+       (what lies further forward in the painting is the element drawn receding, which the 3D element itself shows) */
+    let pk = 0; for (let i = 1; i < wl.length; i++) if (wl[i][2] - wl[i][1] > wl[pk][2] - wl[pk][1]) pk = i;
+    const hMax = wl[pk][2] - wl[pk][1]; let ce = pk; while (ce + 1 < wl.length && wl[ce + 1][2] - wl[ce + 1][1] >= hMax * 0.5) ce++;
+    let ch1 = Math.min(wx1, Math.max(wx0 + Math.round(w * 0.05), Math.min(wx0 + Math.round(w * 0.09), wl[ce][0])));
+    const st0 = P.struts.find((q) => q[1] > wx0);   /* the element must sit on its first strut (Tsurugi: the strut is just past the plate) */
+    if (st0 && st0[0] > ch1 && st0[0] < wx0 + w * 0.13) ch1 = Math.min(wx1, st0[1] + 2);
+    const ec = []; for (let x = wx0; x <= ch1; x += 3) ec.push(x); if (ec[ec.length - 1] !== ch1) ec.push(ch1);
+    let sx = 0, sy = 0, sxx = 0, sxy = 0;
+    for (const x of ec) { const t = wAt(x)[1]; sx += x; sy += t; sxx += x * x; sxy += x * t; }
+    const den = ec.length * sxx - sx * sx, sl = den ? (ec.length * sxy - sx * sy) / den : 0, ic = (sy - sl * sx) / ec.length;
+    // one clean colour for the element (edge row 6): the wing's painted colour over the chord, body paint if it is mostly paint
+    { const ps = [], os = [];
+      for (let x = wx0; x <= ch1; x++) { const j = Math.min(cWing.length / 4 - 1, Math.floor(x / w * cWing.length / 4)) * 4; if (cWing[j + 3] === 255) ps.push(j); else if (cWing[j] + cWing[j + 1] + cWing[j + 2] > 0) os.push(j); }
+      const src = ps.length >= os.length ? ps : os, med = (ch) => { const v = src.map((j) => cWing[j + ch]).sort((p, q) => p - q); return v.length ? v[v.length >> 1] : 60; };
+      const c = [med(0), med(1), med(2), ps.length >= os.length && ps.length ? 255 : 0];
+      for (let i = 0; i < EW; i++) ed.set(c, (6 * EW + i) * 4); edge.needsUpdate = true; }
+    const el = ec.map((x) => { const [, t, b] = wAt(x); const tt = Math.min(b - 2, Math.max(t, Math.round(ic + sl * x))), bb = Math.min(b, tt + th), xx = X(x);
+      const z = hwW(x);
+      return { x, tt, bb, top: [V(xx, Y(tt), z, 0, 0.5, 6), V(xx, Y(tt), -z, 0, 0.5, 6)], bot: [V(xx, Y(bb), -z, 0, 0.5, 3), V(xx, Y(bb), z, 0, 0.5, 3)] }; });
+    for (let i = 0; i < el.length - 1; i++) { const A = el[i], B = el[i + 1]; quad(A.top[0], B.top[0], B.top[1], A.top[1]); quad(A.bot[0], B.bot[0], B.bot[1], A.bot[1]); }
+    for (const [E, sg] of [[el[0], -1], [el[el.length - 1], 1]]) {   /* trailing / leading edge faces: the element colour */
+      const xx = X(E.x), z = hwW(E.x), a = V(xx, Y(E.bb), z, 0, 0.5, 6), b = V(xx, Y(E.tt), z, 0, 0.5, 6), c = V(xx, Y(E.tt), -z, 0, 0.5, 6), d = V(xx, Y(E.bb), -z, 0, 0.5, 6);
+      if (sg > 0) quad(a, d, c, b); else quad(a, b, c, d);
+    }
+    const pc = []; let lx = -99;
+    for (const q of wl) if (q[0] <= ch1 + 2 && (q[0] - lx >= 2 || q[0] >= ch1)) { pc.push(q); lx = q[0]; }
+    for (const [zs, far] of [[-1, 1], [1, 0]]) for (const sg of [1, -1]) {   /* far plate first: the near plate's soft edge blends over it; plates follow the tail's plan taper */
+      const f = far ? 2.5 : 2, pl = pc.map(([x, t, b]) => { const zz = zs * hwW(x) + sg * 0.004; return [V(X(x), Y(b + 1), zz, f, 0.5, 3), V(X(x), Y(t - 1), zz, f, 0.5, 3)]; });
+      for (let i = 0; i < pl.length - 1; i++) { const [a, b2] = pl[i], [c, d] = pl[i + 1]; if (sg > 0) quad(a, c, d, b2); else quad(a, b2, d, c); }
+    }
+    // struts: painted cut-out planes from the wing down to the deck (far one darker, drawn first)
+    for (const [s0, s1r] of P.struts) {   /* only the struts under the end plate chord (further forward = the far strut drawn in perspective) */
+      if (s0 > ch1) continue;
+      /* per-column strip from the wing's underside down into the deck (a painted strut mount past the chord, Hakuro /
+         Kuroshio, is kept under a line falling from the chord's underside to the deck, so nothing pokes up into air) */
+      const xe = Math.min(s1r, ch1 + Math.round(w * 0.045)), xc = Math.min(xe, ch1 + 2), wbC = wAt(xc)[2] - 2;
+      const sc = []; for (let x = s0; x <= xe; x += 2) sc.push(x); if (sc[sc.length - 1] !== xe) sc.push(xe);
+      const zs0 = Math.min(HW * 0.72, hwW((s0 + xe) / 2) * 0.8);
+      const rows = sc.map((x) => { const bt = P.top[x] + 3; let tp = wAt(x)[2] - 2;
+        if (x > xc) tp = Math.max(tp, wbC + (bt - 3 - wbC) * (x - xc) / Math.max(1, xe - xc));
+        return [x, Math.min(tp, bt - 1), bt]; });
+      for (const [z, far] of [[-zs0, 1], [zs0, 0]]) for (const sg of [1, -1]) {
+        const zz = z + sg * 0.004, f = far ? 2.5 : 2, pl = rows.map(([x, tp, bt]) => [V(X(x), Y(bt), zz, f, 0.5, 3), V(X(x), Y(tp), zz, f, 0.5, 3)]);
+        for (let i = 0; i < pl.length - 1; i++) { const [a, b2] = pl[i], [c, d] = pl[i + 1]; if (sg > 0) quad(a, c, d, b2); else quad(a, b2, d, c); }
+      }
+    }
+  }
+  // ----- roof light bar (car_mesh "bar"): a narrow box on the roof, painted outline on both sides, top = its own colours -----
+  if (P.bar && P.bar.length > 4) {
+    const bc = []; let lx = -99;
+    for (const q of P.bar) if (q[0] - lx >= 4 || q === P.bar[P.bar.length - 1]) { bc.push(q); lx = q[0]; }
+    const hwB = HW * 0.55, sl = [];
+    for (const [x, t, b] of bc) sl.push([V(X(x), Y(t), hwB, 0, x / w, 4), V(X(x), Y(t), -hwB, 0, x / w, 4)]);
+    for (let i = 0; i < sl.length - 1; i++) quad(sl[i][0], sl[i + 1][0], sl[i + 1][1], sl[i][1]);
+    for (const [ri, sg] of [[0, -1], [bc.length - 1, 1]]) { // end faces: the lens colour at that end
+      const [x, t, b] = bc[ri], xx = X(x), u = x / w;
+      const a = V(xx, Y(b), hwB, 0, u, 4), bb = V(xx, Y(t), hwB, 0, u, 4), c = V(xx, Y(t), -hwB, 0, u, 4), d = V(xx, Y(b), -hwB, 0, u, 4);
+      if (sg > 0) quad(a, d, c, bb); else quad(a, bb, c, d);
+    }
+    for (const z of [hwB, -hwB]) for (const sg of [1, -1]) {
+      const zz = z + sg * 0.004, pl = bc.map(([x, t, b]) => [V(X(x), Y(b + 1), zz, 2, 0.5, 3), V(X(x), Y(t), zz, 2, 0.5, 3)]);
+      for (let i = 0; i < pl.length - 1; i++) { const [a, b2] = pl[i], [c, d] = pl[i + 1]; if (sg > 0) quad(a, c, d, b2); else quad(a, b2, d, c); }
+    }
+  }
+  // ----- nose accessory (car_mesh "nose", the cop's push bar): painted cut-out side plates + a front plate cut out like the
+  // painting's front-most tubes, narrower than the body (a full-width loft made it a wall) -----
+  if (P.nose && P.nose.length > 2) {
+    const nc = P.nose.filter((q, i) => i % 3 === 0 || i === P.nose.length - 1), hwN = HW * 0.6;
+    for (const z of [hwN, -hwN]) for (const sg of [1, -1]) {
+      const zz = z + sg * 0.004, pl = nc.map(([x, t, b]) => [V(X(x), Y(b), zz, 2, 0.5, 3), V(X(x), Y(t), zz, 2, 0.5, 3)]);
+      for (let i = 0; i < pl.length - 1; i++) { const [a, b2] = pl[i], [c, d] = pl[i + 1]; if (sg > 0) quad(a, c, d, b2); else quad(a, b2, d, c); }
+    }
+    const fx = Math.max(nc[0][0], P.nose[P.nose.length - 1][0] - 4), [, ft, fb] = P.nose.find((q) => q[0] === fx) || P.nose[P.nose.length - 1];
+    const xx = X(P.nose[P.nose.length - 1][0] - 2), ux = (X(fx) + len) / len;
+    const f = [V(xx, Y(fb), hwN, 2, 0.5, 3), V(xx, Y(fb), -hwN, 2, 0.5, 3), V(xx, Y(ft), -hwN, 2, 0.5, 3), V(xx, Y(ft), hwN, 2, 0.5, 3)];
+    for (const i of f) uvs[i * 2] = ux;   // every point of the plate samples the front-most painted column
+    quad(f[0], f[1], f[2], f[3]); quad(f[0], f[3], f[2], f[1]);
+  }
+  // ----- wheel wells: dark boxes inside the arch tunnels -----
+  const zi = HW - 0.3;
+  for (const wh of ws) {
+    if (!wh.arch) continue;   /* fallback meta (sprite missing from the manifest / cars.json): no wells, but no crash */
+    const [ax0, ay0, ax1] = wh.arch, x0 = X(ax0 + 2), x1 = X(ax1 - 2), y0 = 0.1, y1 = Y(ay0) + 0.02;
+    const c = [[x0, y0, zi], [x1, y0, zi], [x1, y1, zi], [x0, y1, zi], [x0, y0, -zi], [x1, y0, -zi], [x1, y1, -zi], [x0, y1, -zi]].map((p) => V(p[0], p[1], p[2], 0, 0.5, 3));
+    quad(c[0], c[1], c[2], c[3]); quad(c[5], c[4], c[7], c[6]); quad(c[1], c[5], c[6], c[2]); quad(c[4], c[0], c[3], c[7]);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setAttribute('eu', new THREE.Float32BufferAttribute(eus, 3));
+  geo.setAttribute('lat', new THREE.Float32BufferAttribute(lats, 1));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  // hull push direction: smooth loft normals; caps blend theirs with the loft vertex they sit on (no cracks)
+  const N = geo.attributes.normal.array, hn = new Float32Array(N.length);
+  hn.set(N);
+  // along the loft the hull pushes only sideways/up (no x): where RDP keeps two columns ~1 px apart at a wheel-arch step,
+  // the averaged normals tilt in x and the pushed hull ring overtook its neighbour, folding the shell in front of the
+  // flank = thin dark vertical "cuts" above the arches. The end caps below restore x at the nose/tail.
+  for (let i = 0; i < loftVerts; i++) {
+    const y = hn[i * 3 + 1], z = hn[i * 3 + 2], l = Math.hypot(y, z);
+    if (l > 1e-4) { hn[i * 3] = 0; hn[i * 3 + 1] = y / l; hn[i * 3 + 2] = z / l; }
+  }
+  for (const [cv, lv, sg] of capVerts) {
+    let x = N[lv * 3] + sg, y = N[lv * 3 + 1], z = N[lv * 3 + 2]; const l = Math.hypot(x, y, z) || 1;
+    hn[cv * 3] = x / l; hn[cv * 3 + 1] = y / l; hn[cv * 3 + 2] = z / l;
+    hn[lv * 3] = x / l; hn[lv * 3 + 1] = y / l; hn[lv * 3 + 2] = z / l;
+  }
+  geo.setAttribute('hn', new THREE.Float32BufferAttribute(hn, 3));
+  geo.userData.hullCount = loftEnd; // the hull draws the loft only (wings/wells excluded)
+  void loftVerts;
+
+  // ----- wheels: tread band + painted outer cap + dark inner cap, 4 wheels in one geometry -----
+  const tw = len * 0.056, zw = HW - 0.035 - tw / 2;
+  const wp = [], wn = [], wu = [], wpart = [], wid = [], wix = [];
+  let wv = 0;
+  const SEG = 30;
+  const WV = (x, y, z, nx, ny, nz, u, v, part, i) => { wp.push(x, y, z); wn.push(nx, ny, nz); wu.push(u, v); wpart.push(part); wid.push(i); return wv++; };
+  const radii = [rr, rf, rr, rf];
+  for (let i = 0; i < 4; i++) {
+    const r = radii[i], far = i >= 2, sz = far ? -1 : 1, zo = sz * tw / 2, zin = -sz * tw / 2;
+    const tri = (a, b, c) => (far ? wix.push(a, c, b) : wix.push(a, b, c));
+    // tread
+    const t0 = wv;
+    for (let k = 0; k <= SEG; k++) {
+      const a = k / SEG * Math.PI * 2, cx = Math.cos(a), sy = Math.sin(a);
+      WV(cx * r, sy * r, zo, cx, sy, 0, k / SEG, 0.95, 0, i); WV(cx * r, sy * r, zin, cx, sy, 0, k / SEG, 0.05, 0, i);
+    }
+    for (let k = 0; k < SEG; k++) { const a = t0 + k * 2; tri(a, a + 1, a + 3); tri(a, a + 3, a + 2); }
+    // outer cap (rim image) and inner cap
+    for (const [zz, part, dir] of [[zo, 1, 1], [zin, 2, -1]]) {
+      const c = WV(0, 0, zz, 0, 0, sz * dir, 0.5, 0.5, part, i), r0 = wv;
+      for (let k = 0; k <= SEG; k++) {
+        const a = k / SEG * Math.PI * 2, cx = Math.cos(a), sy = Math.sin(a);
+        WV(cx * r, sy * r, zz, 0, 0, sz * dir, 0.5 + cx * 0.5 * (far ? -1 : 1), 0.5 + sy * 0.5, part, i);
+      }
+      for (let k = 0; k < SEG; k++) (dir > 0 ? tri(c, r0 + k, r0 + k + 1) : tri(c, r0 + k + 1, r0 + k));
+    }
+  }
+  const wgeo = new THREE.BufferGeometry();
+  wgeo.setAttribute('position', new THREE.Float32BufferAttribute(wp, 3));
+  wgeo.setAttribute('normal', new THREE.Float32BufferAttribute(wn, 3));
+  wgeo.setAttribute('uv', new THREE.Float32BufferAttribute(wu, 2));
+  wgeo.setAttribute('wpart', new THREE.Float32BufferAttribute(wpart, 1));
+  wgeo.setAttribute('wi', new THREE.Float32BufferAttribute(wid, 1));
+  wgeo.setIndex(wix);
+  for (const g of [geo, wgeo]) g.boundingSphere = new THREE.Sphere(new THREE.Vector3(-len / 2, 0.7, 0), len);
+
+  // lamp heights from the painted nose / tail columns: brightest (head) and reddest (tail) rows below the beltline
+  const lampRow = (c, score) => { const n = c.length / 4; let best = -1, bi = Math.round(n * 0.55);
+    for (let i = Math.max(Math.floor(n * 0.25), Math.ceil(P.belt / h * n)); i < n * 0.85; i++) { const v = score(c[i * 4], c[i * 4 + 1], c[i * 4 + 2]); if (v > best) { best = v; bi = i; } }
+    return Y((bi + 0.5) * h / n); };
+  const rowOf = (y) => fyA * h - (y - rW) / s;
+  const edgeX = (y, front) => { const r = rowOf(y); if (front) { for (let c = w - 1; c > 0; c--) if (P.top[c] >= 0 && P.top[c] <= r && r <= P.bot[c]) return X(c); return 0; }
+    for (let c = 0; c < w; c++) if (P.top[c] >= 0 && P.top[c] <= r && r <= P.bot[c]) return X(c); return -len; };
+  const lens = Array.isArray(P.head) ? P.head : null, tlens = Array.isArray(P.tail) ? P.tail : null;
+  /* head glow centred on the painted lamp (user 2026-11-15: "align all headlight glow ... all cars"): the baked lens point is
+     the lamp's front tip; use the centroid of the lamp's pale-blue glass cells around it (small bright regions enclosed by the
+     dark frame, so a white body is not counted; the art may also have been repainted). Too few cells -> keep the baked point */
+  let glowL = null;   /* only the glow sprites use it; the lens cut-out / face lamp rows keep the baked point */
+  if (lens && art.tex && art.tex.image && art.tex.image.width) { try {
+    const im = art.tex.image, cv = document.createElement('canvas'); cv.width = im.width; cv.height = im.height;
+    const cx = cv.getContext('2d', { willReadFrequently: true }); cx.drawImage(im, 0, 0);
+    const kx = im.width / w, ky = im.height / h, x0 = Math.max(0, Math.round((lens[0] - w * 0.09) * kx)), x1 = Math.min(im.width - 1, Math.round((lens[0] + w * 0.015) * kx));
+    const y0 = Math.max(0, Math.round((lens[1] - h * 0.08) * ky)), y1 = Math.min(im.height - 1, Math.round((lens[1] + h * 0.08) * ky)), BW = x1 - x0 + 1, BH = y1 - y0 + 1;
+    const dd = cx.getImageData(x0, y0, BW, BH).data, ok = new Uint8Array(BW * BH), seen = new Uint8Array(BW * BH);
+    for (let i = 0; i < BW * BH; i++) { const r = dd[i * 4], g = dd[i * 4 + 1], b = dd[i * 4 + 2]; ok[i] = dd[i * 4 + 3] > 200 && (r + g + b) / 3 > 150 && Math.max(r, g, b) - Math.min(r, g, b) < 90 && b >= r + 4 ? 1 : 0; }
+    let sx = 0, sy = 0, sn = 0;
+    for (let i0 = 0; i0 < BW * BH; i0++) { if (!ok[i0] || seen[i0]) continue;
+      const comp = [i0], st = [i0]; seen[i0] = 1; let touch = false;
+      while (st.length) { const i = st.pop(), x = i % BW, y = (i - x) / BW; if (x === 0 || y === 0 || y === BH - 1) touch = true;
+        for (const j of [x + 1 < BW ? i + 1 : -1, x > 0 ? i - 1 : -1, y + 1 < BH ? i + BW : -1, y > 0 ? i - BW : -1]) if (j >= 0 && ok[j] && !seen[j]) { seen[j] = 1; st.push(j); comp.push(j); } }
+      if (comp.length >= 6 && comp.length <= 400 && !touch) for (const i of comp) { sx += x0 + (i % BW); sy += y0 + Math.floor(i / BW); sn++; } }
+    if (sn >= 40) glowL = [sx / sn / kx, sy / sn / ky];
+  } catch (e) { /* keep the baked point */ } }   /* [col, row] of the painted lens (car_mesh); else the brightest nose-face row */
+  const headY = lens ? Y(lens[1]) : lampRow(cFront, (r, g, b) => Math.min(r, g, b) + 0.3 * (r + g + b) / 3), tailY = tlens ? Y(tlens[1]) : lampRow(cRear, (r, g, b) => r - 0.6 * (g + b) / 2);
+  const midC = Math.round(w * 0.5), sillY = Y(P.bot[midC] >= 0 ? P.bot[midC] : fyA * h);
+  const dims = { len, HW, rr, rf, rW, X, Y, fyA, h, w, s, zw, tw, headY, tailY, headX: lens ? X(lens[0]) : edgeX(headY, true), headZ: lens ? hwAt(lens[0] / w) : 0,   /* on the painted lens, on the body's surface (the near flank plane z = HW floated the glow off the rounded nose corner from a front 3/4 view now the nose is real 3D) */ tailX: tlens ? X(tlens[0]) : edgeX(tailY, false), tailZ: tlens ? hwAt(tlens[0] / w) : 0, beltY, stripeY: sillY + (beltY - sillY) * 0.7, roundY: sillY + (beltY - sillY) * 0.42,
+    xr: X(ws[0].x * w), xf: X(ws[1].x * w), yAr: Y(ws[0].y * h), yAf: Y(ws[1].y * h),
+    tris: idx.length / 3, wheelTris: wix.length / 3, buildMs: 0 };
+  if (glowL) { dims.headX = X(glowL[0]); dims.headY = Y(glowL[1]); dims.headZ = hwAt(glowL[0] / w); }   /* head glow on the lamp's glass centre */
+  { /* tailpipe tip (main.js): just above the rear bumper's lower edge, at the rear outline there, inside the tail's width
+       (a fixed 0.27 m / 0.6 HW left it floating under or beside the bumper on some cars) */
+    let bb = -1; for (let c = c0; c < c0 + Math.max(4, Math.round(w * 0.05)); c++) if (P.bot[c] >= 0) bb = Math.max(bb, P.bot[c]);
+    const py = bb >= 0 ? Math.max(0.2, Y(bb) + 0.075) : 0.27, px = edgeX(py, false), pc = Math.max(c0, Math.round((px + len) / s));
+    dims.pipe = [px + 0.02, py, Math.min(HW * 0.6, hwAt(pc / w) * 0.72)]; }
+  dims.buildMs = +(performance.now() - t0).toFixed(2);
+  const faceExt = (ca, cb) => { let yb = 1e9, yt = -1e9; for (let c = Math.min(ca, cb); c <= Math.max(ca, cb); c++) if (P.top[c] >= 0) { yb = Math.min(yb, Y(P.bot[c])); yt = Math.max(yt, Y(P.top[c])); } return [yb, yt]; };
+  const nW = Math.round(w * 0.07);
+  /* nose / tail face body colour: the median body-paint colour of the painted end column over the face's height (else
+     the top colour at that end), 0..1 rgb + a = 1 when it is recolourable body paint */
+  const faceCol = (c, [yb, yt], col) => { const n = c.length / 4, px = [];
+    for (let i = 0; i < n; i++) { const y = Y((i + 0.5) * h / n); if (y >= yb && y <= yt && c[i * 4 + 3] === 255) px.push(i * 4); }
+    if (px.length) { const md = (ch) => { const v = px.map((j) => c[j + ch]).sort((a, b) => a - b); return v[v.length >> 1] / 255; }; return [md(0), md(1), md(2), 1]; }
+    const j = Math.min(EW - 1, Math.round(col / w * (EW - 1))) * 4; return [ed[j] / 255, ed[j + 1] / 255, ed[j + 2] / 255, ed[j + 3] === 255 ? 1 : 0]; };
+  /* face lamp row (the clean shader lamps, user 2026-11-14: "silver is good, use that for all"): where the hood breaks
+     down into the nose face, as on the silver car, not up on the hood where a lens painted far back sits (yellow's
+     fender lamp put the pair high on the hood). Never above the painted lens, at most 18 px below it */
+  const faceLamp = (tc, lr) => { const t = P.top[tc]; return Y(t >= 0 ? Math.min(lr + 18, Math.max(lr, t - 3)) : lr); };
+  const lampF = lens ? faceLamp(Math.max(c0, c1 - 16), lens[1]) : headY, lampR = tlens ? faceLamp(Math.min(c1, c0 + 16), tlens[1]) : tailY;
+  edge.userData = { HW, capF: [...faceExt(c1 - nW, c1), hwAt((c1 - nW * 0.4) / w), lampF], capR: [...faceExt(c0, c0 + nW), hwAt((c0 + nW * 0.4) / w), lampR], faceF: faceCol(cFront, faceExt(c1 - nW, c1), w - 1), faceR: faceCol(cRear, faceExt(c0, c0 + nW), 0) };   /* bodyMat: face shading (bottom, top, half width, lamp row) */   /* bodyMat: face shading */
+  /* painted head lamp on the nose face (User 2026-11-14: "the headlight is shit"): the car's OWN painted lens, cut out of
+     the side painting (flood fill from P.head over non-ink pixels, holes filled, grown 2 px to keep the ink outline) and
+     drawn on both front corners by BODY_FS, its front end at the corner where the flank lens ends, mirrored on the far
+     side. A fill that leaks into the body (outline gaps) is rejected and the car keeps the plain face lamp */
+  if (PROJ[key]) {   /* projection painting replaces the band (PROJ_ON[key] = false switches back) */
+    const pj = PROJ[key], ld = (u) => { const t = new THREE.TextureLoader().load(u); t.minFilter = THREE.LinearMipmapLinearFilter; t.anisotropy = 4; t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping; return t; };
+    edge.userData.projF = ld(pj.front); edge.userData.projT = ld(pj.top); edge.userData.projNose = PROJ_ON[key] === 'nose';
+    edge.userData.projFR = [pj.fw, pj.fy0, pj.fy1, -len * 0.5]; edge.userData.projFY = pj.fy; edge.userData.projTR = [-len + pj.tx0, pj.tx1, pj.tw, pj.k];
+  } else if (BAND[key]) { edge.userData.bandP = BAND[key].map(([a, b, c]) => new THREE.Vector3(a, b, c)); edge.userData.bandO = (BAND_FIT[key] || BAND[key]).map(([a, b, c]) => new THREE.Vector3(a, b, c)); edge.userData.bandX = edgeX(0.68, true);
+    if (BAND_TEX[key]) { const t = new THREE.TextureLoader().load(BAND_TEX[key]); t.flipY = false; t.minFilter = THREE.LinearMipmapLinearFilter; t.anisotropy = 4; edge.userData.bandTex = t;   /* row 0 = image top */ } }   /* raw colours, like the lens cut-out */
+  else if (lens && art.tex && art.tex.image && (!LENS_CARS || LENS_CARS.includes(key))) {
+    const L = lensCut(art.tex.image, lens[0], lens[1]);
+    if (L) {
+      const yT = Y(L.y0), yB = Y(L.y0 + L.h), cF = L.x0 + L.w - 3;   /* the lens's front end (inside its outline) */
+      const zOut = hwAt(Math.min(c1, cF) / w), lw = Math.min(zOut * 0.62, L.w * s * 0.85);   /* face lens front end = where the flank lens ends */
+      edge.userData.lensF = [zOut, lw, yB, yT]; edge.userData.lensU = cF / w; edge.userData.lensTex = L.tex;
+      edge.userData.lensK = 1 - 5.5 / L.w; edge.userData.lensR = [L.x0 / art.tex.image.width, L.y0 / art.tex.image.height, L.w / art.tex.image.width, L.h / art.tex.image.height];   /* flank overlay rect */
+    }
+  }
+  // ink hull: same buffers, loft triangles only
+  const hull = new THREE.BufferGeometry();
+  for (const n of ['position', 'normal', 'uv', 'eu', 'lat', 'hn']) hull.setAttribute(n, geo.attributes[n]);
+  hull.setIndex(geo.index); hull.setDrawRange(0, loftEnd); hull.boundingSphere = geo.boundingSphere;
+  /* paintable surfaces (dev paint editor ?edit=hood|face|glass, user 2026-11-15). Each image is a LAYER over the original
+     look (user: "removing it will use the original"): colour + alpha (top half; alpha 0 = the original rendering) over a
+     paint mask + alpha (bottom half: alpha = mask set; white = body paint, recoloured by the paint shop; black = fixed
+     detail / glass; unset = the original mask). Textures are premultiplied (clean stroke edges). seed() below = the
+     ORIGINAL look baked as an image: only the editor uses it (shown faintly under the layer, the windshield's clean-glass
+     brush), the game never loads it. HOOD (256 x 128 per half): u = the hood from
+     the windshield base (last front glass texel of the top row) to the nose tip, v = across the width, far side at the top.
+     FACE (128 x 128 per half, not the hero: it has its painted nose projection): the nose seen from ahead (forward-facing
+     surfaces of the last 8 %), u across (screen right = far side -z), v = height from the nose's top down to the bumper
+     bottom; seeded with the painted front column per height (colFront, as the end cap) */
+  { const edS = (row, u, out, o) => { const f = Math.min(EW - 1, Math.max(0, u * EW - 0.5)), i0 = Math.floor(f), i1 = Math.min(EW - 1, i0 + 1), t = f - i0;
+      for (let ch = 0; ch < 4; ch++) out[o + ch] = ed[(row * EW + i0) * 4 + ch] * (1 - t) + ed[(row * EW + i1) * 4 + ch] * t; };
+    let gEnd = -1; for (let i = EW - 1; i >= EW * 0.35; i--) { const a = ed[i * 4 + 3]; if (a > 76 && a < 179) { gEnd = i; break; } }
+    const uH0 = gEnd >= 0 ? Math.min((gEnd + 1) / EW, c1 / w - 0.05) : 0.62, uH1 = c1 / w + 0.5 / w;
+    const cN = Math.max(c0, Math.round(c1 - w * 0.08)); let yB = 1e9, yT = -1e9;   /* the nose region: last 8 % of the length */
+    for (let c = cN; c <= c1; c++) if (P.top[c] >= 0) { yB = Math.min(yB, Y(P.bot[c])); yT = Math.max(yT, Y(P.top[c])); }
+    const zH = HW, xN = X(cN);
+    const seedOf = (W, H, fill) => { const px = new Uint8ClampedArray(W * H * 2 * 4), c = new Float32Array(4);
+      fill(c, (x, y) => { const o = (y * W + x) * 4, m = ((H + y) * W + x) * 4; px[o] = c[0]; px[o + 1] = c[1]; px[o + 2] = c[2]; px[o + 3] = 255;
+        px[m] = px[m + 1] = px[m + 2] = c[3]; px[m + 3] = 255; });
+      return { W, H, data: px }; };
+    const hood = { W: 256, H: 128, seed: () => seedOf(256, 128, (c, put) => { for (let x = 0; x < 256; x++) { edS(0, uH0 + (x + 0.5) / 256 * (uH1 - uH0), c, 0); for (let y = 0; y < 128; y++) put(x, y); } }) };
+    /* face seed per height = what the nose shows there now: the end cap (and anything above it) = the baked front column
+       (colFront); below the cap, the loft's underside rising to the nose = the side painting at the bottom outline of the
+       front-most column that low, blended to the front column where the painting's alpha fades (BODY_FS 'ext') */
+    const pix = (im) => { if (!im || !im.width) return null; const cv = document.createElement('canvas'); cv.width = im.width; cv.height = im.height;
+      const x = cv.getContext('2d', { willReadFrequently: true }); x.drawImage(im, 0, 0); return { W: im.width, H: im.height, d: x.getImageData(0, 0, im.width, im.height).data }; };
+    const face = { W: 128, H: 128, seed: () => { const PI = pix(art.tex && art.tex.image), MI = pix(art.mask && art.mask.image), yCb = Y(P.bot[c1]);
+      return seedOf(128, 128, (c, put) => { for (let y = 0; y < 128; y++) {
+        const yy = yT - (y + 0.5) / 128 * (yT - yB), prow = fyA * h - (yy - rW) / s; edS(1, Math.min(1, Math.max(0, prow / h)), c, 0);
+        if (PI && yy < yCb) { let cc = -1; for (let k = c1; k >= cN; k--) if (P.bot[k] >= 0 && Y(P.bot[k]) <= yy) { cc = k; break; }
+          if (cc >= 0) { const px = Math.min(PI.W - 1, Math.round(cc / w * PI.W)), py = Math.min(PI.H - 1, Math.max(0, Math.round(prow / h * PI.H))), o = (py * PI.W + px) * 4;
+            const a = PI.d[o + 3] / 255, e = 1 - Math.min(1, Math.max(0, (a - 0.2) / 0.4)), ex = e * e * (3 - 2 * e);
+            const mo = MI ? (Math.min(MI.H - 1, Math.round(prow / h * MI.H)) * MI.W + Math.min(MI.W - 1, Math.round(cc / w * MI.W))) * 4 : -1;
+            for (let ch = 0; ch < 3; ch++) c[ch] = PI.d[o + ch] * (1 - ex) + c[ch] * ex;
+            c[3] = (mo >= 0 ? MI.d[mo] : 255) * (1 - ex) + (c[3] > 191 ? 255 : 0) * ex; } }
+        for (let x = 0; x < 128; x++) put(x, y); } }); } };
+    const U = { hoodTex: { value: null }, hoodOn: { value: 0 }, hoodR: { value: new THREE.Vector4(uH0, uH1, HW, 0) },
+      faceTex: { value: null }, faceOn: { value: 0 }, faceR: { value: new THREE.Vector4(zH, yB, yT, xN) } };
+    /* WINDSHIELD (256 x 128 per half, every car): the front glass run of the top row (texels up to the hood start), seen
+       from ahead; seed = exactly what renders: glass colour + the Nov 12 streaks (mask black), the pillars (outer edge of
+       the top, vLat > ~0.89) in the pillar colour (row 5) as body paint (mask white) */
+    let gS = gEnd; while (gS > 0) { const a = ed[(gS - 1) * 4 + 3]; if (a > 76 && a < 179) gS--; else break; }
+    const uG0 = gEnd >= 0 ? gS / EW : 0, uG1 = uH0;
+    const zc5At = (u) => { ring(Math.max(c0, Math.min(c1, Math.round(u * w)))); return Math.max(1e-3, ringZY[5 * 3]); };
+    const glass = gEnd < 0 ? null : { W: 256, H: 128, seed: (clean) => { const c5 = new Float32Array(4);   /* clean = no streaks (the editor's eraser) */
+      return seedOf(256, 128, (c, put) => { for (let y = 0; y < 128; y++) {
+        const u = uG0 + (y + 0.5) / 128 * (uG1 - uG0), xw = -len + u * len, zc = zc5At(u); edS(0, u, c, 0); edS(5, u, c5, 0);
+        const base = [c[0], c[1], c[2]], isG = c[3] / 255 >= 0.3 && c[3] / 255 <= 0.7;
+        for (let x = 0; x < 256; x++) { const z = (0.5 - (x + 0.5) / 256) * 2 * HW;
+          if (!isG) { c[0] = base[0]; c[1] = base[1]; c[2] = base[2]; c[3] = 255; put(x, y); continue; }
+          const lat = Math.abs(z) / zc, t = Math.min(1, Math.max(0, (lat - 0.86) / 0.06)), pil = t * t * (3 - 2 * t) * (c5[3] >= 229 ? 1 : 0);
+          if (pil > 0.5) { c[0] = c5[0]; c[1] = c5[1]; c[2] = c5[2]; c[3] = 255; }
+          else { const st = ((xw * 0.55 + z * 0.35) % 1 + 1) % 1, k = !clean && ((st >= 0.1 && st <= 0.17) || (st >= 0.24 && st <= 0.27)) ? 1 : 0;
+            c[0] = base[0] + k * 0.32 * 255; c[1] = base[1] + k * 0.36 * 255; c[2] = base[2] + k * 0.48 * 255; c[3] = 0; }
+          put(x, y); } } }); } };
+    U.glassTex = { value: null }; U.glassOn = { value: 0 }; U.glassR = { value: new THREE.Vector4(uG0, uG1, HW, 0) };
+    U.headTex = { value: null }; U.headOn = { value: 0 }; U.headU = { value: 2 };
+    const head = face ? { W: face.W, H: face.H, seed: face.seed } : null;   /* HEADLIGHTS (user: "headlight should be front view"): the FRONT mapping, the front's look as the faint guide */
+    /* SIDE: the whole side painting at its own size; seed = the painting (transparent -> dark) + its paint mask */
+    const SI = art.tex && art.tex.image, SM = art.mask && art.mask.image;
+    U.sideTex = { value: null }; U.sideOn = { value: 0 };
+    const side = !(SI && SI.width) ? null : { W: SI.width, H: SI.height, seed: () => { const PI = pix(SI), MI = pix(SM);
+      return seedOf(SI.width, SI.height, (c, put) => { for (let y = 0; y < SI.height; y++) for (let x = 0; x < SI.width; x++) { const o = (y * PI.W + x) * 4, a = PI.d[o + 3] / 255;
+        for (let ch = 0; ch < 3; ch++) c[ch] = PI.d[o + ch] * a + 30 * (1 - a);
+        c[3] = MI ? MI.d[(Math.min(MI.H - 1, Math.floor(y * MI.H / PI.H)) * MI.W + Math.min(MI.W - 1, Math.floor(x * MI.W / PI.W))) * 4] : 0; put(x, y); } }); } };
+    edge.userData.paintU = U; edge.userData.paint = { hood, face, glass, head, side, key };
+    const has = PAINT[key] || [];
+    edge.userData.paintHas = ['hood', 'face', 'glass', 'head', 'side'].filter((k) => has.includes(k) && (k === 'hood' || (k === 'face' && face) || (k === 'glass' && glass) || (k === 'head' && head) || (k === 'side' && side)));   /* the layers this car can show (bodyDefines) */
+    for (const k of ['hood', 'face', 'glass', 'head', 'side']) if (has.includes(k) && (k === 'hood' || (k === 'face' && face) || (k === 'glass' && glass) || (k === 'head' && head) || (k === 'side' && side))) {
+      const t = new THREE.TextureLoader().load(`sprites/${key}_${k}.webp`, () => { U[k + 'On'].value = 1; });
+      t.minFilter = t.magFilter = THREE.LinearFilter; t.generateMipmaps = false; t.premultiplyAlpha = true; t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping; U[k + 'Tex'].value = t; } }
+  return (cache[key] = { body: geo, hull, wheels: wgeo, edge, dims });
+}
+
+// ---------- suspension: heave + pitch + roll spring-dampers over wheels that stay on the road ----------
+const hash = (n) => { const x = Math.sin(n * 127.1) * 43758.5453; return x - Math.floor(x); };
+const SEAM = 17.5; // concrete slab joints every ~17.5 m (jittered)
+const micro = (x) => Math.sin(x * 2.3) + 0.6 * Math.sin(x * 5.9 + 1.3) + 0.35 * Math.sin(x * 13.1 + 2.1);
+export function newSusp(key, d, spec) {
+  const k = suspOf(key, d, spec);
+  // rest pose: body pitch/heave so both painted axle points sit over their hubs (pitch clamped, rest left in the arch)
+  const s0r = d.rr * 0.03, s0f = d.rf * 0.03;
+  const xcg = d.xr + (d.xf - d.xr) * 0.52, ycg = d.rW + 0.22;
+  let th0 = ((d.rf - s0f) - (d.rr - s0r) - (d.yAf - d.yAr)) / (d.xf - d.xr);
+  th0 = Math.max(-0.012, Math.min(0.012, th0));
+  const dz0 = ((d.rr - s0r) - d.yAr - th0 * (d.xr - xcg) + (d.rf - s0f) - d.yAf - th0 * (d.xf - xcg)) / 2 + k.ride;
+  return { k, xcg, ycg, th0, dz0, p: 0, v: 0, z: 0, zv: 0, r: 0, rv: 0, spinR: 0, spinF: 0, bump: [0, 0], seam: [null, null], lift: 0, sq: [s0r, s0f], blur: 0 };
+}
+export function resetSusp(S) { S.p = S.v = S.z = S.zv = S.r = S.rv = 0; S.bump[0] = S.bump[1] = 0; S.seam[0] = S.seam[1] = null; S.lift = 0; }
+
+// car: physics state; d: dims; dt: frame dt; t: time; roll: staging creep offset (m) and its speed
+export function stepSusp(S, car, d, dt, t, rollV) {
+  const k = S.k, g = 9.81, spec = car.spec;
+  const a = car.launched ? car.a : 0;
+  const ag = Math.max(-0.8, Math.min(1.4, a / g));
+  const v = car.v;
+  // road under each axle: micro texture (felt more with speed) + slab seams (impulse when an axle crosses one)
+  const amp = 0.0012 + 0.0022 * Math.min(1, v / 35);
+  const road = [0, 0];
+  for (let i = 0; i < 2; i++) {
+    const x = car.x + (i ? d.xf : d.xr);
+    const n = Math.floor(x / SEAM - hash(Math.floor(x / SEAM)) * 0.3);
+    if (S.seam[i] !== null && n !== S.seam[i] && v > 3) {
+      const hit = 0.006 + 0.01 * Math.min(1, v / 40);
+      S.bump[i] = hit; S.zv += hit * 9; S.v += (i ? 1 : -1) * hit * 5;
+    }
+    S.seam[i] = n;
+    S.bump[i] *= Math.exp(-dt * 22);
+    road[i] = micro(x * 1.7) * amp + S.bump[i];
+  }
+  const wb = d.xf - d.xr;
+  const thT = k.pitchK * ag + (road[1] - road[0]) / wb + (car.nitroT > 0 ? 0.008 : 0);
+  const zT = -k.squat * Math.max(0, ag) + (road[0] + road[1]) / 2;
+  const rT = Math.max(-1, Math.min(1.3, (car.driveF || 0) / (spec.mass * g))) * k.rollK * (car.launched ? 1 : 0) + (road[1] - road[0]) * 0.8;
+  const wp = 2 * Math.PI * k.fp, wz = 2 * Math.PI * k.fz, wr = 2 * Math.PI * k.fr;
+  let left = Math.min(dt, 0.05);
+  while (left > 1e-6) {
+    const h = Math.min(left, 1 / 120); left -= h;
+    S.v += (-wp * wp * (S.p - thT) - 2 * k.zp * wp * S.v) * h; S.p += S.v * h;
+    S.zv += (-wz * wz * (S.z - zT) - 2 * k.zz * wz * S.zv) * h; S.z += S.zv * h;
+    S.rv += (-wr * wr * (S.r - rT) - 2 * k.zr * wr * S.rv) * h; S.r += S.rv * h;
+  }
+  // front wheels leave the road when the nose rises past the droop travel (wheelie)
+  const riseF = S.z + S.p * (d.xf - S.xcg) - road[1];
+  S.lift = Math.max(0, riseF - k.droop);
+  // engine shake: idle lope, rev buzz near the limiter
+  const rf = car.rpmVis / spec.redline;
+  const sh = (car.launched ? 0.0006 + (car.limiter ? 0.002 : 0) + (rf > 0.9 ? 0.001 : 0) : 0.0011 * (1 - rf) + 0.0004 + (car.limiter ? 0.0015 : 0))   // user: idle bounce was too much;
+  const fq = 26 + rf * 95;
+  S.shZ = sh * Math.sin(t * fq); S.shR = sh * 1.6 * Math.sin(t * fq * 1.31 + 1.7);
+  // tire squash: rear loads up under acceleration, front unloads; lifted wheel is round
+  const compR = Math.max(0, -(S.z + S.p * (d.xr - S.xcg) - road[0]));
+  const compF = Math.max(0, -(riseF));
+  S.sq[0] = d.rr * (0.03 + 0.022 * Math.max(0, ag)) + compR * 0.12;
+  S.sq[1] = S.lift > 0 ? 0 : d.rf * Math.max(0.012, 0.03 - 0.012 * Math.max(0, ag)) + compF * 0.12;
+  S.road = road;
+  // wheel spin: rear with slip, front at road speed
+  const front = car.launched || car.v > 0 ? car.v / spec.tireR : car.wheelSpin;
+  S.spinR -= (car.wheelSpin + rollV / spec.tireR) * dt;
+  S.spinF -= (front + rollV / spec.tireR) * dt;
+  S.blur = Math.max(0, Math.min(0.95, (car.wheelSpin + Math.abs(rollV) / spec.tireR - 10) / 40));
+}

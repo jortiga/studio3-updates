@@ -1,0 +1,421 @@
+// Career world map: pannable / zoomable painted map of Kurogane Bay with the 5 career areas.
+const SHOW_PATHS = false;   // light trails + career route line on the map (removed at the user's request)
+// Layer = <img> + per-area fog canvases, moved with one CSS transform (GPU compositing, no layout while panning).
+// Pins / car / labels live in a screen-space layer (constant size), positioned with transforms.
+// One screen-space canvas draws the animated route, light trails, blinking lights, water glints, the plane and clouds.
+import { WORLD, AREAS, AREA_ORDER, LEGS, LABELS, AMBIENT } from './map.js';
+
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+const easeOut = (t) => 1 - Math.pow(1 - t, 3);
+const seg = (t, a, b) => clamp((t - a) / (b - a), 0, 1);
+
+// quadratic leg between two areas: point at u (0..1)
+function legPt(from, to, u) {
+  const a = AREAS[from], b = AREAS[to], c = LEGS[from] || [(a.x + b.x) / 2, (a.y + b.y) / 2], v = 1 - u;
+  return [v * v * a.x + 2 * v * u * c[0] + u * u * b.x, v * v * a.y + 2 * v * u * c[1] + u * u * b.y];
+}
+function polyLen(p) { let L = 0; for (let i = 1; i < p.length; i++) L += Math.hypot(p[i][0] - p[i - 1][0], p[i][1] - p[i - 1][1]); return L; }
+function polyAt(p, d) { // point at distance d along polyline p
+  for (let i = 1; i < p.length; i++) {
+    const l = Math.hypot(p[i][0] - p[i - 1][0], p[i][1] - p[i - 1][1]);
+    if (d <= l) { const k = l ? d / l : 0; return [p[i - 1][0] + (p[i][0] - p[i - 1][0]) * k, p[i - 1][1] + (p[i][1] - p[i - 1][1]) * k, Math.atan2(p[i][1] - p[i - 1][1], p[i][0] - p[i - 1][0])]; }
+    d -= l;
+  }
+  const n = p.length - 1; return [p[n][0], p[n][1], 0];
+}
+
+export function createWorldMap(root, { onPin, onEmpty, onMove, onStop } = {}) {
+  /* perf (Note 9): the painted map is a <canvas> drawn once from the image, not an <img>. A canvas is a GPU texture the
+     compositor scales for free; the <img> layer was re-rasterised (~800 tiles) at every new zoom scale -> GPU-bound pinch / fly. */
+  root.innerHTML = `<div class="wmLayer"><canvas class="wmImg"></canvas></div><canvas class="wmFx"></canvas><div class="wmPins"></div>`;
+  const layer = root.querySelector('.wmLayer'), mapCv = layer.querySelector('canvas'), fx = root.querySelector('.wmFx'), pinsEl = root.querySelector('.wmPins');
+  const img = new Image(); img.decoding = 'async'; img.src = WORLD.img;
+  mapCv.width = WORLD.w; mapCv.height = WORLD.h;
+  const drawMap = () => { if (!img.naturalWidth) return; if (mapCv.width !== img.naturalWidth || mapCv.height !== img.naturalHeight) { mapCv.width = img.naturalWidth; mapCv.height = img.naturalHeight; } mapCv.getContext('2d').drawImage(img, 0, 0); };
+  mapCv.addEventListener('contextrestored', drawMap);   /* GPU context loss wipes canvas pixels: paint them again */
+  const g = fx.getContext('2d');
+  layer.style.width = WORLD.w + 'px'; layer.style.height = WORLD.h + 'px';
+  const cam = { x: 0, y: 0, s: 0.5, vx: 0, vy: 0 }, view = { w: 1, h: 1, top: 0, bottom: 0, left: 0, right: 0 };
+  let minS = 0.5, coverS = 0.6, maxS = 1.8, dirty = true, raf = 0, last = 0, time = 0, running = false, tween = null, dpr = 1;
+  const st = { open: {}, prog: {}, cur: 'D', sel: null, car: 'car_hero', boss: {} };
+  const anim = { leg: null, legU: 1, carAt: null, fogOff: {}, hold: -1 };
+
+  // ---------- fog over locked areas: a dark desaturated copy of that part of the map, radial alpha ----------
+  const fogs = {};
+  function buildFogs() {
+    for (const t of AREA_ORDER) {
+      const a = AREAS[t], r = a.r, k = 0.5, S = Math.round(r * 2 * k);
+      const c = document.createElement('canvas'); c.width = c.height = S; c.className = 'wmFog';
+      const q = c.getContext('2d');
+      try { q.filter = 'grayscale(1) brightness(0.42) contrast(0.9) blur(1px)'; } catch { /* */ }
+      q.drawImage(img, a.x - r, a.y - r, r * 2, r * 2, 0, 0, S, S);
+      q.filter = 'none';
+      q.globalCompositeOperation = 'source-atop'; q.fillStyle = 'rgba(14,10,40,.45)'; q.fillRect(0, 0, S, S);
+      for (let i = 0; i < 14; i++) { // soft cloud puffs
+        const x = S * (0.15 + Math.random() * 0.7), y = S * (0.15 + Math.random() * 0.7), rr = S * (0.1 + Math.random() * 0.16);
+        const gr = q.createRadialGradient(x, y, 0, x, y, rr); gr.addColorStop(0, 'rgba(120,110,170,.28)'); gr.addColorStop(1, 'rgba(120,110,170,0)');
+        q.fillStyle = gr; q.fillRect(x - rr, y - rr, rr * 2, rr * 2);
+      }
+      q.globalCompositeOperation = 'destination-in';
+      const m = q.createRadialGradient(S / 2, S / 2, S * 0.18, S / 2, S / 2, S / 2);
+      m.addColorStop(0, 'rgba(0,0,0,1)'); m.addColorStop(0.62, 'rgba(0,0,0,.92)'); m.addColorStop(1, 'rgba(0,0,0,0)');
+      q.fillStyle = m; q.fillRect(0, 0, S, S);
+      c.style.left = (a.x - r) + 'px'; c.style.top = (a.y - r) + 'px'; c.style.width = c.style.height = r * 2 + 'px';
+      if (!fogs[t]) { layer.appendChild(c); c.addEventListener('contextrestored', buildFogs); } else { fogs[t].replaceWith(c); c.addEventListener('contextrestored', buildFogs); }
+      fogs[t] = c;
+    }
+    applyFog();
+  }
+  function applyFog() {
+    for (const t in fogs) {
+      const f = fogs[t], k = anim.fogOff[t];
+      if (k != null) { f.classList.remove('off'); f.style.opacity = (1 - k).toFixed(3); f.style.transform = `scale(${(1 + k * 0.25).toFixed(3)})`; }
+      else { f.classList.toggle('off', !!st.open[t]); f.style.opacity = ''; f.style.transform = ''; }
+    }
+  }
+  const imgReady = (img.complete && img.naturalWidth ? Promise.resolve() : new Promise((r) => { img.onload = r; img.onerror = r; })).then(() => { if (img.naturalWidth) { drawMap(); buildFogs(); } });
+
+  // ---------- pins ----------
+  const pins = {};
+  for (const t of AREA_ORDER) {
+    const a = AREAS[t], d = document.createElement('div');
+    d.className = 'pin'; d.dataset.t = t;
+    d.innerHTML = `<div class="pinIn"><div class="pinBadge"><i class="pinBoss"></i><i class="pinLock ico it4"></i><b class="pinTier">${t}</b></div><div class="pinStem"></div><div class="pinDot"></div>`
+      + `<div class="pinPlate"><b>${a.name}</b><small></small></div></div>`;
+    d.addEventListener('click', (e) => { e.stopPropagation(); if (!moved) onPin && onPin(t, e); });
+    pinsEl.appendChild(d); pins[t] = d;
+  }
+  const labels = LABELS.map((l) => { const d = document.createElement('div'); d.className = 'wmLabel'; d.innerHTML = `${l.soon ? '<i class="wmSoon"></i>' : ''}<b>${l.t}</b>${l.s ? `<small>${l.s}</small>` : ''}`; if (l.soon) d.classList.add('soon'); pinsEl.appendChild(d); return [l, d]; });
+  const carEl = document.createElement('div'); carEl.className = 'wmCar'; carEl.innerHTML = '<i></i>'; pinsEl.appendChild(carEl);
+
+  // ---------- chapter route (map.js ROUTE): one stop per rung at its real place, joined by the route line ----------
+  // route = { tier, stops: [{ x, y, st: 'beat'|'next'|'lock', type, icon, boss, sel, name }] }; the routed tier's area pin hides
+  let route = null, stopEls = [];
+  const flyEl = document.createElement('div'); flyEl.className = 'wmFly'; flyEl.innerHTML = '<i class="wfRing"></i><i class="wfRing b"></i><div class="wfPlate"><b></b><small></small></div>'; pinsEl.appendChild(flyEl);
+  let fly = null;   /* { x, y } while the fly-in pin is up */
+  function setRoute(r) {
+    route = r && r.stops && r.stops.length ? r : null;
+    const n = route ? route.stops.length : 0;
+    while (stopEls.length > n) stopEls.pop().remove();
+    while (stopEls.length < n) {
+      const d = document.createElement('div'), i = stopEls.length; d.className = 'rStop';
+      d.innerHTML = '<div class="rsIn"><em></em><b></b></div>';
+      d.addEventListener('click', (e) => { e.stopPropagation(); if (!moved && route && onStop) onStop(route.tier, i, e); });
+      pinsEl.insertBefore(d, carEl); stopEls.push(d);
+    }
+    if (route) route.stops.forEach((p, i) => {
+      const d = stopEls[i];
+      d.className = `rStop ${p.st}${p.boss ? ' boss' : ''}${p.sel ? ' sel' : ''} rt_${p.type}`;
+      d.querySelector('em').innerHTML = p.icon || '';
+      d.querySelector('b').textContent = p.st === 'beat' ? '✓' : p.boss ? 'BOSS' : String(i + 1);
+      d.title = p.name || '';
+    });
+    camKey = '';   /* stops (re)placed on the next frame */
+    renderPins();
+  }
+
+  function renderPins() {
+    for (const t of AREA_ORDER) {
+      const d = pins[t], open = !!st.open[t] && !(anim.lockT === t), done = (st.prog[t] || 0) >= 10;
+      d.className = 'pin' + (open ? ' open' : ' lock') + (done ? ' done' : '') + (t === st.cur && open ? ' cur' : '') + (t === st.sel ? ' sel' : '') + (route && route.tier === t ? ' routed' : '');
+      d.querySelector('small').textContent = open ? (done ? `TIER ${t} · CLEARED` : `TIER ${t} · ${st.prog[t] || 0}/10`) : `TIER ${t} · LOCKED`;
+      const bp = d.querySelector('.pinBoss'); if (st.boss[t] && bp.dataset.u !== st.boss[t]) { bp.dataset.u = st.boss[t]; bp.style.backgroundImage = `url(${st.boss[t]})`; }
+    }
+    carEl.querySelector('i').style.backgroundImage = `url(sprites/thumb_${st.car}.webp)`;
+    dirty = true;
+  }
+
+  // ---------- camera ----------
+  function fitBounds() {
+    const r = root.getBoundingClientRect(); view.w = r.width || 1; view.h = r.height || 1;
+    coverS = Math.max(view.w / WORLD.w, view.h / WORLD.h);   // map fills the screen
+    minS = coverS;   // user: panning stays inside the map (no empty space past its edges)
+    maxS = Math.max(coverS * 2.4, 1.5);
+    const k = devicePixelRatio || 1; dpr = Math.min(k, view.w * view.h > 600000 ? 1.25 : 1.6);
+    fx.width = Math.round(view.w * dpr); fx.height = Math.round(view.h * dpr);
+    cam.s = clamp(cam.s, minS, maxS); clampCam(); dirty = true; camKey = ''; fxForce = true; dpr0 = k;
+  }
+  function clampCam() {
+    const c = clampXY(cam.x, cam.y, cam.s); cam.x = c[0]; cam.y = c[1];
+  }
+  // free pan: any part of the map can reach the screen centre (no 'fill the screen' lock)
+  // dragging may overscroll ~25% of the screen past the map edge; when the map is smaller than the screen it stays centred-ish
+  function clampXY(x, y, s, m = 0) {
+    const ax = (lo, hi) => lo <= hi ? [lo, hi] : [hi, lo];
+    const [x0, x1] = ax(view.w * (1 - m) - WORLD.w * s, view.w * m), [y0, y1] = ax(view.h * (1 - m) - WORLD.h * s, view.h * m);
+    return [clamp(x, x0, x1), clamp(y, y0, y1)];
+  }
+  // where a focused area should sit on screen (the visible part not covered by the card / top bar)
+  function focusPoint() { return [view.left + (view.w - view.left - view.right) / 2, view.top + (view.h - view.top - view.bottom) * 0.5]; }
+  function camFor(mx, my, s) { const [fx0, fy0] = focusPoint(); s = clamp(s, minS, maxS); const c = { x: fx0 - mx * s, y: fy0 - my * s, s }; [c.x, c.y] = clampXY(c.x, c.y, s, 0); return c; }   // focus jumps keep the map filling the screen
+  function focus(t, { zoom = null, instant = false, dur = 0.9 } = {}) {
+    const a = AREAS[t]; if (!a) return;
+    const s = zoom != null ? zoom * coverS : Math.max(cam.s, coverS * 1.3);
+    const c = camFor(a.x, a.y, s);
+    if (instant) { tween = null; Object.assign(cam, c, { vx: 0, vy: 0 }); dirty = true; } else panTo(c, dur);
+  }
+  function panTo(c, dur) { tween = { a: { x: cam.x, y: cam.y, s: cam.s }, b: c, t: 0, dur }; cam.vx = cam.vy = 0; }
+  function zoomAt(px, py, ns) {
+    ns = clamp(ns, minS, maxS); const k = ns / cam.s;
+    cam.x = px - (px - cam.x) * k; cam.y = py - (py - cam.y) * k; cam.s = ns; clampCam(); dirty = true;
+  }
+  const toScr = (mx, my) => [cam.x + mx * cam.s, cam.y + my * cam.s];
+
+  // ---------- input: drag (inertia), pinch, wheel ----------
+  const ptrs = new Map();
+  let moved = false, drag = null, pinch = null, downT = 0;
+  root.addEventListener('pointerdown', (e) => {
+    ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    tween = null; cam.vx = cam.vy = 0;
+    if (ptrs.size === 1) { moved = false; downT = performance.now(); drag = { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, t: performance.now() }; }
+    if (ptrs.size === 2) { const [p, q] = [...ptrs.values()]; pinch = { d: Math.hypot(p.x - q.x, p.y - q.y), s: cam.s }; moved = true; try { root.setPointerCapture(e.pointerId); } catch { /* */ } }
+  });
+  root.addEventListener('pointermove', (e) => {
+    const p = ptrs.get(e.pointerId); if (!p) return;
+    p.x = e.clientX; p.y = e.clientY;
+    const r = root.getBoundingClientRect();
+    if (ptrs.size >= 2 && pinch) {
+      const [a, b] = [...ptrs.values()], d = Math.hypot(a.x - b.x, a.y - b.y);
+      zoomAt((a.x + b.x) / 2 - r.left, (a.y + b.y) / 2 - r.top, pinch.s * d / Math.max(10, pinch.d));
+      if (drag) { const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2; if (drag.mx != null) { cam.x += mx - drag.mx; cam.y += my - drag.my; clampCam(); } drag.mx = mx; drag.my = my; }
+      return;
+    }
+    if (!drag) return;
+    if (!moved && Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0) > 12) { moved = true; try { root.setPointerCapture(e.pointerId); } catch { /* */ } root.classList.add('dragging'); }
+    if (!moved) return;
+    const now = performance.now(), dt = Math.max(1, now - drag.t), dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    cam.x += dx; cam.y += dy; clampCam(); dirty = true;
+    cam.vx = cam.vx * 0.6 + (dx / dt * 1000) * 0.4; cam.vy = cam.vy * 0.6 + (dy / dt * 1000) * 0.4;
+    drag.x = e.clientX; drag.y = e.clientY; drag.t = now;
+    onMove && onMove();
+  });
+  const up = (e) => {
+    if (!ptrs.has(e.pointerId)) return;
+    ptrs.delete(e.pointerId);
+    if (ptrs.size < 2) pinch = null;
+    if (ptrs.size === 1 && drag) { const [p] = [...ptrs.values()]; drag.x = p.x; drag.y = p.y; drag.mx = null; drag.t = performance.now(); return; }
+    if (ptrs.size === 0) {
+      root.classList.remove('dragging');
+      if (drag && performance.now() - drag.t > 90) { cam.vx = 0; cam.vy = 0; } // finger rested before lifting: no fling
+      drag = null;
+      if (moved) setTimeout(() => { moved = false; }, 0);
+    }
+  };
+  root.addEventListener('pointerup', up); root.addEventListener('pointercancel', up);
+  root.addEventListener('click', (e) => { if (!moved && onEmpty) onEmpty(e); });
+  root.addEventListener('wheel', (e) => { e.preventDefault(); tween = null; const r = root.getBoundingClientRect(); zoomAt(e.clientX - r.left, e.clientY - r.top, cam.s * Math.exp(-e.deltaY * 0.0016)); }, { passive: false });
+
+  // ---------- ambient precompute ----------
+  const trails = AMBIENT.trails.map(([pts, n, sp, two]) => ({ pts, n, sp, two, L: polyLen(pts) }));
+  const glints = Array.from({ length: 26 }, () => ({ t: Math.random() * 3, life: 1.5 + Math.random() * 2, x: 0, y: 0, w: 0 }));
+  const cloudTex = (() => { const c = document.createElement('canvas'); c.width = 256; c.height = 128; const q = c.getContext('2d');
+    for (let i = 0; i < 9; i++) { const x = 40 + Math.random() * 176, y = 50 + Math.random() * 30, r = 30 + Math.random() * 34, gr = q.createRadialGradient(x, y, 0, x, y, r);
+      gr.addColorStop(0, 'rgba(170,160,220,.5)'); gr.addColorStop(1, 'rgba(170,160,220,0)'); q.fillStyle = gr; q.fillRect(0, 0, 256, 128); }
+    return c; })();
+  function spawnGlint(gl) {
+    const w = AMBIENT.water[(Math.random() * AMBIENT.water.length) | 0];
+    gl.x = w[0] + Math.random() * (w[2] - w[0]); gl.y = w[1] + Math.random() * (w[3] - w[1]); gl.w = 8 + Math.random() * 22; gl.t = 0; gl.life = 1.2 + Math.random() * 2.2;
+    gl.c = Math.random() < 0.5 ? '255,79,176' : Math.random() < 0.5 ? '47,230,255' : '255,230,190';
+  }
+  glints.forEach((gl) => { spawnGlint(gl); gl.t = Math.random() * gl.life; });
+
+  // ---------- frame ----------
+  function frame(now) {
+    raf = running ? requestAnimationFrame(frame) : 0;
+    const dt = Math.min(0.05, (now - (last || now)) / 1000); last = now; time += dt;
+    if (tween) {
+      tween.t += dt / tween.dur; const k = ease(Math.min(1, tween.t));
+      cam.x = tween.a.x + (tween.b.x - tween.a.x) * k; cam.y = tween.a.y + (tween.b.y - tween.a.y) * k; cam.s = tween.a.s + (tween.b.s - tween.a.s) * k;
+      if (tween.t >= 1) { const cb = tween.onEnd; tween = null; if (cb) cb(); } dirty = true;
+    } else if (!drag && (Math.abs(cam.vx) > 4 || Math.abs(cam.vy) > 4)) {
+      cam.x += cam.vx * dt; cam.y += cam.vy * dt; const ox = cam.x, oy = cam.y; clampCam();
+      if (ox !== cam.x) cam.vx = 0; if (oy !== cam.y) cam.vy = 0;
+      const f = Math.exp(-dt * 4.2); cam.vx *= f; cam.vy *= f; dirty = true;
+    }
+    if (anim.run) anim.run(dt);
+    let camMoved = false;
+    if (dirty) {
+      const key = cam.x.toFixed(2) + ',' + cam.y.toFixed(2) + ',' + cam.s.toFixed(4);
+      if (key !== camKey) {   /* perf: pins / stops / labels only move when the camera does */
+        camKey = key; camMoved = true;
+        layer.style.transform = `translate3d(${cam.x.toFixed(2)}px,${cam.y.toFixed(2)}px,0) scale(${cam.s.toFixed(4)})`;
+        for (const t of AREA_ORDER) { const [x, y] = toScr(AREAS[t].x, AREAS[t].y); pins[t].style.transform = tr3(x, y); }
+        if (route) route.stops.forEach((p, i) => { const [x, y] = toScr(p.x, p.y); stopEls[i].style.transform = tr3(x, y); });
+        for (const [l, d] of labels) { const [x, y] = toScr(l.x, l.y); d.style.transform = `${tr3(x, y)} scale(${clamp(cam.s / coverS, 0.75, 1.25).toFixed(3)})`; }
+      }
+      if (fly) { const [x, y] = toScr(fly.x, fly.y); flyEl.style.transform = tr3(x, y); }
+      dirty = false;
+    }
+    /* perf: while the camera moves, the pin / label layers keep their raster (.wmMoving -> will-change) and the GPU only
+       moves / scales them; 0.25 s after it stops they re-raster once, pixel-sharp at the new scale */
+    if (camMoved) { stillT = 0; if (!movingCls) { movingCls = true; root.classList.add('wmMoving'); } }
+    else if (movingCls && (stillT += dt) > 0.25) { movingCls = false; root.classList.remove('wmMoving'); }
+    placeCar();
+    /* perf: the ambient FX (clouds, blinking lights, glints, the route's dash flow) draw at 30 fps while the camera rests;
+       every frame while it moves, so the screen-space canvas stays glued to the map */
+    fxAcc += dt;
+    if (camMoved || fxAcc >= 1 / 31 || fxForce) { draw(fxAcc); fxAcc = 0; fxForce = false; }
+  }
+  let camKey = '', movingCls = false, stillT = 0, fxAcc = 0, fxForce = true;
+  /* positions snap to whole device pixels: a pin / label layer is not re-rasterised for a new sub-pixel offset */
+  const tr3 = (x, y) => `translate3d(${(Math.round(x * dpr0) / dpr0).toFixed(2)}px,${(Math.round(y * dpr0) / dpr0).toFixed(2)}px,0)`;
+  let dpr0 = devicePixelRatio || 1;
+  function carMapPos() {
+    if (anim.carAt) return anim.carAt;
+    if (route && st.cur === route.tier) { const p = route.stops.find((q) => q.st === 'next') || route.stops[route.stops.length - 1]; return [p.x, p.y, 0]; }
+    const a = AREAS[st.cur] || AREAS.D; return [a.x, a.y, 0];
+  }
+  let carKey = '';
+  function placeCar() {
+    const [mx, my] = carMapPos(), [x, y] = toScr(mx, my), k = tr3(x, y);
+    if (k !== carKey) { carKey = k; carEl.style.transform = k; }   /* perf: no style write when the car did not move */
+  }
+
+  function draw(dt) {
+    const W = fx.width, H = fx.height;
+    g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, W, H);
+    g.setTransform(dpr * cam.s, 0, 0, dpr * cam.s, dpr * cam.x, dpr * cam.y);
+    const px = 1 / cam.s; // one screen px in map units
+    // clouds (under everything else, drift right)
+    g.globalCompositeOperation = 'source-over';
+    for (const [cx, cy, k] of AMBIENT.clouds) {
+      const x = ((cx + time * 9 * k) % (WORLD.w + 500)) - 250;
+      g.globalAlpha = 0.32; g.drawImage(cloudTex, x - 180 * k, cy - 60 * k, 360 * k, 160 * k);
+    }
+    g.globalAlpha = 1;
+    // light trails (additive)
+    g.globalCompositeOperation = 'lighter'; g.lineCap = 'round';
+    for (const tr of (SHOW_PATHS ? trails : [])) {   // user: trails didn't follow the painted roads -> off
+      for (let i = 0; i < tr.n; i++) {
+        for (const dir of tr.two ? [1, -1] : [1]) {
+          const d0 = ((time * tr.sp + i * tr.L / tr.n + (dir < 0 ? tr.L * 0.37 : 0)) % tr.L), d = dir > 0 ? d0 : tr.L - d0;
+          const a = polyAt(tr.pts, d), b = polyAt(tr.pts, clamp(d - dir * 26, 0, tr.L));
+          g.strokeStyle = dir > 0 ? 'rgba(255,240,210,.85)' : 'rgba(255,50,80,.8)'; g.lineWidth = 2.6;
+          g.beginPath(); g.moveTo(b[0], b[1]); g.lineTo(a[0], a[1]); g.stroke();
+          g.fillStyle = dir > 0 ? 'rgba(255,255,240,.9)' : 'rgba(255,90,110,.9)'; g.beginPath(); g.arc(a[0], a[1], 2.2, 0, 6.283); g.fill();
+        }
+      }
+    }
+    // blinking lights
+    for (const [x, y, c, per, ph] of AMBIENT.blink) {
+      const k = Math.pow(Math.max(0, Math.sin((time / per + ph) * 6.283)), 6);
+      if (k < 0.02) continue;
+      const r = 10 + 8 * k, gr = g.createRadialGradient(x, y, 0, x, y, r);
+      gr.addColorStop(0, c); gr.addColorStop(1, 'rgba(0,0,0,0)'); g.globalAlpha = k; g.fillStyle = gr; g.fillRect(x - r, y - r, r * 2, r * 2);
+    }
+    g.globalAlpha = 1;
+    if (SHOW_PATHS) {   // user: no runway lights / plane on the airstrip
+    // runway approach lights (chasing) + a plane taking off now and then
+    const [r0, r1] = AMBIENT.runway, rl = Math.hypot(r1[0] - r0[0], r1[1] - r0[1]), ux = (r1[0] - r0[0]) / rl, uy = (r1[1] - r0[1]) / rl;
+    for (let i = 0; i < 8; i++) { // approach lights behind the runway start, chasing toward it
+      const k = ((time * 1.4 - (7 - i) * 0.09) % 1 + 1) % 1, al = k < 0.16 ? 1 - k / 0.16 : 0;
+      if (al <= 0) continue;
+      const x = r0[0] - ux * (16 + i * 9), y = r0[1] - uy * (16 + i * 9);
+      g.fillStyle = `rgba(255,240,160,${al.toFixed(3)})`; g.beginPath(); g.arc(x, y, 2.6, 0, 6.283); g.fill();
+    }
+    const pc = (time % 14) / 7; // 0..2: roll + climb, then pause
+    if (pc < 1) {
+      const k = pc * pc, x = r0[0] + ux * rl * 1.6 * k, y = r0[1] + uy * rl * 1.6 * k - (k > 0.55 ? (k - 0.55) * 60 : 0), sc = 1 + Math.max(0, k - 0.55) * 1.4;
+      g.save(); g.translate(x, y); g.rotate(Math.atan2(uy, ux)); g.scale(sc, sc); g.globalAlpha = k > 0.85 ? (1 - k) / 0.15 : 1;
+      g.fillStyle = 'rgba(230,236,255,.95)'; g.fillRect(-9, -1.6, 18, 3.2); g.fillRect(-2, -8, 4, 16); g.fillRect(-9, -4, 3, 8);
+      g.fillStyle = Math.sin(time * 18) > 0 ? '#ff3355' : '#3dffa8'; g.fillRect(-1, -9, 2, 2);
+      g.restore(); g.globalAlpha = 1;
+    }
+    }
+    // water glints
+    for (const gl of glints) {
+      gl.t += dt; if (gl.t > gl.life) spawnGlint(gl);
+      const a = Math.sin(Math.PI * gl.t / gl.life) * 0.55;
+      g.strokeStyle = `rgba(${gl.c},${a.toFixed(3)})`; g.lineWidth = 1.6; g.beginPath(); g.moveTo(gl.x - gl.w / 2, gl.y); g.lineTo(gl.x + gl.w / 2, gl.y); g.stroke();
+    }
+    // career route: done legs gold, the leg being opened grows, locked legs faint dots
+    g.globalCompositeOperation = 'source-over';
+    for (let i = 0; SHOW_PATHS && i < AREA_ORDER.length - 1; i++) {   // route line off (misaligned)
+      const f = AREA_ORDER[i], t = AREA_ORDER[i + 1], openLeg = st.open[t] && anim.leg !== f;
+      const growing = anim.leg === f, u1 = growing ? anim.legU : openLeg ? 1 : 0;
+      const pts = []; for (let k = 0; k <= 40; k++) pts.push(legPt(f, t, k / 40));
+      // base: dotted
+      g.setLineDash([2 * px, 10 * px]); g.lineDashOffset = 0; g.lineWidth = 3 * px; g.strokeStyle = 'rgba(220,225,255,.5)';
+      g.beginPath(); pts.forEach((p, k) => (k ? g.lineTo(p[0], p[1]) : g.moveTo(p[0], p[1]))); g.stroke();
+      if (u1 > 0) {
+        const n = Math.max(1, Math.round(40 * u1));
+        g.setLineDash([]); g.lineWidth = 9 * px; g.strokeStyle = 'rgba(255,47,154,.35)';
+        g.beginPath(); for (let k = 0; k <= n; k++) { const p = k === n ? legPt(f, t, u1) : pts[k]; k ? g.lineTo(p[0], p[1]) : g.moveTo(p[0], p[1]); } g.stroke();
+        g.setLineDash([14 * px, 10 * px]); g.lineDashOffset = -time * 40 * px; g.lineWidth = 4 * px; g.strokeStyle = '#ffd76a';
+        g.stroke();
+      }
+    }
+    g.setLineDash([]);
+    if (route) {   /* chapter route: done legs gold, the leg to the next stop pulses pink, later legs faint dashes */
+      const S = route.stops, ni = S.findIndex((q) => q.st !== 'beat');
+      g.lineCap = 'round'; g.lineJoin = 'round';
+      for (let i = 1; i < S.length; i++) {
+        const a = S[i - 1], b = S[i], cx = (a.x + b.x) / 2 + (b.y - a.y) * 0.12, cy = (a.y + b.y) / 2 - (b.x - a.x) * 0.12;
+        const path = () => { g.beginPath(); g.moveTo(a.x, a.y); g.quadraticCurveTo(cx, cy, b.x, b.y); };
+        if (b.st === 'beat') { g.setLineDash([]); g.lineWidth = 8 * px; g.strokeStyle = 'rgba(0,0,0,.45)'; path(); g.stroke(); g.lineWidth = 4 * px; g.strokeStyle = '#ffd76a'; path(); g.stroke(); }
+        else if (i === ni) { g.setLineDash([]); g.lineWidth = 8 * px; g.strokeStyle = 'rgba(255,47,154,.35)'; path(); g.stroke(); g.setLineDash([12 * px, 9 * px]); g.lineDashOffset = -time * 36 * px; g.lineWidth = 3.5 * px; g.strokeStyle = '#ff7ac8'; path(); g.stroke(); }
+        else { g.setLineDash([2 * px, 9 * px]); g.lineDashOffset = 0; g.lineWidth = 3 * px; g.strokeStyle = 'rgba(220,225,255,.55)'; path(); g.stroke(); }
+      }
+      g.setLineDash([]);
+    }
+  }
+
+  // ---------- unlock animation (area `to` opens after beating `from`'s boss) ----------
+  // timeline (s): 0 burst at from; 0.5-2.1 camera pans + route grows + car drives; 1.7-2.9 fog lifts; 2.5 pin lights up.
+  function unlock(from, to, { hold = -1, onBurst, onDone } = {}) {
+    const fired = {};
+    let t = 0;
+    anim.lockT = to; anim.leg = from; anim.legU = 0; anim.fogOff[to] = 0; applyFog(); renderPins();
+    focus(from, { instant: true, zoom: 1.35 });
+    const c0 = { x: cam.x, y: cam.y, s: cam.s }, c1 = camFor(AREAS[to].x, AREAS[to].y, coverS * 1.35);
+    const fire = (k, at, fn) => { if (!fired[k] && t >= at) { fired[k] = 1; fn(); } };
+    anim.run = (dt) => {
+      if (hold < 0 || t < hold) t = hold >= 0 ? Math.min(hold, t + dt) : t + dt;
+      fire('a', 0.05, () => onBurst && onBurst('cleared', from));
+      const p = ease(seg(t, 0.5, 2.1));
+      cam.x = c0.x + (c1.x - c0.x) * p; cam.y = c0.y + (c1.y - c0.y) * p; cam.s = c0.s + (c1.s - c0.s) * p + Math.sin(p * Math.PI) * -0.12 * c0.s; dirty = true;
+      anim.legU = easeOut(seg(t, 0.55, 2.0));
+      anim.carAt = legPt(from, to, ease(seg(t, 0.6, 2.05)));
+      anim.fogOff[to] = easeOut(seg(t, 1.7, 2.9)); applyFog();
+      fire('b', 2.5, () => { anim.lockT = null; renderPins(); pins[to].classList.add('pop'); onBurst && onBurst('open', to); });
+      if (t >= 3.3 && hold < 0) {
+        anim.run = null; anim.leg = null; anim.carAt = null; delete anim.fogOff[to]; applyFog(); renderPins();
+        onDone && onDone();
+      }
+    };
+  }
+
+  // ---------- race fly-in: the camera flies to a stop, a pin drops with the place + race type, then onDone ----------
+  function flyTo(x, y, { label = '', sub = '', type = 'drag', dur = 0.85, hold = 0.5, zoom = 2.1, onDone } = {}) {
+    anim.flyT = (anim.flyT || 0) + 1; const id = anim.flyT;
+    fly = { x, y };
+    flyEl.querySelector('b').textContent = label; flyEl.querySelector('small').innerHTML = sub;
+    flyEl.className = 'wmFly rt_' + type; void flyEl.offsetWidth;
+    panTo(camFor(x, y, Math.max(cam.s, coverS * zoom)), dur); dirty = true;
+    /* the plate drops near the end of the flight; onDone waits for the camera to arrive (slow devices: frame-clamped tween) */
+    setTimeout(() => { if (anim.flyT === id) flyEl.classList.add('on'); }, Math.max(0, dur * 1000 - 260));
+    let fired = false;
+    const end = () => { if (fired || anim.flyT !== id) return; fired = true; flyEl.classList.add('on'); if (onDone) onDone(); };
+    tween.onEnd = () => setTimeout(end, hold * 1000);
+    if (hold < 100) setTimeout(end, (dur + hold + 2.5) * 1000);   /* a drag cancels the tween: go anyway */
+  }
+  function flyOff() { anim.flyT = (anim.flyT || 0) + 1; fly = null; flyEl.className = 'wmFly'; }
+
+  // ---------- public ----------
+  const api = {
+    root, cam,
+    setState(s) { Object.assign(st, s); renderPins(); applyFog(); },
+    setInsets(o) { Object.assign(view, o); },
+    select(t) { st.sel = t; renderPins(); },
+    focus, unlock, imgReady, setRoute, flyTo, flyOff,
+    focusXY(x, y, { zoom = null, dur = 0.6 } = {}) { panTo(camFor(x, y, zoom != null ? zoom * coverS : Math.max(cam.s, coverS * 1.3)), dur); },
+    pinEl: (t) => pins[t],
+    pinScreen(t) { const r = root.getBoundingClientRect(), [x, y] = toScr(AREAS[t].x, AREAS[t].y); return [r.left + x, r.top + y]; },
+    busy: () => !!anim.run,
+    resize() { fitBounds(); },
+    start() { if (running) return; running = true; last = 0; fitBounds(); raf = requestAnimationFrame(frame); },
+    stop() { running = false; cancelAnimationFrame(raf); raf = 0; },
+  };
+  return api;
+}

@@ -1,0 +1,57 @@
+{
+ "car_black": [
+  "face",
+  "hood",
+  "glass",
+  "head"
+ ],
+ "car_cyan": [
+  "face",
+  "hood",
+  "glass",
+  "head"
+ ],
+ "car_drift": [
+  "face",
+  "hood",
+  "glass",
+  "head"
+ ],
+ "car_hero": [
+  "hood",
+  "face",
+  "glass",
+  "head"
+ ],
+ "car_hyper": [
+  "face",
+  "hood",
+  "glass",
+  "head"
+ ],
+ "car_neon": [
+  "face",
+  "hood",
+  "glass",
+  "head"
+ ],
+ "car_red": [
+  "hood",
+  "glass",
+  "head",
+  "face"
+ ],
+ "car_silver": [
+  "face",
+  "hood",
+  "glass",
+  "head"
+ ],
+ "car_yellow": [
+  "face",
+  "hood",
+  "glass",
+  "head",
+  "side"
+ ]
+}

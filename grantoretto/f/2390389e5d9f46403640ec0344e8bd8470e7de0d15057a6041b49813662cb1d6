@@ -1,0 +1,1615 @@
+// Meta screens (menu, garage + paint shop, upgrade, career), result rewards, toast, coin-burst particles.
+// main.js owns the 3D scene; it passes hooks in `api` (preview a car, apply paint/rim, start races, screen camera).
+import * as M from './meta.js';
+import * as P from './physics.js';
+import * as C from './cast.js';
+import * as S from './scenes.js';
+import { MAP, AREAS } from './map.js';
+import { createWorldMap } from './worldmap.js';
+import { createJuice } from './juice.js';
+import * as O from './overlay.js';
+import * as TH from './themes.js';
+import * as A from './assets.js';
+import * as D from './daily.js';
+
+const $ = (id) => document.getElementById(id);
+const fmt = (n) => Math.round(n).toLocaleString('en-US');
+const pillFmt = (n) => (n >= 100000 ? Math.floor(n / 1000) + 'K' : fmt(n)); // top-bar pills stay narrow on 360 px phones
+const coinI = '<i class="ico it0"></i>', gemI = '<i class="ico it1"></i>';
+const costHtml = (o) => (o.gems ? `${gemI}${o.gems}` : `${coinI}${fmt(o.coins)}`);
+// Roll the first number in an element's text from its old value to the new one (same text around it), ~0.35 s.
+const NUM = /-?\d[\d,]*\.?\d*/;
+export function rollText(el, text, dur = 350) {
+  const old = el.textContent, a = old.match(NUM), b = String(text).match(NUM);
+  cancelAnimationFrame(el._roll);
+  if (!a || !b || old.replace(NUM, '#') !== String(text).replace(NUM, '#') || a[0] === b[0]) { el.textContent = text; return; }
+  const v0 = parseFloat(a[0].replace(/,/g, '')), v1 = parseFloat(b[0].replace(/,/g, ''));
+  const dec = (b[0].split('.')[1] || '').length, comma = b[0].includes(',') || Math.abs(v1) >= 1000, t0 = performance.now();
+  const f = (v) => (comma ? Math.round(v).toLocaleString('en-US') : v.toFixed(dec));
+  const step = (now) => {
+    const k = Math.min(1, (now - t0) / dur), e = 1 - Math.pow(1 - k, 3);
+    el.textContent = String(text).replace(NUM, f(v0 + (v1 - v0) * e));
+    if (k < 1) el._roll = requestAnimationFrame(step); else el.textContent = text;
+  };
+  el._roll = requestAnimationFrame(step);
+}
+
+export function createUI(api) {
+  const { save, persist, snd } = api;
+  let cur = null, busy = false;
+  const ui = {};
+  const screens = { menu: 'title', garage: 'garage', career: 'career' }; // UPGRADE lives in the garage (hotspots on the car)
+  const titles = { menu: '', garage: 'GARAGE', career: 'CAREER' };
+  let shownCoins = save.coins, shownGems = save.gems;
+
+  // ---------- press juice ----------
+  function tap(el, fn, sound = 'ui_click') {
+    el.addEventListener('pointerdown', (e) => { e.stopPropagation(); api.audioInit(); el.classList.add('down'); });
+    const up = () => { if (!el.classList.contains('down')) return; el.classList.remove('down'); el.classList.remove('rel'); void el.offsetWidth; el.classList.add('rel'); };
+    el.addEventListener('pointerup', up); el.addEventListener('pointerleave', () => el.classList.remove('down')); el.addEventListener('pointercancel', () => el.classList.remove('down'));
+    el.addEventListener('click', (e) => { e.stopPropagation(); if (busy) return; if (sound) snd.play(sound); fn(e); });
+  }
+  ui.tap = tap;
+
+  // ---------- screens + wipe transition ----------
+  function swap(name) {
+    for (const k in screens) $(screens[k]).classList.add('hidden');
+    $('result').classList.add('hidden');
+    if (wm && name !== 'career') wm.stop();
+    const el = $(screens[name]);
+    el.classList.remove('hidden'); el.classList.remove('enter'); void el.offsetWidth; el.classList.add('enter');
+    clearTimeout(el._et); el._et = setTimeout(() => el.classList.remove('enter'), 1300);
+    cur = name;
+    S.hideResultScene();
+    S.rei(name === 'garage');
+    document.body.classList.add('inMeta');
+    if (!ui._pre) { ui._pre = setTimeout(() => C.preloadArt(MAP.files()), 1500); }
+    if (name === 'garage') { gKey = ui._gKey && P.CARS[ui._gKey] ? ui._gKey : save.car; ui._gKey = null; gPaint = null; closePart(true); } else hotHint = false;
+    $('topbar').classList.remove('hidden');
+    $('topbar').classList.toggle('noback', name === 'menu');
+    $('scrTitle').textContent = titles[name];
+    api.onScreen(name);
+    render[name] && render[name]();
+    if (name === 'garage' && ui._focusPart) { const fp = ui._focusPart; ui._focusPart = null; setTimeout(() => { if (cur === 'garage') ui.focusPart(fp); }, 380); }
+    if (name === 'garage' && ui._guide) { const gd = ui._guide; ui._guide = null; guideStart(gd); } else if (guide && name !== 'garage') guideEnd();
+    if (name !== 'menu') setTimeout(() => { if (cur === name) showBeats(); }, 900);
+    refreshCurrency(false);
+    document.body.dataset.scr = name;
+    requestAnimationFrame(panelTop);
+  }
+  // speech slot on garage/upgrade sits just above the bottom panel: min.css reads --panelTop
+  function panelTop() {
+    const p = cur === 'garage' ? (gPart ? $('pPanel') : $('gBottom')) : null;
+    if (p) document.documentElement.style.setProperty('--panelTop', p.getBoundingClientRect().top + 'px');
+  }
+  addEventListener('resize', () => requestAnimationFrame(panelTop));
+  ui.show = (name, { instant = false } = {}) => {
+    if (!M.hasCar(save) && !ob) { ui.onboard(); return; }   /* no car yet: every screen leads to the car pick */
+    if (name === 'map') name = 'career';
+    if (name === 'upgrade') { name = 'garage'; hotHint = true; } // UPGRADE = the garage with the hotspots highlighted
+    if (instant) { swap(name); return; }
+    wipe(() => swap(name));
+  };
+  function wipe(mid) {
+    const w = $('wipe');
+    busy = true;
+    w.classList.remove('go'); void w.offsetWidth; w.classList.add('go');
+    snd.play('menu_swipe', { detune: 0.08 });
+    setTimeout(() => { mid(); }, 290);
+    setTimeout(() => { busy = false; w.classList.remove('go'); }, 620);
+  }
+  ui.wipe = wipe;
+  ui.current = () => cur;
+  ui.hideAll = () => { delete document.body.dataset.scr; if (wm) wm.stop(); for (const k in screens) $(screens[k]).classList.add('hidden'); $('topbar').classList.add('hidden'); cur = null; S.rei(false); S.hideResultScene(); document.body.classList.remove('inMeta'); };
+
+  tap($('backBtn'), () => { if (guide) guideEnd(); if (cur === 'garage' && gPart) { closePart(); return; } ui.show('menu'); });
+
+  // ---------- currency ----------
+  function refreshCurrency(animate) {
+    if (!animate) { shownCoins = save.coins; shownGems = save.gems; }
+    $('coinVal').textContent = pillFmt(shownCoins); $('gemVal').textContent = pillFmt(shownGems);
+  }
+  ui.refreshCurrency = refreshCurrency;
+  const bump = (el) => { el.classList.remove('bump'); void el.offsetWidth; el.classList.add('bump'); };
+
+  // toast slot (overlay.js): one at a time under the top bar, the next waits (max 2, same text not repeated)
+  function toast(msg, good = false) {
+    const t = $('toast');
+    O.push('toast', () => { t.innerHTML = msg; t.className = good ? 'good' : ''; void t.offsetWidth; t.className = 'show' + (good ? ' good' : ''); return 1.9; },
+      () => { t.className = ''; }, { max: 2, key: msg });
+  }
+  ui.toast = toast;
+  function spend(o) { // {coins} or {gems}; returns success
+    if (o.gems) { if (save.gems < o.gems) { toast('NOT ENOUGH GEMS'); snd.play('error'); S.reiSay('broke'); return false; } save.gems -= o.gems; }
+    else { if (save.coins < o.coins) { toast('NOT ENOUGH COINS'); snd.play('error'); S.reiSay('broke'); return false; } save.coins -= o.coins; }
+    persist(); bump($(o.gems ? 'gemPill' : 'coinPill'));
+    shownCoins = save.coins; shownGems = save.gems;
+    rollText($('coinVal'), pillFmt(save.coins), 450); rollText($('gemVal'), pillFmt(save.gems), 450);
+    return true;
+  }
+
+  // ---------- menu ----------
+  function careerPos() {
+    for (const t of M.TIERS) if (M.tierOpen(save, t) && save.career[t] < M.RUNGS) return { t, i: save.career[t] };
+    return { t: 'S', i: M.RUNGS - 1, done: true };
+  }
+  const render = {};
+  render.menu = () => {
+    const p = careerPos(), ri = M.rungInfo(p.t, p.i);
+    $('careerSub').textContent = p.done ? 'ALL CROWNS WON' : ri.isBoss ? `TIER ${p.t} · BOSS: ${ri.name}` : `TIER ${p.t} · RIVAL ${p.i + 1}/${M.RUNGS}`;
+    $('dailyTag').classList.toggle('hidden', save.daily === M.today());
+    const mt = M.carTier(save.car); $('menuTier').textContent = mt; $('menuCarName').textContent = P.CARS[save.car].name;
+    renderDaily(); setTimeout(maybeClaim, 600);
+    if (!hotLoop) hotLoop = requestAnimationFrame(hotFrame);
+    if (save.carGift) setTimeout(() => { if (cur === 'menu') showGift(); }, 450);
+    renderMenuNext();
+    setTimeout(() => { if (cur === 'menu') showBeats(); }, 700);
+    if (save.prog && save.prog.catchup) { const n = save.prog.catchup; delete save.prog.catchup; persist(); setTimeout(() => toast(`NEW IN YOUR GARAGE: ${n.join(' · ')}`, true), 1200); }
+  };
+  /* the next car to save for (unlocked, not owned) or the next career unlock: a progress plate under the car name */
+  function nextCarInfo() {
+    const k = M.CAR_ORDER.find((q) => M.CAR_META[q].unlockD && M.carUnlocked(save, q) && !save.owned.includes(q) && M.tierOpen(save, M.carTier(q)));
+    return k ? { k, price: M.CAR_META[k].price, left: Math.max(0, M.CAR_META[k].price - save.coins) } : null;
+  }
+  ui.nextCarInfo = nextCarInfo;
+  function nextHTML() {
+    const nc = nextCarInfo();
+    if (nc) return `<i class="nxImg" style="background-image:url(sprites/thumb_${nc.k}.webp)"></i><div class="nxTx"><small>NEXT CAR</small><b>${P.CARS[nc.k].name}</b>`
+      + `<em>${nc.left ? `${coinI}${fmt(nc.left)} TO GO` : 'READY AT THE DEALER!'}</em><u><i style="transform:scaleX(${Math.min(1, save.coins / nc.price).toFixed(3)})"></i></u></div>`;
+    const nb = M.nextBeat(save); if (!nb) return '';
+    const I = M.beatInfo(nb.b);
+    return `${beatIcon(nb.b, 'nxImg')}<div class="nxTx"><small>NEXT UNLOCK</small><b>${I.name}${nb.b.kind === 'rim' ? ' RIMS' : ''}</b><em>${nb.left} CAREER WIN${nb.left > 1 ? 'S' : ''}</em></div>`;
+  }
+  function renderMenuNext() {
+    let el = $('menuNext');
+    if (!el) { el = document.createElement('button'); el.id = 'menuNext'; el.className = 'nextPlate'; $('careerBtn').after(el); tap(el, () => { const nc = nextCarInfo(); if (nc) { ui._gKey = nc.k; ui.show('garage'); } else ui.show('career'); }); }
+    const h = nextHTML(); el.innerHTML = h; el.classList.toggle('hidden', !h || !M.hasCar(save));
+    el.classList.toggle('ready', !!(nextCarInfo() && !nextCarInfo().left));
+  }
+  tap($('careerBtn'), () => ui.show('career'), 'ui_confirm');
+  tap($('garageBtn'), () => ui.show('garage'));
+  // ---------- daily challenge card + login streak (daily.js) ----------
+  const hms = (x) => [x / 3600, (x % 3600) / 60, x % 60].map((n) => String(Math.floor(n)).padStart(2, '0')).join(':');
+  function renderDaily() {
+    const { c, best, paid } = D.dailyState(save), t = c.targets;
+    $('dThumb').style.backgroundImage = `url(sprites/thumb_${c.car}.webp)`;
+    $('dName').innerHTML = 'DAILY · ' + P.CARS[c.car].name + (c.type && c.type !== 'drag' ? `<span class="rtChip rt_${c.type}">${M.TYPE_INFO[c.type].icon}${M.TYPE_INFO[c.type].name}</span>` : '');
+    const beat = (m) => best > 0 && best <= t[m]; // a medal lights only once that target was beaten today
+    $('dSub').innerHTML = ['g', 's', 'b'].map((m) => `<span class="dT ${m}${beat(m) ? ' hit' : ''}">${t[m].toFixed(2)}</span>`).join('') + `<br>BEST TODAY ${best > 0 ? best.toFixed(3) + 's' : '--'}`;
+    for (const i of $('dMedals').children) i.classList.toggle('on', beat(i.dataset.m));
+    $('dTime').textContent = 'NEW IN ' + hms(D.untilNext());
+  }
+  setInterval(() => { if (cur === 'menu') $('dTime').textContent = 'NEW IN ' + hms(D.untilNext()); }, 1000);
+  tap($('dailyBtn'), () => { const { c } = D.dailyState(save); wipe(() => api.startRace({ mode: 'daily', car: c.car, levels: c.levels, type: c.type })); }, 'ui_confirm');
+  ui.dailyFinish = (et) => {
+    const out = D.finishDaily(save, et || 0), { c } = D.dailyState(save);
+    ui._dres = { medal: out.medal, t: c.targets, et };
+    const unlock = out.item ? `UNLOCKED: ${out.item.name} ${out.item.kind === 'rim' ? 'RIMS' : out.item.kind === 'paint' ? 'PAINT' : ''}` : '';
+    if (out.gems) out.lines.push(['DAILY SILVER GEMS', 0]);
+    return { lines: out.lines.filter((l) => l[1] > 0), coins: out.coins, gems: out.gems, unlock };
+  };
+  // streak sheet: auto once on the first menu of the day, and any time from the gift icon in the top bar
+  function streakView() { // {day shown, claimed today?, reward}
+    const due = D.streakDue(save), st = save.streak || { n: 0 };
+    return due ? { day: due.day, done: false, reward: due.reward } : { day: st.n || 1, done: true, reward: D.STREAK[(st.n || 1) - 1] };
+  }
+  function renderStreakBtn() {
+    const v = streakView(), b = $('streakBtn');
+    /* CrazyGames review: no "0" next to the dot. Due = the dot only; claimed = the streak day number */
+    const n = v.done ? v.day : 0;
+    $('stN').textContent = n > 0 ? n : '';
+    $('stN').classList.toggle('hidden', !(n > 0));
+    b.classList.toggle('due', !v.done);
+  }
+  const hideImg = 'onerror="this.style.visibility=\'hidden\'"';
+  const rwHtml = (q, big) => q.car ? (big ? `<img src="sprites/thumb_${q.car}.webp" alt="" ${hideImg}>${P.CARS[q.car].name}` : 'CAR')
+    : q.item ? (big ? 'RARE: ' + ((D.rareItems(q.item).find((x) => !D.owns(save, x)) || { name: '1,000 COINS' }).name) : 'RARE')
+    : q.gems ? `${gemI}${big ? ' ' + q.gems + ' GEMS' : q.gems}` : `${coinI}${big ? ' ' + fmt(q.coins) + ' COINS' : q.coins >= 1000 ? (q.coins / 1000) + 'K' : q.coins}`;
+  function openStreak() {
+    const v = streakView(), r = v.reward, w0 = Math.floor((v.day - 1) / 7) * 7; // the current week of 7
+    const got = v.day - (v.done ? 0 : 1); // days claimed so far in this run
+    $('clTitle').textContent = `DAY ${v.day}`;
+    $('clDays').innerHTML = D.STREAK.slice(w0, w0 + 7).map((q, j) => { const i = w0 + j;
+      return `<i class="${i < got ? 'done' : i === v.day - 1 ? 'now' : ''}${q.car || q.item ? ' ms' : ''}"><b>${i + 1}</b><small>${rwHtml(q)}</small></i>`; }).join('');
+    // 30-day track: progress + the two reward cars as milestones
+    const pct = (d) => ((d - 0.5) / D.STREAK_LEN * 100).toFixed(1) + '%';
+    $('clTrack').innerHTML = `<div class="trk"><i style="width:${pct(got + 0.5)}"></i></div>`
+      + D.STREAK.map((q, i) => q.car ? `<span class="trkCar${got >= i + 1 ? ' got' : ''}" style="left:${pct(i + 1)}"><img src="sprites/thumb_${q.car}.webp" alt="" ${hideImg}><b>DAY ${i + 1}</b></span>` : '').join('');
+    $('clRw').innerHTML = (v.done ? 'CLAIMED TODAY · ' : '') + rwHtml(r, true);
+    $('clBtn').classList.toggle('hidden', v.done);
+    $('clClose').classList.toggle('hidden', !v.done);
+    $('claim').classList.remove('hidden');
+  }
+  function maybeClaim() {
+    renderStreakBtn();
+    if (!D.streakDue(save) || ui._claimShown || cur !== 'menu' || save.carGift || beatsWaiting() || beatOn) return;
+    if (!((save.sessions || 0) >= 2)) return;   /* never on the very first visit (the gift icon's dot still invites it) */
+    ui._claimShown = true;
+    openStreak();
+  }
+  tap($('streakBtn'), () => openStreak());
+  tap($('clClose'), () => $('claim').classList.add('hidden'));
+  $('claim').addEventListener('click', (e) => { if (e.target.id === 'claim') $('claim').classList.add('hidden'); });
+  tap($('clBtn'), () => {
+    const out = D.claimStreak(save); persist();
+    $('claim').classList.add('hidden');
+    if (!out) return;
+    snd.play('purchase');
+    shownCoins = save.coins - out.coins; shownGems = save.gems - out.gems; refreshCurrency(true);
+    coinFly($('clBtn'), $(out.gems ? 'gemPill' : 'coinPill'), 8, out.gems || out.coins, out.gems ? 'gem' : 'coin');
+    toast(out.car ? `${P.CARS[out.car].name} IS YOURS!` : out.item ? `${out.item.name} UNLOCKED` : `DAY ${out.day} CLAIMED`, true);
+    renderDaily(); renderStreakBtn();
+  }, null);
+  tap($('quickBtn'), () => wipe(() => api.startRace({ mode: 'quick' })), 'ui_confirm');
+
+  // ---------- garage (merged with upgrade): the live car centred, hotspots ON the car, a part panel per hotspot ----------
+  // Hotspot anchors are in the car's root space (x: 0 = nose, -len = tail; y: up from the road; z: the camera-side flank),
+  // projected through the scene camera every frame (window.__g.cam / pView) so they stick to the car. Tapping one
+  // eases the meta camera toward the part (main.js META_CAM.garage, exposed on __g) and slides the part panel in.
+  let gKey = save.car, gPaint = null, gPart = null, hotLoop = 0, hotHint = false;
+  const ownCar = (k) => save.owned.includes(k);
+  const carOpen = (k) => !M.streakCar(k) && M.tierOpen(save, M.carTier(k)) && M.carUnlocked(save, k);
+  const lockWhy = (k) => (!M.tierOpen(save, M.carTier(k)) ? `BEAT THE TIER ${M.TIERS[M.tierIdx(M.carTier(k)) - 1]} BOSS` : `WIN ${M.carUnlockAt(k)} CAREER RACES`);
+  const PART_ICON = { engine: 0, turbo: 1, gearbox: 2, nitro: 3, tires: 4, weight: 5, intake: 6, ecu: 7, intercooler: 8, fuel: 9, clutch: 10, diff: 11, suspension: 12 };
+  // 5 hotspot clusters; each opens a panel: UPGRADE = list of its parts (tap one for before -> after + buy), STYLE = its
+  // cosmetics. 'exhaust' in a part list = the sound choice (stock / sport / straight pipe)
+  const HOT = [ // id, label, anchor(v) -> [x, y] in metres, parts[], styles[]
+    ['engine', 'ENGINE', (v) => [-v.len * 0.18, v.hh * 0.78], ['engine', 'turbo', 'intake', 'intercooler', 'ecu', 'fuel'], []],
+    ['drive', 'DRIVETRAIN', (v) => [-v.len * 0.5, v.hh * 0.3], ['gearbox', 'clutch', 'diff'], []],
+    ['chassis', 'CHASSIS', (v) => [v.ws[1].x, v.ws[1].r], ['suspension', 'tires', 'weight'], ['rims']],
+    ['exhaust', 'EXHAUST', (v) => [-v.len + 0.12, v.hh * 0.62], ['nitro'], ['sound', 'flame']], // above the tail, clear of the flame
+    ['body', 'BODY', (v) => [-v.len * 0.68, v.hh * 0.66], [], ['paint', 'decal', 'tint', 'glow', 'smoke']],
+  ];
+  const STYLE_NAME = { sound: 'SOUND', rims: 'RIMS', paint: 'PAINT', decal: 'DECAL', tint: 'TINT', glow: 'GLOW', smoke: 'SMOKE', flame: 'FLAME' };
+  const hotOf = (id) => HOT.find((h) => h[0] === id);
+  let pTab = 'up', gSub = null, gStyle = null;
+  const ICON_SVG = {
+    body: '<svg class="i" viewBox="0 0 24 24"><path d="M12 3.5c3.5 4.2 5.5 7.2 5.5 9.8a5.5 5.5 0 0 1-11 0c0-2.6 2-5.6 5.5-9.8z"/></svg>',
+    chassis: '<svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="2"/><path d="M12 10V3.5M14 12.6l6 2.2M10 12.6l-6 2.2M13.2 13.6l3.8 5.3M10.8 13.6 7 18.9"/></svg>',
+    exhaust: '<svg class="i" viewBox="0 0 24 24"><path d="M3 10h11v5H3zM14 11h4l3-1.5v6L18 14h-4"/><path d="M5 7.5c1-1 2-1 3 0s2 1 3 0M5 18c1-1 2-1 3 0s2 1 3 0"/></svg>',
+    drive: '<svg class="i" viewBox="0 0 24 24"><path d="M6 5v14M12 5v14M18 5v7M6 12h12"/><circle cx="6" cy="4" r="1.2"/><circle cx="12" cy="4" r="1.2"/><circle cx="18" cy="4" r="1.2"/></svg>',
+  };
+  const icoHtml = (id) => ICON_SVG[id] || (PART_ICON[id] != null ? `<span class="ico up${PART_ICON[id]}"></span>` : ICON_SVG.body);
+  function partState(pid) { // performance part -> {part, lv, cap, max, price, can} (null: none / car not owned)
+    const k = gKey, part = M.PARTS.find((p) => p.id === pid);
+    if (!part || !ownCar(k)) return null;
+    const L = M.upOf(save, k), lv = L[pid], cap = M.partCap(L, pid), price = M.partPrice(part, lv, M.carTier(k)), open = M.partOpen(save, pid);
+    return { part, lv, cap, max: lv >= M.MAX_LV, price, open, can: open && lv < cap && save.coins >= price };
+  }
+  const clusterCan = (h) => h[3].some((pid) => { const st = partState(pid); return st && st.can; });
+  const clusterLv = (h) => { const ps = h[3].map(partState).filter(Boolean); return ps.length ? ps.reduce((a, s) => a + s.lv, 0) / (ps.length * M.MAX_LV) : -1; };
+  function buildHot() {
+    const box = $('hot');
+    if (box.children.length) return;
+    for (const [id, label] of HOT) {
+      const b = document.createElement('button');
+      b.className = 'hs'; b.dataset.id = id; b.setAttribute('aria-label', label);
+      b.innerHTML = `<span class="hsRing">${icoHtml(id)}</span><span class="hsPips"></span><span class="hsLbl">${label}</span>`;
+      b.addEventListener('pointerdown', (e) => e.stopPropagation());
+      b.addEventListener('click', (e) => { e.stopPropagation(); api.audioInit(); if (ob && !(ob === 1 && id === 'engine')) return; snd.play('ui_click'); if (ob || !ownCar(gKey)) return; openPart(id); });   /* a car you don't own: no parts or styles (buy it first) */
+      box.appendChild(b);
+    }
+  }
+  function renderHot() {
+    const own = ownCar(gKey);
+    for (const b of $('hot').children) {
+      const id = b.dataset.id, h = hotOf(id), f = clusterLv(h);
+      b.classList.toggle('hidden', !own); /* a car you don't own: no hotspots, the BUY button is the way in */
+      b.classList.toggle('can', clusterCan(h));
+      b.classList.toggle('max', f >= 1);
+      b.classList.toggle('sel', gPart === id);
+      b.querySelector('.hsPips').innerHTML = f >= 0 ? Array.from({ length: M.MAX_LV }, (_, j) => `<i class="${j < Math.round(f * M.MAX_LV) ? 'f' : ''}"></i>`).join('') : '';
+    }
+    $('garage').classList.toggle('hotHint', hotHint);
+  }
+  // per frame: project the anchors; in focus mode steer the camera so the part sits in the free area
+  /* layout rects the camera fit needs (top bar, panels, menu column...) come from a cache, so a frame does not force a
+     layout. Refreshed when the screen state or size changes (then every frame for 0.45 s, so sliding panels are
+     tracked), else at most every 250 ms. Phone profile: these reads after the transform writes cost 120-230 ms / 3.5 s */
+  const hotRC = { key: '', live: 0, at: 0, m: new Map() };
+  for (const ev of ['resize', 'orientationchange']) addEventListener(ev, () => { hotRC.key = ''; });
+  function hotRects(now, W, H, land) {
+    const key = cur + '|' + (gPart || '') + '|' + ob + '|' + land + '|' + W + 'x' + H + '|' + document.body.classList.contains('ov-speech');
+    if (key !== hotRC.key) { hotRC.key = key; hotRC.live = now + 450; }
+    else if (now >= hotRC.live && now - hotRC.at < 250) return hotRC.m;
+    hotRC.at = now; hotRC.m.clear();
+    return hotRC.m;
+  }
+  function hotFrame(now) {
+    hotLoop = 0;
+    if (cur !== 'garage' && cur !== 'menu') return;   /* the menu uses the garage camera too (user: menu background = the garage) */
+    hotLoop = requestAnimationFrame(hotFrame);
+    const g = window.__g, v = g && g.pView, cam = g && g.cam;
+    if (!v || !cam || !v.root) return;
+    const fn = g.frames; if (fn != null && fn === hotFrame.f) return; hotFrame.f = fn;   /* once per drawn 3D frame (phones cap menu/garage at 30 fps) */
+    const tn = now || performance.now();
+    const dt = Math.min(0.1, Math.max(0.001, (tn - (hotFrame.t || tn)) / 1000)); hotFrame.t = tn;
+    const ke = Math.min(1, dt * 5); // ~0.45 s ease // time-based easing (phones and headless run at very different fps)
+    const V = cam.position.constructor, p = hotFrame.p || (hotFrame.p = new V());
+    const W = innerWidth, H = innerHeight, land = document.body.classList.contains('landscape');
+    // the free area = screen minus top bar / car name, the bottom row (or the part panel) and the arrows; the camera
+    // steers so the whole car (+ hotspot rings) stays inside it. Focus mode: the selected part goes to its centre.
+    // All layout reads happen here, before the hotspot transform writes below (no read-after-write forced layout).
+    const rc = hotRects(tn, W, H, land);
+    const R = (sel) => {
+      if (rc.has(sel)) return rc.get(sel);
+      const e = /[ #.]/.test(sel) ? document.querySelector(sel) : $(sel); let q = e ? e.getBoundingClientRect() : null;
+      if (q && !(q.width && q.height)) q = null;
+      rc.set(sel, q); return q;
+    };
+    const pad = land && gPart ? 40 : 26; // hotspot ring radius + margin (more with a side panel: the tail touched the edge)
+    let fl = pad, fr = W - pad, ft = (R('topbar') ? R('topbar').bottom : 56) + 8, fb = H - pad;
+    const sb = document.body.classList.contains('ov-speech') && !gPart ? R('subs') : null; if (sb && sb.bottom < H * 0.4 && (!land || sb.right > W * 0.3)) ft = Math.max(ft, sb.bottom + pad); // Rei's line
+    if (cur === 'menu') {   /* menu: the car fits left of the button column (landscape) / between the logo and the buttons */
+      const cr = R('#title .menuCol'), lr = R('#title .logo');
+      if (land) { if (cr) fr = Math.min(fr, cr.left - pad); if (lr) ft = Math.max(ft, lr.bottom + 6); }
+      else { if (lr) ft = Math.max(ft, lr.bottom + pad); if (cr) fb = Math.min(fb, cr.top - pad); }
+    } else if (ob === 1 || ob === 2) {   /* car pick: the car fits beside (landscape) / above (portrait) the dealer card, below Rei's tip */
+      const pk = R('obPick'), tp = R('obTip');
+      if (pk) { if (land) fr = Math.min(fr, pk.left - pad); else fb = Math.min(fb, pk.top - pad); }
+      if (tp) ft = Math.max(ft, tp.bottom + 8);
+      const ap = R("gPrev"), an = R("gNext"); if (ap && land) fl = Math.max(fl, ap.right + 8); if (an && land) fr = Math.min(fr, an.left - 8);
+    } else if (gPart) {
+      const pp = R('pPanel');
+      if (pp) { if (land) fr = Math.min(fr, pp.left - pad); else fb = Math.min(fb, pp.top - pad); }
+    } else {
+      const hd = R('#garage .gHead'); if (hd) ft = Math.max(ft, hd.bottom + pad);
+      const gb = R('gBottom'); if (gb) fb = Math.min(fb, gb.top - pad);
+      const ap = R("gPrev"), an = R("gNext"); if (ap) fl = Math.max(fl, ap.right + 8); if (an) fr = Math.min(fr, an.left - 8);
+    }
+    let fX = null, fY = null;
+    // the car's projected screen rect (8 corners of its box)
+    let l = 1e9, r = -1e9, t = 1e9, bt = -1e9;
+    for (const cx of [0, -v.len]) for (const cy of [0, v.hh]) for (const cz of [-v.HW, v.HW]) {
+      p.set(cx, cy, cz); v.root.localToWorld(p); p.project(cam);
+      const x = (p.x * 0.5 + 0.5) * W, y = (-p.y * 0.5 + 0.5) * H;
+      l = Math.min(l, x); r = Math.max(r, x); t = Math.min(t, y); bt = Math.max(bt, y);
+    }
+    ui._carRect = { l, r, t, b: bt };
+    if (cur === 'garage' && !ob) for (const b of $('hot').children) {   /* hotspots hidden (menu; body.onboard hides #hot): no projection, no writes */
+      if (b.classList.contains('hidden')) continue;   /* a car you don't own: its hotspots are hidden */
+      const id = b.dataset.id, a = hotOf(id)[2](v);
+      p.set(a[0], a[1], v.HW * 1.02); v.root.localToWorld(p); p.project(cam);
+      const x = (p.x * 0.5 + 0.5) * W, y = (-p.y * 0.5 + 0.5) * H;
+      if (b._hx == null || Math.abs(x - b._hx) > 0.5 || Math.abs(y - b._hy) > 0.5) { b._hx = x; b._hy = y; b.style.transform = `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)`; }   /* write only on a real move */
+      if (id === gPart) { fX = x; fY = y; }
+      { l = Math.min(l, x - 4); r = Math.max(r, x + 4); t = Math.min(t, y); bt = Math.max(bt, y + 10); } // keep the rings in the fit too
+    }
+    const mc = g.META_CAM && g.META_CAM[land ? 'landscape' : 'portrait'].garage;
+    if (!mc) return;
+    const fw = Math.max(40, fr - fl), fh = Math.max(40, fb - ft), cw = r - l, ch = bt - t;
+    // focus is subtle (user): ~12 % closer than the whole-car fit and a small pan toward the part; the highlight points
+    const fill = (land ? 0.82 : 0.96) / (gPart ? 0.88 : 1); // landscape: leave air around the car
+    const ratio = Math.max(cw / (fw * fill), ch / (fh * fill));
+    const cx0 = (l + r) / 2, cy0 = (t + bt) / 2;
+    const tx = gPart && fX != null ? cx0 + (fX - cx0) * 0.35 : cx0, ty = gPart && fY != null ? cy0 + (fY - cy0) * 0.35 : cy0;
+    // targets from the camera's ACTUAL state (camS), not by integrating the error: the camera eases with a lag, an
+    // integrator on top of it overshoots / drifts (car came out tiny or huge)
+    const cs = g.camS; if (!cs || !isFinite(ratio) || ratio <= 0) return;
+    p.set(0, v.hh * 0.5, v.HW); v.root.localToWorld(p); p.project(cam); const xn = p.x;
+    p.set(-v.len, v.hh * 0.5, v.HW); v.root.localToWorld(p); p.project(cam); const xt = p.x;
+    const visW = v.len * 2 / Math.max(0.01, Math.abs(xn - xt)); // metres across the screen at the car
+    const zT = Math.max(0.3, Math.min(1.8, cs.zoom * ratio));
+    const txW = cs.x - ((fl + fr) / 2 - tx) / W * visW; // where the camera's x must go (world metres)
+    const fxT = 0.5 - (txW + v.len / 2) / (cs.baseW * zT);
+    const fyT = Math.max(0.12, Math.min(0.95, cs.frameY + ((ft + fb) / 2 - ty) / H));
+    mc.zoom += (zT - mc.zoom) * ke; mc.fx += (Math.max(-0.8, Math.min(1.8, fxT)) - mc.fx) * ke; mc.fy += (fyT - mc.fy) * ke;
+  }
+  function startHot() { buildHot(); renderHot(); if (!hotLoop) hotLoop = requestAnimationFrame(hotFrame); }
+  function gPreview(k, dir) { gKey = k; gPaint = null; closePart(true); api.preview(k, dir); render.garage(); }
+  render.garage = () => {
+    const k = gKey, base = P.CARS[k], tier = M.carTier(k), cm = M.CAR_META[k];
+    if (!api.previewKey || api.previewKey() !== k) api.preview(k, 0);
+    $('gTier').textContent = tier; $('gTier').className = 'tierBadge t' + tier;
+    $('gName').textContent = base.name;
+    const own = ownCar(k);
+    const spec = M.buildSpec(k, own ? M.upOf(save, k) : null);
+    $('gSub').innerHTML = own ? `<span class="own">${save.car === k ? 'IN USE' : 'OWNED'}</span> · ${spec.hp} HP · ${spec.mass} KG · BEST ${save.best[k] ? save.best[k].toFixed(2) + 's' : '--'}`
+      : M.streakCar(k) ? `<span class="lock">LOCKED · DAY ${M.streakCar(k)} LOGIN STREAK</span> · ${spec.hp} HP` : !carOpen(k) ? `<span class="lock">LOCKED · ${lockWhy(k)}</span>` : `${cm.list ? '<span class="deal">LAUNCH DEAL</span>' : 'FOR SALE'} · ${spec.hp} HP · ${spec.mass} KG`;
+    const th = $('gThumbs');
+    if (!th.children.length) {
+      for (const key of M.CAR_ORDER) {
+        const d = document.createElement('div'); d.className = 'th'; d.style.setProperty('--car', `url(sprites/thumb_${key}.webp)`); d.dataset.k = key;
+        d.addEventListener('click', (e) => { e.stopPropagation(); if (key === gKey) return; snd.play('ui_click'); snd.play('rev_blip', { car: key, volume: 0.8 }); gPreview(key, M.CAR_ORDER.indexOf(key) > M.CAR_ORDER.indexOf(gKey) ? 1 : -1); });
+        th.appendChild(d);
+      }
+    }
+    for (const d of th.children) {
+      const key = d.dataset.k; d.className = 'th' + (key === k ? ' on' : '') + (!ownCar(key) && !carOpen(key) ? ' locked' : '') + (key === save.car ? ' cur' : '');
+      // owned cars: a render with their real paint + rims (main.js GT_snapCar, cached); others: the stock thumb
+      let u = null; if (ownCar(key)) try { u = window.GT_snapCar && window.GT_snapCar(key, 'player'); } catch { /* */ }
+      const want = `url(${u || `sprites/thumb_${key}.webp`})`;
+      if (d._car !== want) { d._car = want; d.style.setProperty('--car', want); }
+    }
+    renderStats($('gStats'), spec, null);
+    const a = $('gAction');
+    a.classList.remove('off');
+    if (own) { a.innerHTML = save.car === k ? '<span>IN USE</span>' : '<span>SELECT</span>'; if (save.car === k) a.classList.add('off'); }
+    else if (M.streakCar(k)) { a.innerHTML = `<span><i class="ico it4"></i>DAY ${M.streakCar(k)} STREAK</span>`; a.classList.add('off'); }
+    else if (!carOpen(k)) { a.innerHTML = `<span><i class="ico it4"></i>LOCKED</span>`; a.classList.add('off'); }
+    else { a.innerHTML = `<span>BUY ${cm.list ? `<s class="was">${fmt(cm.list)}</s>` : ''}${costHtml({ coins: cm.price })}</span>`; if (save.coins < cm.price) a.classList.add('off'); }
+    if (!own && gPart) closePart(true);   /* switched to a car you don't own: its panel closes */
+    startHot();
+    if (gPart) renderPart();
+  };
+  function statVals(spec) {
+    return { POWER: spec.hp + ' HP', GRIP: Math.round(spec.grip * 100), SHIFT: Math.round(60 * spec.shiftMul) + ' MS', NITRO: '+' + Math.round(spec.nitro * 100) + '%', WEIGHT: spec.mass + ' KG' };
+  }
+  function renderStats(el, spec, next) {
+    const s = M.stats(spec), v = statVals(spec), n = next ? M.stats(next) : null;
+    if (!el.children.length) el.innerHTML = Object.keys(s).map((k) => `<div class="sb"><span>${k}</span><b></b><div class="bar"><em></em><i></i></div></div>`).join('');
+    Object.keys(s).forEach((k, i) => {
+      const row = el.children[i];
+      row.querySelector('i').style.transform = `scaleX(${s[k]})`;
+      row.querySelector('em').style.transform = `scaleX(${n ? n[k] : 0})`;
+      rollText(row.querySelector('b'), v[k]);
+    });
+  }
+  // ---------- part panel (one per cluster) ----------
+  function openPart(id) {
+    const h = hotOf(id);
+    if (!ownCar(gKey)) { closePart(true); return; }   /* unowned car: no upgrade / style panel */
+    gPart = id; hotHint = false; gSub = null; gStyle = h[4][0] || null;
+    pTab = h[3].length && ownCar(gKey) ? 'up' : 'style';
+    $('garage').classList.add('focus');
+    renderPart();
+    /* slide in. Closed panel: adding .show is enough (its hidden style was already computed). Open panel: restart via a
+       style-only flush; offsetWidth forced a full layout of the fresh panel HTML (~120 ms on a Note 9) */
+    const pp = $('pPanel'); if (pp.classList.contains('show')) { pp.classList.remove('show'); void getComputedStyle(pp).transform; } pp.classList.add('show');
+    api.flashCar(h[3].find((p) => PART_ICON[p] != null && p !== 'exhaust') || undefined);
+    renderHot();
+    requestAnimationFrame(panelTop);
+  }
+  function closePart(silent) {
+    if (!gPart) return;
+    gPaint = null; gRim = null; gCosm = null; api.applyLook();
+    gPart = null; gSub = null;
+    $('garage').classList.remove('focus'); $('pPanel').classList.remove('show');
+    if (!silent) renderHot();
+  }
+  ui.closePart = closePart;
+  const pips = (lv, cap) => Array.from({ length: M.MAX_LV }, (_, j) => `<i class="${j < lv ? 'f' : j >= cap ? 'x' : ''}"></i>`).join('');
+  function renderPart() {
+    const id = gPart; if (!id) return;
+    const k = gKey, h = hotOf(id), own = ownCar(k);
+    const hasUp = h[3].length > 0 && own, hasStyle = h[4].length > 0;
+    if (pTab === 'up' && !hasUp) pTab = 'style';
+    if (pTab === 'style' && !hasStyle) pTab = 'up';
+    $('pIco').innerHTML = icoHtml(id); $('pName').textContent = h[1];
+    $('pTabs').classList.toggle('hidden', !(hasUp && hasStyle));
+    $('pTabUp').classList.toggle('on', pTab === 'up'); $('pTabStyle').classList.toggle('on', pTab === 'style');
+    for (const b of ['pList', 'pUp', 'pPaint', 'pRims', 'pEx', 'pStyleSeg', 'pOpts']) $(b).classList.add('hidden');
+    $('pPanel').classList.toggle('two', pTab === 'up');   /* landscape: part list | details side by side, UPGRADE pinned (min.css) */
+    $('pPips').innerHTML = '';
+    if (pTab === 'style') {
+      $('pLv').textContent = 'STYLE';
+      const seg = $('pStyleSeg');
+      seg.classList.toggle('hidden', h[4].length < 2);
+      seg.innerHTML = h[4].map((s) => `<button data-v="${s}" class="${s === gStyle ? 'on' : ''}">${STYLE_NAME[s]}</button>`).join('');
+      for (const b of seg.children) b.onclick = (e) => { e.stopPropagation(); snd.play('ui_click'); gStyle = b.dataset.v; gPaint = null; gRim = null; gCosm = null; api.applyLook(); renderPart(); };
+      if (gStyle === 'paint') { $('pPaint').classList.remove('hidden'); renderPaint(); }
+      else if (gStyle === 'rims') { $('pRims').classList.remove('hidden'); renderRims(); }
+      else if (gStyle === 'sound') { $('pOpts').classList.remove('hidden'); renderSound(); }
+      else { $('pOpts').classList.remove('hidden'); renderOpts(gStyle); }
+      return;
+    }
+    // UPGRADE: the cluster's parts as rows; the selected row's details below
+    const list = $('pList'); list.classList.remove('hidden');
+    if (!gSub || !h[3].includes(gSub)) gSub = h[3][0];
+    list.innerHTML = h[3].map((pid) => {
+      if (pid === 'exhaust') return `<button class="pRow${gSub === pid ? ' on' : ''}" data-p="exhaust"><span class="pRi">${ICON_SVG.exhaust}</span><b>EXHAUST SOUND</b><small>${((save.exhaust || {})[k] || 'sport').toUpperCase()}</small></button>`;
+      const st = partState(pid);
+      return `<button class="pRow${gSub === pid ? ' on' : ''}${st.can ? ' can' : ''}${st.open ? '' : ' shut'}" data-p="${pid}"><span class="pRi"><span class="ico up${PART_ICON[pid]}"></span></span><b>${st.part.name}</b>
+        <span class="pips">${pips(st.lv, st.cap)}</span><small>${!st.open ? `<i class="ico it4"></i>WIN ${M.partGateAt(pid)}` : st.max ? 'MAX' : st.lv >= st.cap ? 'NEEDS FUEL' : costHtml({ coins: st.price })}</small></button>`;
+    }).join('');
+    for (const b of list.children) b.onclick = (e) => { e.stopPropagation(); snd.play('ui_click'); gSub = b.dataset.p; renderPart(); };
+    if (gSub === 'exhaust') {
+      $('pLv').textContent = 'SOUND';
+      $('pEx').classList.remove('hidden');
+      const ex = (save.exhaust && save.exhaust[k]) || 'sport';
+      for (const b of $('exSeg').children) b.classList.toggle('on', b.dataset.v === ex);
+      return;
+    }
+    const st = partState(gSub);
+    $('pLv').textContent = `${st.part.name} · LV ${st.lv}/${M.MAX_LV}`;
+    $('pUp').classList.remove('hidden');
+    const L = M.upOf(save, k), part = st.part, lv = st.lv, capped = !st.max && lv >= st.cap;
+    $('uDesc').textContent = part.desc;
+    const spec = M.buildSpec(k, L), nextL = st.max || capped ? null : { ...L, [part.id]: lv + 1 }, next = nextL && M.buildSpec(k, nextL);
+    const a = M.partEffect(part, spec), b = next ? M.partEffect(part, next) : null;
+    $('uEffect').innerHTML = a.map(([lbl, v, unit], i) => `<div class="ef"><span>${lbl}</span><b>${v}${unit ? ' ' + unit : ''}${b ? ` &rarr; <em>${b[i][1]}${b[i][2] ? ' ' + b[i][2] : ''}</em>` : ''}</b></div>`).join('');
+    const et0 = M.predictET(k, L);
+    if (next) { const et1 = M.predictET(k, nextL); $('uEt').innerHTML = `${et0.toFixed(2)}s &rarr; ${et1.toFixed(2)}s<em>-${Math.max(0, et0 - et1).toFixed(2)}</em>`; }
+    else $('uEt').innerHTML = `${et0.toFixed(2)}s`;
+    const btn = $('uBuy');
+    btn.classList.toggle('off', st.max || capped || !st.can);
+    btn.innerHTML = !st.open ? `<span><i class="ico it4"></i>OPENS AT CAREER WIN ${M.partGateAt(st.part.id)}</span>` : st.max ? '<span>MAXED OUT</span>' : capped ? '<span>UPGRADE FUEL SYSTEM FIRST</span>' : `<span>UPGRADE ${costHtml({ coins: st.price })}</span>`;
+  }
+  // ---------- SOUND (EXHAUST cluster, STYLE tab): exhaust tier, engine swap (no turbo sounds); each option has a preview ----------
+  function soundProfile(car, over) { return { car, ...M.soundOf(save, car), ...(over || {}) }; }
+  function previewSound(prof) {
+    const A = C.audio(); api.audioInit();
+    try {
+      if (A && A.previewSound) { A.previewSound(prof); return; }       // audio side: 2-3 s rev of exactly this profile
+      if (A && A.setEngineProfile) A.setEngineProfile('player', prof);  // fallback: switch the garage engine, blip it
+    } catch { /* audio optional */ }
+    snd.play('rev_blip', { car: prof.car, volume: 0.9 });
+  }
+  ui.soundProfile = (car) => soundProfile(car);
+  if (save._turboRefund) { const n = save._turboRefund; delete save._turboRefund; persist(); setTimeout(() => toast(`TURBO SOUND REMOVED · ${coinI}${fmt(n)} REFUNDED`, true), 1500); } // main.js: setEngineProfile('player', ui.soundProfile(car)) at race start
+  function renderSound() {
+    const k = gKey, cur0 = M.soundOf(save, k), box = $('pOpts');
+    box.innerHTML = Object.entries(M.SOUND).map(([kind, S0]) => `<div class="sndSec"><span class="sndH">${S0.name}</span><div class="sndList">${S0.opts.map((o) => {
+      const own = M.soundOwned(save, kind, o), on = cur0[kind] === o.id;
+      const tag = on ? 'FITTED' : own ? 'FIT' : o.unlock && !o.coins && !o.gems ? M.UNLOCK_HINT[o.unlock] : (o.gems ? gemI + o.gems : coinI + fmt(o.coins)) + (o.unlock ? ' · OR ' + (o.unlock === 'daily' ? 'DAILY GOLD' : M.UNLOCK_HINT[o.unlock]) : '');
+      return `<div class="snd${on ? ' on' : ''}${own ? '' : ' lockd'}" data-k="${kind}" data-v="${o.id}"><button class="sndPlay" aria-label="Preview">${'<svg class="i" viewBox="0 0 24 24"><path d="M8 5.5v13l10-6.5z"/></svg>'}</button>
+        <b>${o.name}</b><button class="sndAct${on ? ' off' : ''}">${tag}</button></div>`;
+    }).join('')}</div></div>`).join('') + '<div class="paintInfo" id="sndInfo">ENGINE AND EXHAUST SOUNDS ARE COSMETIC: NO SPEED CHANGE</div>';
+    for (const row of box.querySelectorAll('.snd')) {
+      const kind = row.dataset.k, id = row.dataset.v;
+      row.querySelector('.sndPlay').onclick = (e) => { e.stopPropagation(); previewSound(soundProfile(k, { [kind]: id })); row.classList.remove('playing'); void row.offsetWidth; row.classList.add('playing'); };
+      row.querySelector('.sndAct').onclick = (e) => { e.stopPropagation(); pickSound(kind, id); };
+    }
+  }
+  function pickSound(kind, id) {
+    const k = gKey, o = M.SOUND[kind].opts.find((q) => q.id === id);
+    if (!ownCar(k)) { toast('BUY THIS CAR FIRST'); return; }
+    if (M.soundOwned(save, kind, o)) { /* fit */ }
+    else if (o.unlock && !o.coins && !o.gems) { toast('LOCKED · ' + M.UNLOCK_HINT[o.unlock]); snd.play('error'); return; }
+    else {
+      const cost = o.gems ? { gems: o.gems } : { coins: o.coins };
+      if (!confirmTwice('snd' + kind + id, `${o.name}: TAP AGAIN TO BUY ${costHtml(cost)}`)) return;
+      if (!spend(cost)) return;
+      save.soundOwned.push(kind + ':' + id); snd.play('ui_confirm'); toast(`${o.name} UNLOCKED`, true);
+    }
+    save.sound[k] = { ...M.soundOf(save, k), [kind]: id };
+    if (kind === 'exhaust') { save.exhaust = save.exhaust || {}; save.exhaust[k] = id; } // older readers of save.exhaust
+    persist();
+    const prof = soundProfile(k);
+    try { const A = C.audio(); if (A && A.setEngineProfile && save.car === k) A.setEngineProfile('player', prof); } catch { /* audio optional */ }
+    previewSound(prof);
+    renderSound();
+  }
+  // ---------- code-only cosmetics (underglow, smoke, flame, tint, decal): save.cosm[car][kind] ----------
+  let gCosm = null; // {kind, id} being previewed (not owned yet)
+  window.GT_cosm = (car) => { const c = M.cosmOf(save, car || save.car); if (gCosm && (car || save.car) === gKey) c[gCosm.kind] = gCosm.id; return c; };
+  // underglow: the paint-coloured floor glow under the car takes the chosen colour (main.js setPaint resets it)
+  function applyCosm(view) {
+    const g = window.__g, v = view || (g && g.pView); if (!v || !v.paintGlow || !v.isPlayer) return;
+    const c = window.GT_cosm(v.key), o = M.COSM.glow.opts.find((q) => q.id === c.glow);
+    if (!o || !o.hex) return; // off: setPaint already set the paint-coloured glow
+    const u = v.paintGlow.material.uniforms;
+    u.uCol1.value.set(o.hex); u.uCol2.value.set(o.hex); for (const cc of [u.uCol1.value, u.uCol2.value]) cc.multiplyScalar(1.6);
+  }
+  // re-apply paint (keeps a paint preview) + cosmetics on the garage car
+  function refreshLook() { const v = window.__g && window.__g.pView; if (v) v.setPaint(M.paintById(gPaint || save.paint[v.key])); applyCosm(); }
+  window.GT_cosmGlow = applyCosm; // main.js setPaint calls it (garage + race)
+  ui.applyCosm = applyCosm;
+  function renderOpts(kind) {
+    const k = gKey, C0 = M.COSM[kind], cur0 = M.cosmOf(save, k)[kind], sel = gCosm && gCosm.kind === kind ? gCosm.id : cur0;
+    const box = $('pOpts');
+    box.innerHTML = `<div class="optGrid">${C0.opts.map((o) => {
+      const own = M.cosmOwned(save, kind, o);
+      return `<button class="opt${o.id === sel ? ' on' : ''}${own ? '' : o.rare ? ' lockd rare' : ' prem'}" data-v="${o.id}">${o.hex ? `<i style="background:${o.hex}"></i>` : ''}<b>${o.name}</b></button>`;
+    }).join('')}</div><div class="paintInfo" id="optInfo"></div>`;
+    const o = C0.opts.find((q) => q.id === sel), own = M.cosmOwned(save, kind, o);
+    $('optInfo').innerHTML = `${C0.name}: ${o.name}<small>${own ? (o.id === cur0 ? 'FITTED' : 'TAP TO FIT') : o.rare ? 'LOCKED · ' + rimHint(o, kind) : 'TAP AGAIN TO BUY · ' + costHtml(o)}</small>`;
+    for (const b of box.querySelectorAll('.opt')) b.onclick = (e) => { e.stopPropagation(); snd.play('ui_click'); pickCosm(kind, b.dataset.v); };
+  }
+  function pickCosm(kind, id) {
+    const k = gKey, o = M.COSM[kind].opts.find((q) => q.id === id);
+    if (!ownCar(k)) { toast('BUY THIS CAR FIRST'); return; }
+    if (!M.cosmOwned(save, kind, o)) {
+      if (o.rare || !(gCosm && gCosm.kind === kind && gCosm.id === id)) { gCosm = { kind, id }; refreshLook(); renderOpts(kind); return; } // preview
+      if (!spend({ coins: o.coins })) return;
+      save.cosmOwned.push(kind + ':' + id); snd.play('ui_confirm'); toast(`${o.name} ${M.COSM[kind].name} UNLOCKED`, true);
+    }
+    gCosm = null;
+    if (ownCar(k)) { save.cosm[k] = { ...(save.cosm[k] || {}), [kind]: id }; persist(); }
+    else gCosm = { kind, id };
+    refreshLook(); renderOpts(kind);
+  }
+  function renderPaint() {
+    const k = gKey, grid = $('paintGrid');
+    const sel = gPaint || save.paint[k] || 'factory';
+    if (!grid.children.length) {
+      for (const p of M.PAINTS) {
+        const d = document.createElement('div'); d.dataset.id = p.id; d.title = p.name;
+        d.addEventListener('click', (e) => { e.stopPropagation(); snd.play('ui_click'); pickPaint(p); });
+        grid.appendChild(d);
+      }
+    }
+    const avg = api.factoryColor(k);
+    for (const d of grid.children) {
+      const p = M.paintById(d.dataset.id);
+      d.className = 'sw' + (p.id === sel ? ' on' : '') + (p.rare ? ' rare' + (save.paintsOwned.includes(p.id) ? '' : ' lockd') : (p.coins || p.gems) && !save.paintsOwned.includes(p.id) ? ' prem' + (p.gems ? ' gemc' : '') : '');
+      d.style.background = !p.hex ? avg : p.finish === 2 ? `linear-gradient(135deg, ${p.hex}, #fff 48%, ${p.hex2})`
+        : p.finish === 1 ? `radial-gradient(circle at 35% 30%, #fff 0, ${p.hex} 38%, #111 100%)` : p.hex;
+    }
+    const p = M.paintById(sel), info = $('paintInfo');
+    const locked = (p.coins || p.gems) && !save.paintsOwned.includes(p.id);
+    if (p.rare && !save.paintsOwned.includes(p.id)) { info.innerHTML = `${p.name}<small>LOCKED · ${rimHint(p, 'paint')}</small>`; return; }
+    info.innerHTML = locked ? `${p.name}<small>TAP AGAIN TO BUY · ${costHtml(p)}</small>` : `${p.name}<small>${p.finish === 2 ? 'PEARL' : p.finish === 1 ? 'METALLIC' : p.hex ? 'GLOSS' : 'FACTORY'}${ownCar(k) ? '' : ' · PREVIEW'}</small>`;
+  }
+  // rare rims load as textures on demand (sprites/rim_<id>.webp, same framing as wheel.webp) before the car uses them
+  const rimTex = {};
+  function ensureRim(id) {
+    const g = window.__g;
+    if (!g || !g.T) return Promise.resolve(false);
+    if (g.T[id]) return Promise.resolve(true);
+    if (rimTex[id]) return rimTex[id];
+    return (rimTex[id] = new Promise((res) => {
+      const im = new Image();
+      im.onload = () => { g.T[id] = A.texFrom(im, { srgb: false }); g.T[id + '_b'] = A.texFrom(A.blurWheel(im), { srgb: false }); res(true); };
+      im.onerror = () => { rimTex[id] = null; res(false); };
+      im.src = M.rimFile(id);
+    }));
+  }
+  ui.ensureRim = ensureRim;
+  // load the player's fitted rare rims early (a race places the car with save.rims straight away)
+  const preRims = () => { if (!window.__g || !window.__g.T || !window.__g.T.wheel) { setTimeout(preRims, 500); return; } for (const k in save.rims) if (save.rims[k]) ensureRim(save.rims[k]); };
+  setTimeout(preRims, 300);
+  const rimOwned = (r) => !r.coins && !r.rare || save.rimsOwned.includes(r.id);
+  const newRims = new Set();   /* rims won since the STYLE tab was last open: a NEW flag on the tile */
+  /* where a locked rim comes from: career drops name the win that gives them */
+  function rimHint(r, kind = 'rim') {   /* kind: 'rim' / 'paint' / a COSM key (chapter 2-5 paints and underglows drop too) */
+    if (r.unlock === 'drop') for (const t in M.BEATS) for (const w in M.BEATS[t]) if (M.BEATS[t][w].some((b) => (b.kind === kind || b.ck === kind) && b.id === r.id)) return +w === M.RUNGS ? `BEAT THE TIER ${t} BOSS` : `TIER ${t} · CAREER WIN ${w}`;
+    return M.UNLOCK_HINT[r.unlock] || '';
+  }
+  function renderRims() {
+    const k = gKey, rr = $('rimRow');
+    if (!rr.children.length) {
+      for (const r of M.RIMS) {
+        const d = document.createElement('div'); d.dataset.id = r.id; d.title = r.name; d.style.backgroundImage = `url(${M.rimFile(r.id)})`;
+        d.addEventListener('click', (e) => { e.stopPropagation(); snd.play('ui_click'); pickRim(r); });
+        rr.appendChild(d);
+      }
+    }
+    const rim = gRim || save.rims[k] || 'wheel';
+    for (const d of rr.children) {
+      const r = M.RIMS.find((q) => q.id === d.dataset.id);
+      d.className = 'rim rar_' + (r.rar || 'common') + (r.id === rim ? ' on' : '') + (!rimOwned(r) ? (r.rare ? ' rare lockd' : ' prem') : r.rare ? ' rare' : '') + (newRims.has(r.id) ? ' new' : '');
+      d.style.setProperty('--rar', M.rarOf(r).col);
+    }
+    const r = M.RIMS.find((q) => q.id === rim), R = M.rarOf(r);
+    $('rimInfo').innerHTML = `<span class="rarTag" style="--rar:${R.col}">${R.name}</span>${r.name}<small>${!rimOwned(r) ? (r.rare ? 'LOCKED · ' + rimHint(r) : 'TAP AGAIN TO BUY · ' + costHtml(r)) : ownCar(k) ? (save.rims[k] || 'wheel') === r.id ? 'FITTED' : 'TAP TO FIT' : 'PREVIEW'}</small>`;
+    newRims.delete(rim);
+  }
+  function pickPaint(p) {
+    const k = gKey;
+    if (!ownCar(k)) { toast('BUY THIS CAR FIRST'); return; }
+    if (p.rare && !save.paintsOwned.includes(p.id)) { gPaint = p.id; api.setPaint(p, true); renderPaint(); return; } // preview + unlock hint
+    const locked = (p.coins || p.gems) && !save.paintsOwned.includes(p.id);
+    if (locked) {
+      if (gPaint === p.id) { // second tap buys
+        if (!spend(p)) return;
+        save.paintsOwned.push(p.id); persist(); snd.play('ui_confirm');
+        toast(`${p.name} UNLOCKED`, true);
+      } else { gPaint = p.id; api.setPaint(p, true); renderPaint(); return; }
+    }
+    gPaint = null;
+    if (ownCar(k)) { if (p.id === 'factory') delete save.paint[k]; else save.paint[k] = p.id; persist(); if (p.id !== 'factory' && performance.now() - (ui._paintT || 0) > 6000) { ui._paintT = performance.now(); S.reiSay('paint'); } }
+    else gPaint = p.id;
+    api.setPaint(p, true);
+    renderPaint();
+  }
+  let gRim = null; // a locked rare rim being previewed
+  async function pickRim(r) {
+    const k = gKey;
+    if (!ownCar(k)) { toast('BUY THIS CAR FIRST'); return; }
+    if (!(await ensureRim(r.id))) { toast('RIM NOT LOADED, TRY AGAIN'); return; }
+    if (r.rare && !rimOwned(r)) { gRim = r.id; api.setRim(r.id); renderRims(); return; } // preview only, unlock hint shown
+    gRim = null;
+    if (r.coins && !save.rimsOwned.includes(r.id)) {
+      if (!confirmTwice('rim' + r.id, `${r.name} RIMS: TAP AGAIN TO BUY ${costHtml(r)}`)) { api.setRim(r.id); return; }
+      if (!spend(r)) { api.setRim(save.rims[k] || 'wheel'); return; }
+      save.rimsOwned.push(r.id); snd.play('ui_confirm'); toast(`${r.name} RIMS UNLOCKED`, true);
+    }
+    if (ownCar(k)) { save.rims[k] = r.id; persist(); }
+    api.setRim(r.id);
+    renderRims();
+  }
+  let armed = '', armedT = 0;
+  function confirmTwice(key, msg) {
+    if (armed === key && performance.now() - armedT < 4000) { armed = ''; return true; }
+    armed = key; armedT = performance.now(); toast(msg); return false;
+  }
+  const stepCar = (d) => {
+    if (ob === 1) { const L = M.STARTERS, i = L.indexOf(gKey); gPreview(L[(i + L.length + d) % L.length], d); renderPick(true); snd.play('rev_blip', { car: gKey, volume: 0.8 }); return; }   /* car pick: starters only */
+    if (ob) return;
+    const i = M.CAR_ORDER.indexOf(gKey); gPreview(M.CAR_ORDER[(i + M.CAR_ORDER.length + d) % M.CAR_ORDER.length], d); };
+  tap($('gPrev'), () => stepCar(-1));
+  tap($('gNext'), () => stepCar(1));
+  tap($('pX'), () => closePart());
+  tap($('gStatBtn'), () => { const st = $('gStats'); st.classList.toggle('hidden'); $('gStatBtn').classList.toggle('on', !st.classList.contains('hidden')); });
+  tap($('pTabUp'), () => { pTab = 'up'; gPaint = null; gRim = null; gCosm = null; api.applyLook(); renderPart(); });
+  tap($('pTabStyle'), () => { pTab = 'style'; renderPart(); });
+  // swipe on the scene changes car (overview only); a tap on empty scene closes the part panel
+  let sw = null;
+  addEventListener('pointerdown', (e) => { if (cur === 'garage' && e.target.id === 'gl') sw = { x: e.clientX, y: e.clientY, t: performance.now() }; });
+  addEventListener('pointerup', (e) => {
+    if (!sw || cur !== 'garage') { sw = null; return; }
+    const dx = e.clientX - sw.x, dy = e.clientY - sw.y; sw = null;
+    if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.4) { if (!gPart) { snd.play('ui_click'); stepCar(dx < 0 ? 1 : -1); } }
+    else if (Math.abs(dx) < 8 && Math.abs(dy) < 8 && gPart) { snd.play('ui_click', { volume: 0.5 }); closePart(); }
+  });
+  for (const b of $('exSeg').children) {
+    b.addEventListener('pointerdown', (e) => e.stopPropagation());
+    b.addEventListener('click', (e) => {
+      e.stopPropagation(); api.audioInit();
+      const k = gKey; if (!save.owned.includes(k)) return;
+      save.exhaust = save.exhaust || {}; save.exhaust[k] = b.dataset.v; persist();
+      const A = C.audio();
+      try { if (A && A.setEngineProfile && save.car === k) A.setEngineProfile('player', { car: k, exhaust: b.dataset.v }); } catch { /* audio optional */ }
+      snd.play('rev_blip', { car: k, volume: 0.9 });
+      renderPart();
+    });
+  }
+  tap($('gAction'), () => {
+    const k = gKey, cm = M.CAR_META[k];
+    if (save.owned.includes(k)) { if (save.car !== k) { save.car = k; persist(); snd.play('ui_confirm'); toast(P.CARS[k].name + ' SELECTED', true); render.garage(); } return; }
+    if (M.streakCar(k)) { toast(`DAY ${M.streakCar(k)} LOGIN STREAK REWARD`); return; }
+    if (!carOpen(k)) { toast(`${lockWhy(k)} FIRST`); return; }
+    if (!confirmTwice('car' + k, `BUY ${P.CARS[k].short}? TAP AGAIN`)) return;
+    if (!spend({ coins: cm.price })) return;
+    const prevCar = save.car;
+    save.owned.push(k); M.upOf(save, k); save.car = k; persist();
+    snd.play('car_rollin'); snd.play('ui_confirm'); toast(`${P.CARS[k].name} IS YOURS!`, true);
+    ui.offerLook(prevCar, k);   /* bring your look onto the new car (one tap) */
+    api.flashCar(); S.reiSay('new_car');
+    render.garage();
+  }, null);
+  tap($('uBuy'), () => {
+    const k = gKey, st = partState(gSub);
+    if (!save.owned.includes(k)) { toast('BUY THIS CAR FIRST'); return; }   /* never upgrade a car you don't own */
+    if (!st || !st.open || st.max || st.lv >= st.cap) return;
+    if (!spend({ coins: st.price })) return;
+    const etA = M.predictET(k, M.upOf(save, k));
+    M.upOf(save, k)[st.part.id]++; persist();
+    const d0 = Math.max(0, etA - M.predictET(k, M.upOf(save, k)));
+    { const d = d0; gainPop(st.part.name, st.lv + 1, d); if (k === save.car) ui._gains.push([st.part.name, d]); }
+    snd.play('purchase'); snd.play(st.part.id === 'nitro' ? 'nitro_start' : st.part.id === 'turbo' || st.part.id === 'intercooler' ? 'blowoff' : 'backfire', { volume: 0.5 });
+    if (snd.say) snd.say('upgrade_complete');
+    const hs = $('hot').querySelector(`[data-id="${gPart}"]`);
+    if (hs) { hs.classList.remove('flash'); void hs.offsetWidth; hs.classList.add('flash'); }
+    api.flashCar(st.part.id);
+    if (C.hasLine('rei', 'up_' + st.part.id)) S.reiSay('up_' + st.part.id);
+    render.garage();
+    if (guide) guideBought(st.part.name, d0);
+  }, null);
+
+  // ---------- career: world map of Kurogane Bay (worldmap.js), one AREA per tier, area card with the rival ladder ----------
+  let cTier = null, cRung = null, cList = false, cardOpen = false, wm = null, unlocking = false;
+  const shownProg = {};
+  const QS = new URLSearchParams(location.search);
+  const areaQ = (QS.get('area') || '').toUpperCase();
+  function ensureMap() {
+    if (wm) return wm;
+    wm = createWorldMap($('wm'), {
+      onPin: (t, e) => { if (unlocking) return; snd.play('ui_click'); openCard(t); },
+      onEmpty: () => { if (cardOpen && !unlocking && !flying) { snd.play('ui_click', { volume: 0.5 }); closeCard(); } },
+      onStop: (t, i) => {   /* a route stop: open the chapter card on that rival (beaten / next ones only) */
+        if (unlocking || flying) return;
+        if (i > (save.career[t] || 0)) { snd.play('error'); toast(i === M.RUNGS - 1 ? `BEAT ${M.RUNGS - 1 - save.career[t]} MORE TO OPEN THE BOSS GATE` : 'BEAT THE RIVALS BEFORE IT FIRST'); return; }
+        snd.play('ui_click'); if (t !== cTier || !cardOpen) openCard(t); cRung = i; renderCard(); syncRoute(true);
+      },
+    });
+    addEventListener('resize', () => { if (cur === 'career' && !unlocking) requestAnimationFrame(() => { layoutMap(); wm.focus(cardOpen && cTier ? cTier : careerPos().t, { instant: true }); }); });
+    return wm;
+  }
+  // the map's visible area = screen minus the top bar and the card / CTA bar (focus centres the pin in what is left)
+  function layoutMap() {
+    if (!wm) return;
+    const land = document.body.classList.contains('landscape'), H = innerHeight, W = innerWidth;
+    const tb = $('topbar').getBoundingClientRect(), card = $('aCard').getBoundingClientRect(), cta = $('aCta').getBoundingClientRect();
+    const top = tb.bottom > 0 ? tb.bottom : 0;
+    let bottom = 0, right = 0;
+    if (cardOpen) { if (land) right = Math.max(0, W - card.left); else bottom = Math.max(0, H - card.top); }
+    else if (cta.height) bottom = Math.max(0, H - cta.top);
+    wm.setInsets({ top, bottom, right, left: 0 });
+    wm.resize();
+  }
+  /* the chapter route on the map: the open card's tier (if open), else the current chapter */
+  let flying = false, flyIn = false;
+  function syncRoute(pan) {
+    if (!wm) return;
+    const t = cardOpen && cTier && M.tierOpen(save, cTier) ? cTier : careerPos().t, prog = save.career[t] || 0;
+    const stops = Array.from({ length: M.RUNGS }, (_, i) => {
+      const ri = M.rungInfo(t, i), pl = ri.place, TI = M.TYPE_INFO[ri.type] || M.TYPE_INFO.drag;
+      return { x: pl.x, y: pl.y, type: ri.type, icon: TI.icon, boss: ri.isBoss, name: pl.name + ' · ' + TI.name, st: i < prog ? 'beat' : i === prog ? 'next' : 'lock', sel: cardOpen && t === cTier && i === cRung };
+    });
+    wm.setRoute({ tier: t, stops });
+    if (pan && cardOpen && t === cTier && cRung != null) { const pl = M.rungInfo(t, cRung).place; wm.focusXY(pl.x, pl.y, { zoom: document.body.classList.contains('landscape') ? 1.6 : 1.8, dur: 0.55 }); }
+  }
+  function areaState() {
+    const open = {}, prog = {}, boss = {};
+    for (const t of M.TIERS) { open[t] = M.tierOpen(save, t); prog[t] = save.career[t]; boss[t] = C.ART[C.BOSS[t]]; }
+    return { open, prog, boss, cur: careerPos().t, car: save.car };
+  }
+  render.career = () => {
+    ensureMap();
+    const s = areaState();
+    let unlockFrom = null, won = null;
+    for (const t of M.TIERS) { // progress since the map was last shown: a rival win or a boss win (= new area)
+      const p0 = shownProg[t];
+      if (p0 != null && s.prog[t] > p0) { if (s.prog[t] >= M.RUNGS && M.TIERS[M.tierIdx(t) + 1]) unlockFrom = t; else won = t; }
+      shownProg[t] = s.prog[t];
+    }
+    if (!ui._fxFlag && QS.has('unlockfx')) { // ?unlockfx=C plays the C unlock (&unlockhold=1.8 freezes it there)
+      ui._fxFlag = 1; const i = M.TIERS.indexOf((QS.get('unlockfx') || 'C').toUpperCase()); if (i > 0) unlockFrom = M.TIERS[i - 1];
+    }
+    wm.setState(s);
+    wm.start(); wm.flyOff(); flying = false; $('career').classList.remove('flying');
+    // coming back to the map: select your CURRENT rival, not an older one left selected earlier (it raced a rematch by mistake)
+    if (cTier && cRung != null && cRung < (save.career[cTier] || 0)) cRung = null;
+    if (unlockFrom) { requestAnimationFrame(() => playUnlock(unlockFrom)); return; }
+    if (save.carGift) setTimeout(() => { if (cur === 'career' && !unlocking) showGift(); }, 500);
+    const flagT = !ui._areaFlag && M.TIERS.includes(areaQ) ? areaQ : null; ui._areaFlag = 1;
+    if (flagT) openCard(flagT, { instant: true });
+    else if (won || (cardOpen && cTier)) openCard(won || cTier, { instant: true });
+    else { closeCard(true); requestAnimationFrame(() => { layoutMap(); wm.focus(s.cur, { instant: true, zoom: +QS.get('mapzoom') || 1.2 }); }); }
+    syncRoute();
+    if (won) setTimeout(() => { if (cur !== 'career') return; const [x, y] = wm.pinScreen(won); /* user: coin rain on the map pin looked bad -> removed */ snd.play('coin', { volume: 0.6 }); }, 500);
+  };
+  function playUnlock(from) {
+    const to = M.TIERS[M.tierIdx(from) + 1], A = AREAS[to];
+    unlocking = true; closeCard(true); $('career').classList.add('unlocking'); $('aCta').classList.add('hidden'); layoutMap();
+    const hold = QS.has('unlockhold') ? +QS.get('unlockhold') : -1;
+    wm.unlock(from, to, {
+      hold,
+      onBurst: (kind, t) => {
+        const [x, y] = wm.pinScreen(t);
+        if (kind === 'cleared') { J.rankUp(x, y); snd.play('finish_win', { volume: 0.5 }); toast(`${AREAS[from].name} CLEARED!`, true); }
+        else {
+          J.rankUp(x, y); J.ring(x, y, { col: '#ffffff', r1: 110, width: 2 }); J.spark(x, y, { n: 10, cols: ['#ffffff', '#ff4fa8'], speed: 260, size: 4 });
+          snd.play('whoosh', { volume: 0.5 }); snd.play('ui_confirm'); toast(`NEW AREA: ${A.name}`, true);
+        }
+      },
+      onDone: () => { unlocking = false; $('career').classList.remove('unlocking'); openCard(to); setTimeout(showGift, 350); },
+    });
+  }
+  function openCard(t, { instant = false } = {}) {
+    if (t !== cTier) { cRung = null; cList = false; }
+    cTier = t; cardOpen = true; wm.select(t);
+    $('aCta').classList.add('hidden');
+    renderCard();
+    const card = $('aCard'); card.classList.remove('show'); void card.offsetWidth; card.classList.add('show');
+    layoutMap();
+    wm.focus(t, { instant, zoom: document.body.classList.contains('landscape') ? 1.25 : 1.45 });
+    syncRoute();
+    if (api.prepareArea) api.prepareArea(t);
+    if (window.GT_story && !flyIn) window.GT_story.area(t); /* story.js: the area's intro scene, first time only (not on the NEXT RACE fly-in: the race start plays it, before the VS screen) */
+  }
+  function closeCard(silent) {
+    cardOpen = false; cList = false;
+    if (wm) wm.select(null);
+    $('aCard').classList.remove('show');
+    renderCta(); syncRoute();
+    if (!silent) layoutMap();
+  }
+  function renderCta() { // card closed: slim bar with the next race
+    const el = $('aCta'), p = careerPos(), A = AREAS[p.t], ri = M.rungInfo(p.t, p.i);
+    el.classList.toggle('hidden', cardOpen || unlocking);
+    el.innerHTML = `<div class="ctaArea" id="ctaArea"><span class="tierBadge t${p.t}">${p.t}</span><div><b>${A.name}</b><small>${p.done ? 'ALL CROWNS WON' : ri.isBoss ? `BOSS: ${ri.name} · ${ri.place.name}` : `RIVAL ${p.i + 1}/${M.RUNGS} · ${ri.place.name}`}</small></div></div>`
+      + `<button class="btn mid gold" id="ctaRace"><span>${ri.isBoss ? 'BOSS' : 'RACE'}</span></button>`;
+    tap($('ctaArea'), () => openCard(p.t));
+    tap($('ctaRace'), () => { cTier = p.t; cRung = p.i; raceSel(); }, 'ui_confirm');
+  }
+  // ---------- a chapter needs a car of its class: say so, and offer the direct path (own one -> USE it, else -> GARAGE on it) ----------
+  const chNo = (t) => M.tierIdx(t) + 1;
+  function needCarFor(t) {
+    const mine = save.owned.filter((k) => M.tierIdx(M.carTier(k)) >= M.tierIdx(t)).sort((a, b) => M.tierIdx(M.carTier(a)) - M.tierIdx(M.carTier(b)))[0];
+    if (mine) return { k: mine, own: true, btn: 'USE ' + P.CARS[mine].short, sub: `YOU OWN THE ${P.CARS[mine].name}` };
+    const k = M.giftCar(t);
+    return { k, own: false, btn: 'GET THE ' + P.CARS[k].short, sub: `${P.CARS[k].name} · ${coinI}${fmt(M.CAR_META[k].price)} IN THE GARAGE` };
+  }
+  function needCarHTML(t) {
+    const n = needCarFor(t);
+    return `<div class="needCar"><i class="ncCar" style="background-image:url(sprites/thumb_${n.k}.webp)"></i><div class="ncTx"><em>CHAPTER ${chNo(t)} NEEDS A</em>`
+      + `<b><span class="tierBadge t${t}">${t}</span>CLASS CAR</b><small>YOURS IS CLASS ${M.carTier(save.car)} · ${n.sub}</small></div></div>`;
+  }
+  function needCarGo(t) {
+    const n = needCarFor(t);
+    if (n.own) { save.car = n.k; persist(); api.applyLook && api.applyLook(); snd.play('car_rollin'); toast(P.CARS[n.k].name + ' SELECTED', true); renderCard(); return; }
+    ui._gKey = n.k; ui.show('garage');
+  }
+  // ---------- chapter reward moment: the free car of the next tier (meta.grantChapterCar sets save.carGift) ----------
+  // Shown once: on the map right after the area unlock, or on the next meta screen (old saves get it at boot).
+  let giftOn = false, giftHeld = false;
+  function showGift() {
+    const k = save.carGift;
+    if (!k || !P.CARS[k] || giftOn) return false;
+    /* never on top of a race (user, 2026-11-13: the chapter-2 car sheet popped over staging): a race running = held until
+       the next result / menu / map; a race launching (map fly-in, wipe) or another sheet / story up = try again shortly */
+    if (racing()) { giftHeld = true; return false; }
+    if (cur === 'garage') return false;   /* the player went to the garage: the gift waits for the next menu / map (render.menu / render.career) */
+    if (beatOn || busy || flying || (cur === 'career' && unlocking) || document.body.classList.contains('storyOn')) { setTimeout(showGift, 800); return true; }
+    giftOn = true; giftHeld = false;
+    const t = M.carTier(k), c = P.CARS[k], spec = M.buildSpec(k, M.upOf(save, k)), et = M.predictET(k, M.upOf(save, k));
+    let el = $('gift');
+    if (!el) { el = document.createElement('div'); el.id = 'gift'; document.body.appendChild(el); }
+    el.innerHTML = `<div class="panel giftSheet"><i class="gfRays"></i>
+      <div class="gfHead"><span class="gfKick">CHAPTER ${chNo(t) - 1} REWARD</span><div class="sheetTitle">NEW CAR!</div></div>
+      <div class="gfCar"><i class="gfGlow"></i><i class="gfImg" style="background-image:url(sprites/thumb_${k}.webp)"></i></div>
+      <div class="gfInfo"><div class="gfName"><span class="tierBadge t${t}">${t}</span><b>${c.name}</b></div>
+        <div class="gfStats"><span>POWER<b>${spec.hp} hp</b></span><span>1/4 MILE<b>~${et.toFixed(2)}s</b></span><span>CLASS<b>${t}</b></span></div>
+        <p class="gfTxt">CHAPTER ${chNo(t)} NEEDS A ${t}-CLASS CAR. THIS ONE IS ON THE HOUSE.</p>
+        <button class="btn mid gold" id="gfGo"><span>RACE CHAPTER ${chNo(t)}</span></button><button class="btn mid" id="gfGarage"><span>SEE IT IN THE GARAGE</span></button></div></div>`;
+    el.className = 'show';
+    const close = () => { delete save.carGift; persist(); giftOn = false; el.className = 'hidden'; if (cur === 'menu') setTimeout(maybeClaim, 400); ui.offerLook(save.giftFrom, k); delete save.giftFrom; setTimeout(showBeats, 450); };
+    tap($('gfGo'), () => { close(); cTier = t; cRung = Math.min(save.career[t], M.RUNGS - 1); if (cur === 'career') raceSel(); else wipe(() => api.startRace({ mode: 'career', tier: t, rung: cRung })); }, 'ui_confirm');
+    tap($('gfGarage'), () => { close(); ui._gKey = k; ui.show('garage'); });
+    snd.play('car_rollin'); snd.play('finish_win', { volume: 0.5 });
+    setTimeout(() => { const b = el.querySelector('.gfCar'); if (!b || !b.isConnected) return; const r = b.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2; J.rankUp(x, y); J.spark(x, y, { n: 18, cols: ['#ffffff', '#ffcc33', '#ff4fa8'], speed: 380, size: 6, grav: 220 }); }, 260);
+    return true;
+  }
+  ui.showGift = showGift;
+  function raceSel() {
+    const okTier = M.tierIdx(M.carTier(save.car)) >= M.tierIdx(cTier);
+    if (!okTier) { snd.play('error'); openCard(cTier); return; }   /* the card explains it: "CHAPTER N NEEDS A X-CLASS CAR" + a direct path */
+    const go = { mode: 'career', tier: cTier, rung: cRung };
+    if (cur !== 'career' || !wm || flying) { wipe(() => api.startRace(go)); return; }
+    flyRace(go);
+  }
+  /* user (2026-11-13): starting a career race flies the map camera to that rung's place (pin + "PLACE · TYPE"), then the
+     wipe into the VS screen; the race env is that place's env (main.js usePlace) */
+  function flyRace(go) {
+    const ri = M.rungInfo(go.tier, go.rung), pl = ri.place, TI = M.TYPE_INFO[ri.type] || M.TYPE_INFO.drag;
+    flying = true; $('career').classList.add('flying');
+    if (api.prepareEnv) api.prepareEnv(pl.env);
+    wm.setInsets({ top: $('topbar').getBoundingClientRect().bottom || 0, bottom: 0, right: 0, left: 0 });
+    snd.play('whoosh', { volume: 0.45 });
+    const hold = QS.has('flyhold');
+    wm.flyTo(pl.x, pl.y, { label: pl.name, sub: `${TI.icon}${TI.name} · ${ri.isBoss ? 'BOSS' : 'RIVAL ' + (go.rung + 1) + '/' + M.RUNGS}`, type: ri.type, dur: 0.85, hold: hold ? 1e6 : 0.55,
+      onDone: () => wipe(() => api.startRace(go)) });
+    setTimeout(() => { if (flying && cur === 'career') snd.play('ui_confirm', { volume: 0.5 }); }, 700);
+  }
+  /* NEXT RIVAL on the result screen: back to the map, fly to the next stop, race */
+  ui.flyToRace = (tier, rung) => {
+    cTier = tier; cRung = rung; cardOpen = true;
+    flyIn = true; try { ui.show('career', { instant: true }); } finally { flyIn = false; }
+    requestAnimationFrame(() => requestAnimationFrame(() => { if (cur === 'career') { cTier = tier; cRung = rung; syncRoute(); flyRace({ mode: 'career', tier, rung }); } else api.startRace({ mode: 'career', tier, rung }); }));
+  };
+  function renderList(open, prog) {
+    const lad = $('aList');
+    if (!cList || !lad) return;
+    lad.innerHTML = Array.from({ length: M.RUNGS }, (_, i) => {
+      const ri = M.rungInfo(cTier, i), st = !open ? 'lock' : i < prog ? 'beat' : i === prog ? 'next' : 'lock';
+      const rw = M.reward({ mode: 'career', tier: cTier, rung: i, won: true, boss: ri.isBoss, replay: i < prog }).lines[0][1];
+      return `<div class="rung ${st}${ri.isBoss ? ' boss' : ''}${i === cRung && open ? ' sel' : ''}" data-i="${i}"><span class="n">${i < prog ? '&#10003;' : i + 1}</span>
+        <span class="nm">${ri.isBoss ? '<span class="bossTag">BOSS</span>' : ''}${ri.name}<small>${ri.place.name} · ${(M.TYPE_INFO[ri.type] || M.TYPE_INFO.drag).name} · ~${ri.et.toFixed(2)}s</small></span><span class="rw">${coinI}${fmt(rw)}</span></div>`;
+    }).join('');
+    for (const d of lad.children) d.addEventListener('click', (e) => { e.stopPropagation(); const i = +d.dataset.i; if (!open || i > prog) return; snd.play('ui_click'); cRung = i; renderCard(); syncRoute(true); });
+    lad.onclick = (e) => e.stopPropagation();
+    const sel = lad.querySelector('.sel') || lad.querySelector('.next');
+    if (sel) requestAnimationFrame(() => sel.scrollIntoView({ block: 'nearest' }));
+  }
+  function renderCard() {
+    const t = cTier, A = AREAS[t], open = M.tierOpen(save, t), prog = save.career[t], card = $('aCard');
+    if (cRung == null || cRung > prog) cRung = Math.min(prog, M.RUNGS - 1);
+    const bossId = C.BOSS[t], bi = M.rungInfo(t, M.RUNGS - 1), prevT = M.TIERS[M.tierIdx(t) - 1], nextT = M.TIERS[M.tierIdx(t) + 1];
+    const bossRw = M.reward({ mode: 'career', tier: t, rung: M.RUNGS - 1, won: true, boss: true });
+    const hero = `<div class="aHero${open ? '' : ' lock'}" style="background-image:url(${A.thumb})">
+      <div class="aHeroTx"><span class="tierBadge t${t}">${t}</span><div class="aName">${A.name}<small>${bi.crew}</small></div></div>
+      <div class="aBoss${open ? '' : ' lock'}${prog >= M.RUNGS ? ' beat' : ''}"><i style="background-image:url(${C.ART[bossId]})"></i><span class="bossTag">BOSS</span><b>${C.charName(bossId)}</b></div>
+      <div class="aProg"><i style="transform:scaleX(${prog / M.RUNGS})"></i><span>${prog >= M.RUNGS ? 'CLEARED' : `${prog}/${M.RUNGS}`}</span></div>
+      <button class="aX" id="aX" aria-label="Close"></button></div>`;
+    const ladder = '<div class="aLad">' + Array.from({ length: M.RUNGS }, (_, i) => {
+      const ri = M.rungInfo(t, i), st = !open ? 'lock' : i < prog ? 'beat' : i === prog ? 'next' : 'lock', cid = C.rivalChar(ri);
+      const TI = M.TYPE_INFO[ri.type] || M.TYPE_INFO.drag;
+      return `<div class="rs ${st}${ri.isBoss ? ' boss' : ''}${ri.isBoss && i > prog ? ' gate' : ''}${i === cRung && open ? ' sel' : ''}" data-i="${i}"><i style="background-image:url(${C.ART[cid]})"></i>${ri.type !== 'drag' ? `<em class="rtB rt_${ri.type}" title="${TI.name}">${TI.icon}</em>` : ''}${ri.isBoss && i > prog ? '<em class="ico it4"></em>' : ''}<b>${i < prog ? '&#10003;' : ri.isBoss ? 'BOSS' : i + 1}</b></div>`;
+    }).join('') + '</div>';
+    if (!open) {
+      card.innerHTML = hero + ladder + `<div class="aLock"><i class="ico it4"></i><div>AREA LOCKED<small>BEAT ${C.charName(C.BOSS[prevT])}, THE TIER ${prevT} BOSS AT ${AREAS[prevT].name}</small></div></div>
+        <div class="aRw"><span>BOSS PRIZE</span><b>${coinI}${fmt(bossRw.coins)}</b><b>${gemI}10</b><span class="aUn">${nextT ? 'OPENS ' + AREAS[nextT].name : 'THE MIDNIGHT CROWN'}</span></div>
+        <div class="row"><button class="btn mid" id="aGo"><span>GO TO ${AREAS[careerPos().t].name}</span></button></div>`;
+      tap($('aGo'), () => openCard(careerPos().t));
+    } else {
+      const ri = M.rungInfo(t, cRung), myT = M.predictET(save.car, M.upOf(save, save.car)) + 0.04;
+      const okTier = M.tierIdx(M.carTier(save.car)) >= M.tierIdx(t), replay = cRung < prog;
+      const rw = M.reward({ mode: 'career', tier: t, rung: cRung, won: true, boss: ri.isBoss, replay });
+      const faster = myT < ri.et, rid = C.rivalChar(ri);
+      const gate = ri.isBoss ? `<div class="aRw boss"><span>BOSS GATE</span><b>${coinI}${fmt(rw.coins)}</b>${replay ? '' : `<b>${gemI}10</b>`}<span class="aUn">${nextT ? (prog >= M.RUNGS ? 'OPENED ' : 'OPENS ') + AREAS[nextT].name : 'THE MIDNIGHT CROWN'}</span></div>` : '';
+      card.innerHTML = hero + ladder + (cList ? '<div class="cLadder aList" id="aList"></div>' : '') + `<div class="aSel${cList ? ' hidden' : ''}"><div class="whoRow"><span class="av c_${rid}" style="background-image:url(${C.ART[rid]})"></span><div class="who">${ri.isBoss ? '<span class="bossTag">BOSS</span>' : ''}${ri.name}<small>${ri.look ? `<i class="rvSw${ri.look.finish ? ' f' + ri.look.finish : ''}" style="--sw:${ri.look.hex};--sw2:${ri.look.hex2 || ri.look.hex}${ri.look.glow ? ';--gl:' + ri.look.glow : ''}"></i>${ri.look.name} ` : ''}${P.CARS[ri.car].name}${replay ? ' · REMATCH' : ri.isBoss ? '' : ` · RIVAL ${cRung + 1}/${M.RUNGS}`}</small></div></div>
+        ${okTier ? `<div class="cmp"><div>RIVAL<b>~${ri.et.toFixed(2)}s</b></div><div>YOU (BEST)<b class="${faster ? 'good' : 'bad'}">~${myT.toFixed(2)}s</b></div><div>PRIZE<b>${fmt(rw.lines[0][1])}</b></div></div>` : needCarHTML(t)}
+        <div class="rtLine"><span class="rtChip rt_${ri.type}">${M.TYPE_INFO[ri.type].icon}${M.TYPE_INFO[ri.type].name}</span><span><b class="rtPlace">AT ${ri.place.name}</b> ${M.TYPE_INFO[ri.type].rules}</span></div>
+        ${gate}${okTier ? `<div class="note ${faster ? 'ok' : ''}">${faster ? 'YOU HAVE THE PACE. NAIL THE SHIFTS!' : 'SLOWER ON PAPER: UPGRADE OR SHIFT PERFECT'}</div>` : ''}</div>
+        <div class="row"><button class="btn mid sm listBtn" id="cListBtn" aria-label="List"><span>${cList ? 'CARD' : 'LIST'}</span></button><button class="btn mid gold" id="cRace"><span>${okTier ? (ri.isBoss ? 'RACE THE BOSS' : replay ? 'REMATCH' : 'RACE') : needCarFor(t).btn}</span></button></div>`;
+      tap($('cRace'), () => { if (!okTier) { needCarGo(t); return; } raceSel(); }, 'ui_confirm');
+      tap($('cListBtn'), () => { cList = !cList; renderCard(); });
+    }
+    for (const d of card.querySelectorAll('.rs')) d.addEventListener('click', (e) => {
+      e.stopPropagation(); const i = +d.dataset.i;
+      if (!open || i > prog) { if (i === M.RUNGS - 1 && open) toast(`BEAT ${M.RUNGS - 1 - prog} MORE TO OPEN THE BOSS GATE`); return; }
+      snd.play('ui_click'); cRung = i; renderCard(); syncRoute(true);
+    });
+    tap($('aX'), () => closeCard());
+    card.onclick = (e) => e.stopPropagation();
+    const sel = card.querySelector('.rs.sel') || card.querySelector('.rs.next');
+    if (sel) requestAnimationFrame(() => { const lad = sel.parentElement; lad.scrollLeft = sel.offsetLeft - lad.clientWidth / 2 + sel.offsetWidth / 2; });
+    renderList(open, prog);
+  }
+  ui.careerNext = (tier, rung) => { cTier = tier; cRung = rung; cardOpen = true; };
+
+  // ---------- first run (user, 2026-11-13): a brand-new player starts in the GARAGE. Rei asks for one free ENGINE
+  // upgrade (tap ENGINE -> UPGRADE · FREE, full juice + the gain), then a big RACE button goes straight into the tutorial
+  // duel. Everything else in the garage is hidden (body.onboard, min.css) and a pointer marks the one thing to tap.
+  let ob = 0, obLoop = 0;
+  function obEl(id, html) { let e = $(id); if (!e) { e = document.createElement('div'); e.id = id; e.innerHTML = html; document.body.appendChild(e); } return e; }
+  function obSay(text) {
+    const t = obEl('obTip', `<i class="obFace" style="background-image:url(${C.ART.rei || ''})"></i><div><b>REI</b><p></p></div>`);
+    t.querySelector('p').textContent = text; t.classList.remove('in'); void t.offsetWidth; t.classList.add('in');
+  }
+  function obTarget() {
+    if (ob === 1) return $('obBuy');
+    if (ob === 3) { const b = $('obRace'); return b && !b.classList.contains('wait') ? b : null; }
+    return null;
+  }
+  /* the target's rect is cached: re-read on a new target, a resize / rotation, and at most every 250 ms (the pointer's
+     .35 s transform transition smooths the steps); styles are written only when they change */
+  const obC = { el: null, r: null, at: 0, op: '', tf: '' };
+  for (const ev of ['resize', 'orientationchange']) addEventListener(ev, () => { obC.el = null; });
+  function obFrame(now) {
+    obLoop = ob ? requestAnimationFrame(obFrame) : 0;
+    const pt = $('obPoint'), el = obTarget();
+    if (!pt) return;
+    const tn = now || performance.now();
+    if (el !== obC.el || tn - obC.at >= 250) { obC.el = el; obC.at = tn; obC.r = el && el.getBoundingClientRect(); }
+    const r = obC.r;
+    let op = '0', tf = obC.tf;
+    if (r && r.width) { op = '1'; tf = `translate(${(r.left + r.width * (ob === 1 ? 0.86 : 0.72)).toFixed(0)}px, ${(r.top + r.height * 0.5).toFixed(0)}px)`; }
+    if (op !== obC.op || pt.style.opacity !== op) { obC.op = op; pt.style.opacity = op; }
+    if (tf !== obC.tf || (tf && pt.style.transform !== tf)) { obC.tf = tf; pt.style.transform = tf; }
+  }
+  // car pick card: the car on show (gKey), its key stats, price and the cash left after buying it
+  function renderPick(roll) {
+    const k = gKey, sp = M.buildSpec(k, null), price = M.CAR_META[k].price, et = M.predictET(k, null), i = M.STARTERS.indexOf(k);
+    const c = obEl('obPick', '');
+    const bar = (v, max) => `<i style="transform:scaleX(${Math.max(0.08, Math.min(1, v / max)).toFixed(2)})"></i>`;
+    c.innerHTML = `<div class="opHead"><span class="opTag">STARTER ${i + 1}/${M.STARTERS.length}</span><b>${P.CARS[k].name}</b><em>CLASS D · ${sp.gears.length}-SPEED · ${Math.round(sp.redline)} RPM</em></div>
+      <div class="opStats"><div><span>POWER</span><b>${sp.hp} HP</b><u>${bar(sp.hp, 340)}</u></div><div><span>WEIGHT</span><b>${sp.mass} KG</b><u>${bar(1300 - sp.mass, 400)}</u></div>
+      <div><span>1/4 MILE</span><b>~${et.toFixed(2)} s</b><u>${bar(12.2 - et, 0.9)}</u></div></div>
+      <div class="opCash"><span>PRICE</span><b>${costHtml({ coins: price })}</b><span>CASH</span><b>${coinI}<span id="opCash">${fmt(save.coins)}</span></b><span>LEFT</span><b class="left">${coinI}${fmt(save.coins - price)}</b></div>
+      <button class="btn big gold" id="obBuy"><span class="mTxt">BUY<small>${fmt(price)} COINS</small></span></button>
+      <div class="opDots">${M.STARTERS.map((q) => `<i class="${q === k ? 'on' : ''}"></i>`).join('')}</div>`;
+    if (roll) { c.classList.remove('swap'); void c.offsetWidth; c.classList.add('swap'); }
+    tap($('obBuy'), buyFirst, null);
+    /* user (2026-11-14, iOS): BUY sometimes needed a second tap (the pulsing button's first tap gave no click); a finger
+       lifting on the button buys at once. buyFirst() runs once (ob 1 -> 2), so the click that may follow is a no-op */
+    $('obBuy').addEventListener('pointerup', (e) => { if (e.pointerType !== 'mouse' && $('obBuy').classList.contains('rel')) buyFirst(); });
+  }
+  function buyFirst() {
+    if (ob !== 1) return;
+    const k = gKey, price = M.CAR_META[k].price;
+    if (save.coins < price) return;
+    ob = 2;
+    save.coins -= price; save.owned.push(k); M.upOf(save, k); save.car = k; persist();
+    shownCoins = save.coins;
+    snd.play('purchase'); snd.play('ui_confirm');   /* user: no roll-in sound */
+    rollText($('opCash'), fmt(save.coins), 700);   /* the cash counter runs down */
+    $('obPick').classList.add('bought');
+    document.body.classList.add('obBuying');   /* the arrows leave once the car is bought */
+    /* user: after buying, the car stays where it is (no drive-out / drive-in) */
+    setTimeout(() => { api.flashCar('engine'); }, 650);
+    setTimeout(() => { api.flashCar('nitro'); }, 1000);
+    let el = $('gainPop'); if (!el) { el = document.createElement('div'); el.id = 'gainPop'; document.body.appendChild(el); }
+    el.innerHTML = `<i class="gpRay"></i><b><svg class="gpKey" viewBox="0 0 24 24"><circle cx="7.5" cy="12" r="4"/><path d="M11.5 12H21M17.5 12v3M20 12v2.5"/></svg>IT'S <em>YOURS!</em></b><span>${P.CARS[k].name} &middot; ${coinI}${fmt(save.coins)} LEFT</span>`;
+    el.classList.remove('go'); void el.offsetWidth; el.classList.add('go');
+    clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove('go'), 1900);
+    setTimeout(() => obStep(3), 1300);
+  }
+  function obStep(n) {
+    ob = n;
+    document.body.classList.remove('obBuying');
+    document.body.classList.toggle('onboard', n > 0);
+    for (const q of [1, 3]) document.body.classList.toggle('ob' + q, n === q);
+    obEl('obPoint', '<i class="obRing"></i><svg viewBox="0 0 48 48"><path d="M19 44V20a4 4 0 0 1 8 0v10l9 2a5 5 0 0 1 4 5.6L38.6 44z"/></svg>');
+    if (n === 1) { renderPick(false); obSay(`Pick your first ride. ${fmt(save.coins)} coins buys one of them.`); }
+    else if (n === 3) {
+      const pk = $('obPick'); if (pk) pk.classList.add('gone');
+      const b = obEl('obRace', '<button class="btn big gold" id="obGo"><span class="mTxt">RACE<small>FIRST DUEL · VS SHO</small></span></button>');
+      b.classList.remove('wait', 'in'); void b.offsetWidth; b.classList.add('in');
+      if (!b._wired) { b._wired = 1; tap($('obGo'), () => { if (ob !== 3) return; ob = 4; wipe(() => { obStep(0); api.startRace({ mode: 'tutorial' }); }); }, 'ui_confirm'); }
+      obSay(`She's yours. Now go beat SHO. ${MOBILE_UI ? 'Hold the gas' : 'Hold SPACE'}, keep the needle in the green.`);
+    } else {
+      for (const id of ['obTip', 'obPoint', 'obRace', 'obPick']) { const e = $(id); if (e) e.classList.remove('in', 'gone', 'bought'); }
+    }
+    if (n && !obLoop) obLoop = requestAnimationFrame(obFrame);
+  }
+  const MOBILE_UI = matchMedia('(pointer: coarse)').matches || /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+  /* first run (user, 2026-11-13): no car yet -> pick one of the D-class starters (arrows / swipe), BUY with the starting
+     cash, then RACE straight into the tutorial duel. A save with a car but no first race yet goes straight to RACE. */
+  ui.onboard = () => {
+    const has = M.hasCar(save);
+    ui._gKey = has ? save.car : (M.STARTERS.includes(save.car) ? save.car : M.STARTERS[0]);
+    ob = has ? 3 : 1;   /* set before swap so the garage renders in onboarding mode */
+    swap('garage');
+    obStep(ob);
+  };
+  ui.onboarding = () => ob;
+  ui.gKey = () => gKey;
+  // ---------- upgrade advice: the part with the best 1/4-mile gain per coin (predictET), affordable ones first ----------
+  function bestUp(k) {
+    if (!ownCar(k)) return null;
+    const L = M.upOf(save, k), et0 = M.predictET(k, L), tier = M.carTier(k);
+    let b = null;
+    for (const part of M.PARTS) {
+      const lv = L[part.id]; if (lv >= M.partCap(L, part.id) || !M.partOpen(save, part.id)) continue;
+      const price = M.partPrice(part, lv, tier), gain = et0 - M.predictET(k, { ...L, [part.id]: lv + 1 });
+      if (gain < 0.005) continue;
+      const afford = price <= save.coins, sc = gain / price;
+      if (!b || (afford && !b.afford) || (afford === b.afford && sc > b.sc)) b = { part, lv, price, gain, afford, sc };
+    }
+    return b;
+  }
+  ui.bestUp = bestUp;
+  ui.focusPart = (pid) => { const h = HOT.find((x) => x[3].includes(pid)); if (!h || !ownCar(gKey)) return; openPart(h[0]); gSub = pid; renderPart(); };
+  ui._gains = [];
+  // big "ENGINE +1 -> -0.08 s" burst over the car after a purchase (and the same line on the next result screen)
+  function gainPop(name, lv, d) {
+    let el = $('gainPop');
+    if (!el) { el = document.createElement('div'); el.id = 'gainPop'; document.body.appendChild(el); }
+    el.innerHTML = `<i class="gpRay"></i><b>${name} <em>+1</em></b><span>LV ${lv} &rarr; <strong>&minus;${d.toFixed(2)} s</strong> on the 1/4 mile</span>`;
+    el.classList.remove('go'); void el.offsetWidth; el.classList.add('go');
+    clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove('go'), 1900);
+  }
+
+  // ---------- early progression reveals (user, 2026-11-13): save.prog.q holds the beats won (meta.progAfterWin) ----------
+  // One sheet at a time in the chapter-reward look (#gift): rims = an unboxing (the wheel spins in, a chrome shine sweeps,
+  // rarity colour; EQUIP fits them and the car rolls in on the new wheels and revs), car = NEW CAR AT THE DEALER, then
+  // part groups / paint / underglow. Shown on the result screen after the coins land, else on the next meta screen.
+  const beatIcon = (b, cls) => (b.kind === 'rim' ? `<i class="${cls} bi rim" style="background-image:url(${M.rimFile(b.id)});--rar:${M.rarOf(M.RIMS.find((r) => r.id === b.id)).col}"></i>`
+    : b.kind === 'car' ? `<i class="${cls} bi car" style="background-image:url(sprites/thumb_${b.k}.webp)"></i>`
+    : b.kind === 'parts' ? `<i class="${cls} bi parts"><span class="ico up${PART_ICON[M.PART_GROUPS[b.g].parts[0]]}"></span></i>`
+    : b.kind === 'paint' ? `<i class="${cls} bi paint" style="--sw:${M.paintById(b.id).hex}"></i>`
+    : b.kind === 'cosm' && b.ck === 'decal' ? `<i class="${cls} bi paint decal" style="--sw:#ffffff"></i>`
+    : b.kind === 'cosm' ? `<i class="${cls} bi glow" style="--sw:${(M.COSM[b.ck].opts.find((o) => o.id === b.id) || {}).hex || '#fff'}"></i>` : '');
+  const kickOf = (b) => (b.w >= M.RUNGS ? `TIER ${b.tier} BOSS REWARD` : `CAREER WIN ${b.w}${b.tier !== 'D' ? ' · TIER ' + b.tier : ''}`);
+  let beatOn = false;
+  const racing = () => { const g = window.__g && window.__g.G; return !cur && !!(g && g.state !== 'result'); };
+  const beatsWaiting = () => !!(save.prog && save.prog.q && save.prog.q.length);
+  function showBeats() {
+    const q = save.prog && save.prog.q;
+    if (!q || !q.length || beatOn || giftOn || ob || racing()) return false;
+    /* user (2026-11-16, phone): UPGRADE on the result popped the rims unboxing over the upgrade panel. Reveals wait for a calm
+       screen (result, menu, map); in the garage only the look offer for a car just bought there shows */
+    if (cur === 'garage' && !(q[0] && q[0].kind === 'look')) return false;
+    if (document.body.classList.contains('storyOn') || busy || (cur === 'career' && (unlocking || flying))) { setTimeout(showBeats, 800); return true; }   /* busy = a wipe (maybe into a race): re-check after it */
+    const b = q[0];
+    if (!b || !b.kind) { q.shift(); persist(); return showBeats(); }
+    beatOn = true;
+    let el = $('gift');
+    if (!el) { el = document.createElement('div'); el.id = 'gift'; document.body.appendChild(el); }
+    const done = (after) => {
+      q.shift(); persist(); beatOn = false; el.className = 'hidden'; el.innerHTML = '';
+      if (after) after(); else if (q.length) setTimeout(showBeats, 380); else if (cur === 'menu') { renderMenuNext(); setTimeout(maybeClaim, 400); }
+    };
+    if (b.kind === 'rim') rimSheet(el, b, done); else if (b.kind === 'car') carSheet(el, b, done); else if (b.kind === 'look') lookSheet(el, b, done); else itemSheet(el, b, done);
+    return true;
+  }
+  ui.showBeats = showBeats;
+  /* main.js startRace: a reveal / gift sheet still up (or about to pop) when a race starts is put away, not consumed:
+     the beat stays first in save.prog.q, the gift stays in save.carGift; the next result / menu / map shows them */
+  ui.holdSheets = () => {
+    const el = $('gift');
+    if (giftOn) { giftOn = false; giftHeld = true; }
+    beatOn = false;
+    if (el && !el.classList.contains('hidden') && el.className) { el.className = 'hidden'; el.innerHTML = ''; if (J && J.clear) J.clear(); }   /* its sparkle burst goes too */
+  };
+  const at = (sel) => { const e = document.querySelector(sel); if (!e) return null; const r = e.getBoundingClientRect(); return r.width ? [r.left + r.width / 2, r.top + r.height / 2, r] : null; };
+  function rimSheet(el, b, done) {
+    const r = M.RIMS.find((x) => x.id === b.id), R = M.rarOf(r), car = save.car, first = b.tier === 'D' && b.w === 1;
+    el.innerHTML = `<div class="panel giftSheet beatSheet rimSheet" style="--rar:${R.col}"><i class="gfRays"></i>
+      <div class="gfHead"><span class="gfKick">${kickOf(b)}</span><div class="sheetTitle">${first ? 'FREE MAGS!' : 'NEW RIMS!'}</div></div>
+      <div class="bsStage"><i class="bsGlow"></i><div class="bsBox"><i class="bsRim" style="background-image:url(${M.rimFile(r.id)})"></i><i class="bsShine"></i></div><div class="bsCar"></div></div>
+      <div class="gfInfo"><span class="rarTag big" style="--rar:${R.col}">${R.name}</span><div class="gfName"><b>${r.name}</b></div>
+        <p class="gfTxt" id="bsTxt">${first ? 'YOUR FIRST SET OF AFTERMARKET WHEELS. ON THE HOUSE.' : 'A NEW SET FOR YOUR COLLECTION. FIT THEM ANY TIME IN THE GARAGE.'}</p>
+        <button class="btn mid gold" id="bsGo"><span>EQUIP</span></button><button class="btn mid" id="bsLater"><span>LATER</span></button></div></div>`;
+    el.className = 'show';
+    ensureRim(r.id);
+    snd.play('whoosh', { volume: 0.55 });
+    setTimeout(() => {   /* the wheel lands: rarity ring + sparks */
+      const p = at('#gift .bsBox'); if (!p) return;
+      J.ring(p[0], p[1], { col: R.col, r1: 170, width: 6, life: 0.55 }); J.ring(p[0], p[1], { col: '#ffffff', r1: 110, width: 3 });
+      J.spark(p[0], p[1], { n: 24, cols: ['#ffffff', R.col, '#ffd76a'], speed: 420, size: 6, grav: 260 });
+      snd.play('purchase'); snd.play('ui_confirm', { volume: 0.7 });
+    }, 760);
+    let fitted = false;
+    tap($('bsGo'), () => { if (fitted) { done(); return; } fitted = true; equipRim(el, r, car); }, null);
+    tap($('bsLater'), () => { newRims.add(r.id); done(); });
+  }
+  async function equipRim(el, r, car) {
+    save.rims[car] = r.id; persist();
+    const ok = await ensureRim(r.id);
+    if (ok) api.setRim(r.id);   /* the live car (race result / garage) wears them now */
+    let url = null; try { url = ok && window.GT_snapCar ? window.GT_snapCar(car, 'player') : null; } catch { /* thumb below */ }
+    const geo = url && window.GT_snapGeo ? window.GT_snapGeo(url) : null;
+    const sheet = el.querySelector('.rimSheet'); if (!sheet) return;
+    sheet.classList.add('fitted');
+    $('bsTxt').textContent = `FITTED TO YOUR ${P.CARS[car].name}. LOOKS MEAN.`;
+    $('bsGo').innerHTML = '<span>NICE!</span>'; $('bsLater').classList.add('hidden');
+    snd.play('ui_confirm');
+    const box = el.querySelector('.bsCar');
+    box.innerHTML = `<div class="bsRoll"><img src="${url || `sprites/thumb_${car}.webp`}" alt="">${(geo || []).map((w) => `<i class="bsW" style="left:${((w.x - w.rw) * 100).toFixed(2)}%;top:${((w.y - w.rh) * 100).toFixed(2)}%;width:${(w.rw * 200).toFixed(2)}%;height:${(w.rh * 200).toFixed(2)}%;background-image:url(${M.rimFile(r.id)})"></i>`).join('')}</div>`;
+    const roll = box.firstChild, img = roll.querySelector('img');
+    const go = () => {   /* roll in on the new wheels (they turn with the distance), settle, rev */
+      const W = roll.getBoundingClientRect().width || 300, dist = W * 1.1, dur = 1050, ease = 'cubic-bezier(.12,.7,.25,1)';
+      roll.animate([{ transform: `translateX(${-dist}px)` }, { transform: 'translateX(0)' }], { duration: dur, easing: ease, fill: 'both' });
+      for (const [i, w] of [...roll.querySelectorAll('.bsW')].entries()) {
+        const rpx = (geo[i].rw || 0.08) * W, deg = dist / Math.max(4, rpx) * 57.3;
+        w.animate([{ transform: `rotate(${-deg}deg)` }, { transform: 'rotate(0deg)' }], { duration: dur, easing: ease, fill: 'both' });
+      }
+      snd.play('car_rollin', { volume: 0.7 });
+      setTimeout(() => {
+        if (!roll.isConnected) return;
+        snd.play('rev_blip', { car, volume: 1 }); setTimeout(() => snd.play('rev_blip', { car, volume: 0.9 }), 330);
+        roll.animate([{ transform: 'none' }, { transform: 'translateY(2%) rotate(-1.4deg)' }, { transform: 'translateY(-1%) rotate(.5deg)' }, { transform: 'none' }], { duration: 520, easing: 'ease-out' });
+        for (const w of roll.querySelectorAll('.bsW')) w.animate([{ transform: 'rotate(0deg)' }, { transform: 'rotate(540deg)' }], { duration: 650, easing: 'cubic-bezier(.2,.6,.3,1)' });
+        const q = roll.getBoundingClientRect(), g0 = geo && geo[0];
+        if (g0) { const x = q.left + g0.x * q.width, y = q.top + (g0.y + g0.rh * 0.8) * q.height;
+          J.spark(x, y, { n: 16, cols: ['#ffffff', '#c8c8d8', '#8a8aa0'], speed: 160, size: 9, grav: -40, life: 0.8, dir: Math.PI, spread: 1.4 }); }
+        const p = at('#gift .bsCar'); if (p) J.spark(p[0], p[1], { n: 14, cols: ['#ffffff', M.rarOf(r).col], speed: 300, size: 5, grav: 240 });
+      }, dur - 60);
+    };
+    if (img.complete) go(); else img.onload = go;
+  }
+  function carSheet(el, b, done) {
+    const k = b.k, c = P.CARS[k], cm = M.CAR_META[k], spec = M.buildSpec(k, null), et = M.predictET(k, null);
+    const my = M.predictET(save.car, M.upOf(save, save.car)), left = Math.max(0, cm.price - save.coins);
+    const perRace = M.reward({ mode: 'career', tier: 'D', rung: Math.min(save.career.D || 0, M.RUNGS - 2), won: true }).coins + 60;
+    el.innerHTML = `<div class="panel giftSheet beatSheet carSheet"><i class="gfRays"></i>
+      <div class="gfHead"><span class="gfKick">${kickOf(b)} · UNLOCKED</span><div class="sheetTitle">NEW CAR!</div><span class="bsAt">AT THE DEALER</span></div>
+      <div class="gfCar"><i class="gfGlow"></i><i class="gfImg" style="background-image:url(sprites/thumb_${k}.webp)"></i><i class="bsShine car" style="-webkit-mask-image:url(sprites/thumb_${k}.webp);mask-image:url(sprites/thumb_${k}.webp)"></i></div>
+      <div class="gfInfo"><div class="gfName"><span class="tierBadge tD">${M.carTier(k)}</span><b>${c.name}</b></div>
+        <div class="gfStats"><span>POWER<b>${spec.hp} hp</b></span><span>1/4 MILE<b>~${et.toFixed(2)}s</b></span><span>VS YOURS<b class="${et < my ? 'good' : ''}">${et < my ? '&minus;' + (my - et).toFixed(2) + 's' : '+' + (et - my).toFixed(2) + 's'}</b></span></div>
+        <div class="bsDeal"><span>LAUNCH DEAL</span>${cm.list ? `<s>${fmt(cm.list)}</s>` : ''}<b>${coinI}${fmt(cm.price)}</b></div>
+        <div class="bsSave"><u><i style="transform:scaleX(${Math.min(1, save.coins / cm.price).toFixed(3)})"></i></u><small>${left ? `${coinI}${fmt(left)} TO GO · ABOUT ${Math.max(1, Math.ceil(left / perRace))} MORE WIN${Math.ceil(left / perRace) > 1 ? 'S' : ''}` : 'YOU CAN BUY IT RIGHT NOW!'}</small></div>
+        <button class="btn mid gold" id="bsGo"><span>${left ? 'SEE IT AT THE DEALER' : 'BUY IT AT THE DEALER'}</span></button><button class="btn mid" id="bsLater"><span>LATER</span></button></div></div>`;
+    el.className = 'show';
+    snd.play('car_rollin'); snd.play('finish_win', { volume: 0.5 });
+    setTimeout(() => { const p = at('#gift .gfCar'); if (!p) return; J.rankUp(p[0], p[1]); J.spark(p[0], p[1], { n: 18, cols: ['#ffffff', '#ffcc33', '#3dff8c'], speed: 380, size: 6, grav: 220 }); }, 260);
+    tap($('bsGo'), () => done(() => { ui._gKey = k; ui.show('garage'); }), 'ui_confirm');
+    tap($('bsLater'), () => done());
+  }
+  /* "their car keeps getting more beautiful" (user, 2026-11-13): paint, underglow and decal rewards are shown on the
+     player's own car: the stage holds the car as it is now (before); EQUIP fits the reward, a shine band wipes the new
+     look in over the old one (after), sparks in the rarity colour. LATER keeps it in the STYLE tab. */
+  const snapOf = (car) => { let u = null; try { u = window.GT_snapCar && window.GT_snapCar(car, 'player'); } catch { /* thumb */ } return u || `sprites/thumb_${car}.webp`; };
+  /* car snapshots come without wheels (like rimSheet): the car's own rims go on top at the snapshot's wheel spots */
+  const snapHtml = (car) => {
+    const url = snapOf(car), geo = window.GT_snapGeo ? window.GT_snapGeo(url) : null, rf = M.rimFile(save.rims[car] || 'wheel');
+    return `<img src="${url}" alt="">${(geo || []).map((w) => `<i class="bsW" style="left:${((w.x - w.rw) * 100).toFixed(2)}%;top:${((w.y - w.rh) * 100).toFixed(2)}%;width:${(w.rw * 200).toFixed(2)}%;height:${(w.rh * 200).toFixed(2)}%;background-image:url(${rf})"></i>`).join('')}`;
+  };
+  function wipeIn(el, car, rarCol, glowHex) {   /* the fitted look wipes in over the old snapshot */
+    const box = el.querySelector('.bsSnap'); if (!box || !box.isConnected) return;
+    const after = document.createElement('div'); after.className = 'bsAfter';
+    after.innerHTML = `${glowHex ? `<i class="bsUnder" style="--sw:${glowHex}"></i>` : ''}${snapHtml(car)}`;
+    box.appendChild(after);
+    const band = document.createElement('i'); band.className = 'bsWipe'; box.appendChild(band);
+    snd.play('whoosh', { volume: 0.5 });
+    setTimeout(() => {
+      if (!box.isConnected) return;
+      const p = at('#gift .bsSnap'); if (p) { J.ring(p[0], p[1], { col: rarCol, r1: 190, width: 5, life: 0.5 }); J.spark(p[0], p[1], { n: 22, cols: ['#ffffff', rarCol, '#ffd76a'], speed: 380, size: 6, grav: 220 }); }
+      snd.play('purchase'); snd.play('rev_blip', { car, volume: 0.8 });
+    }, 620);
+  }
+  function itemSheet(el, b, done) {
+    const I = M.beatInfo(b), car = save.car, R = I.rar ? M.RARITY[I.rar] : null, rc = R ? R.col : '#ffd76a';
+    let vis = '', txt = '', act = 'EQUIP', glowHex = null;
+    if (b.kind === 'parts') {
+      const g = M.PART_GROUPS[b.g];
+      vis = `<div class="bsParts">${g.parts.map((p, i) => `<span class="pIc" style="--i:${i}"><b class="pCirc"><span class="ico up${PART_ICON[p]}"></span></b><small>${M.PARTS.find((q) => q.id === p).name}</small></span>`).join('')}</div>`;
+      txt = 'NEW UPGRADES IN THE GARAGE: MORE WAYS TO GET QUICKER.'; act = 'SEE THE NEW PARTS';
+    } else {
+      const p = b.kind === 'paint' ? M.paintById(b.id) : null, o = b.kind === 'cosm' ? M.COSM[b.ck].opts.find((q) => q.id === b.id) : null;
+      if (o && b.ck === 'glow') glowHex = o.hex;
+      const curGlow = (() => { const c = M.cosmOf(save, car), g = M.COSM.glow.opts.find((q) => q.id === c.glow); return g && g.hex; })();
+      const sw = p ? `<i class="bsSw${p.hex2 ? ' two' : ''}" style="--sw:${p.hex};--sw2:${p.hex2 || p.hex}"></i>` : o && o.hex ? `<i class="bsSw glow" style="--sw:${o.hex};--sw2:${o.hex}"></i>` : '<i class="bsSw decal"></i>';
+      vis = `<div class="bsSnap">${curGlow ? `<i class="bsUnder dim" style="--sw:${curGlow}"></i>` : ''}${snapHtml(car)}</div>${sw}`;
+      txt = p ? `${I.sub}, FREE. FITS EVERY CAR YOU OWN.` : b.ck === 'glow' ? 'LIGHT UP THE STREET UNDER YOUR CAR.' : 'FRESH STRIPES FOR YOUR CAR.';
+    }
+    el.innerHTML = `<div class="panel giftSheet beatSheet itemSheet rarSheet k_${b.kind}" style="--rar:${rc}"><i class="gfRays"></i>
+      <div class="gfHead"><span class="gfKick">${kickOf(b)}</span><div class="sheetTitle">${I.title}!</div></div>
+      <div class="bsStage">${vis}</div>
+      <div class="gfInfo">${R ? `<span class="rarTag big" style="--rar:${R.col}">${R.name}</span>` : ''}<div class="gfName"><b>${I.name}</b></div><p class="gfTxt" id="bsTxt">${txt}</p>
+        <button class="btn mid gold" id="bsGo"><span>${act}</span></button><button class="btn mid" id="bsLater"><span>LATER</span></button></div></div>`;
+    el.className = 'show';
+    snd.play('purchase'); snd.play('whoosh', { volume: 0.4 });
+    setTimeout(() => { const p = at('#gift .bsStage'); if (p) J.spark(p[0], p[1], { n: 20, cols: ['#ffffff', rc, '#ff4fa8'], speed: 360, size: 6, grav: 240 }); }, 420);
+    let fitted = false;
+    tap($('bsGo'), () => {
+      if (b.kind === 'parts') { done(() => { ui._focusPart = M.PART_GROUPS[b.g].parts[0]; ui.show('garage'); }); return; }
+      if (fitted) { done(); return; }
+      fitted = true;
+      if (b.kind === 'paint') { save.paint[car] = b.id; persist(); api.setPaint(M.paintById(b.id), true); }
+      else { save.cosm[car] = { ...(save.cosm[car] || {}), [b.ck]: b.id }; persist(); applyCosm(); }
+      el.querySelector('.itemSheet').classList.add('fitted');
+      wipeIn(el, car, rc, glowHex);
+      $('bsTxt').textContent = `FITTED TO YOUR ${P.CARS[car].name}.`;
+      $('bsGo').innerHTML = '<span>NICE!</span>'; $('bsLater').classList.add('hidden');
+    }, 'ui_confirm');
+    tap($('bsLater'), () => done());
+  }
+  /* a new car (chapter gift or dealer buy): offer the look of the car the player drove before (paint, rims, underglow,
+     decal ...) in one tap. Paints and rims are universal. Queued as { kind: 'look', from, k } in save.prog.q. */
+  const hasLook = (k) => !!((save.paint[k] && save.paint[k] !== 'factory') || (save.rims[k] && save.rims[k] !== 'wheel') || Object.keys((save.cosm || {})[k] || {}).length);
+  ui.offerLook = (from, k) => {
+    if (!from || from === k || !hasLook(from) || !save.owned.includes(k)) return;
+    const pr = save.prog = save.prog || { got: [], q: [], fu: 0 };
+    pr.q.unshift({ kind: 'look', from, k }); persist(); setTimeout(showBeats, 500);
+  };
+  function lookSheet(el, b, done) {
+    const { from, k } = b;
+    if (!save.owned.includes(k) || !save.owned.includes(from)) { done(); return; }
+    const pf = M.paintById(save.paint[from]), rim = save.rims[from] || 'wheel', cs = (save.cosm || {})[from] || {};
+    const chips = [pf.hex ? `<span class="lkChip"><i style="--sw:${pf.hex};--sw2:${pf.hex2 || pf.hex}"></i>${pf.name}</span>` : '',
+      rim !== 'wheel' ? `<span class="lkChip"><i class="rim" style="background-image:url(${M.rimFile(rim)})"></i>${(M.RIMS.find((r) => r.id === rim) || {}).name || ''}</span>` : '',
+      ...Object.keys(cs).filter((q) => M.COSM[q]).map((q) => { const o = M.COSM[q].opts.find((x) => x.id === cs[q]); return o && o.id !== M.COSM[q].opts[0].id ? `<span class="lkChip"><i style="--sw:${o.hex || '#fff'};--sw2:${o.hex || '#fff'}"></i>${o.name} ${M.COSM[q].name}</span>` : ''; })].join('');
+    el.innerHTML = `<div class="panel giftSheet beatSheet itemSheet rarSheet k_look" style="--rar:#ffd76a"><i class="gfRays"></i>
+      <div class="gfHead"><span class="gfKick">YOUR NEW ${P.CARS[k].short}</span><div class="sheetTitle">BRING YOUR LOOK?</div></div>
+      <div class="bsStage"><div class="bsSnap">${snapHtml(k)}</div></div>
+      <div class="gfInfo"><div class="lkChips">${chips}</div><p class="gfTxt" id="bsTxt">PUT YOUR ${P.CARS[from].short}'S STYLE ON IT IN ONE TAP.</p>
+        <button class="btn mid gold" id="bsGo"><span>FIT MY LOOK</span></button><button class="btn mid" id="bsLater"><span>KEEP FACTORY</span></button></div></div>`;
+    el.className = 'show';
+    snd.play('whoosh', { volume: 0.4 });
+    let fitted = false;
+    tap($('bsGo'), () => {
+      if (fitted) { done(); return; }
+      fitted = true;
+      save.paint[k] = save.paint[from]; save.rims[k] = rim; save.cosm[k] = { ...cs }; persist();
+      const v = window.__g && window.__g.pView;
+      if (v && v.key === k) { api.setPaint(pf, true); if (ensureRim) Promise.resolve(ensureRim(rim)).then((ok) => { if (ok) api.setRim(rim); }); applyCosm(); }
+      const g = M.COSM.glow.opts.find((q) => q.id === cs.glow);
+      el.querySelector('.itemSheet').classList.add('fitted');
+      wipeIn(el, k, '#ffd76a', g && g.hex);
+      $('bsTxt').textContent = `YOUR LOOK IS ON THE ${P.CARS[k].name}.`;
+      $('bsGo').innerHTML = '<span>NICE!</span>'; $('bsLater').classList.add('hidden');
+    }, 'ui_confirm');
+    tap($('bsLater'), () => done());
+  }
+
+  // ---------- guided FIRST UPGRADE (once, skippable): result -> garage, a pointer on the best-value part, buy it with the
+  // winnings (gain burst), then a big button straight into the next race ----------
+  let guide = null, guLoop = 0;
+  function guideTarget() {
+    if (!guide) return null;
+    if (guide.bought) return $('guGoBtn');
+    if (gPart && gSub === guide.part) return $('uBuy');
+    const h = HOT.find((x) => x[3].includes(guide.part));
+    return h ? $('hot').querySelector(`[data-id="${h[0]}"] .hsRing`) : null;
+  }
+  function guideFrame() {
+    guLoop = guide ? requestAnimationFrame(guideFrame) : 0;
+    const pt = $('guPoint'), el = guideTarget();
+    if (!pt) return;
+    const r = el && el.getBoundingClientRect();
+    if (!r || !r.width || cur !== 'garage') { pt.style.opacity = 0; return; }
+    pt.style.opacity = 1;
+    pt.style.transform = `translate(${(r.left + r.width * (el.id ? 0.72 : 0.5)).toFixed(0)}px, ${(r.top + r.height * 0.5).toFixed(0)}px)`;
+  }
+  function guideSay(text) {
+    const t = obEl('guTip', `<i class="obFace" style="background-image:url(${C.ART.rei || ''})"></i><div><b>REI</b><p></p></div><button class="guSkip" id="guSkip">SKIP</button>`);
+    if (!t._wired) { t._wired = 1; tap($('guSkip'), () => guideEnd()); }
+    t.querySelector('p').textContent = text; t.classList.remove('in'); void t.offsetWidth; t.classList.add('in');
+  }
+  function guideStart(gd) {
+    guide = { ...gd, bought: false };
+    document.body.classList.add('guide');
+    guideSay(`Spend your winnings. ${gd.name} +1 makes you about ${gd.gain.toFixed(2)} s quicker.`);
+    obEl('guPoint', '<i class="obRing"></i><svg viewBox="0 0 48 48"><path d="M19 44V20a4 4 0 0 1 8 0v10l9 2a5 5 0 0 1 4 5.6L38.6 44z"/></svg>');
+    if (!guLoop) guLoop = requestAnimationFrame(guideFrame);
+  }
+  function guideBought(name, d) {
+    if (!guide || guide.bought) return;
+    guide.bought = true;
+    setTimeout(() => {
+      if (!guide) return;
+      guideSay(`That's ${d.toFixed(2)} s off the clock. Now take it to the street!`);
+      closePart();
+      const p = careerPos(), ri = M.rungInfo(p.t, p.i);
+      const g = obEl('guGo', '');
+      g.innerHTML = `<button class="btn big gold" id="guGoBtn"><span class="mTxt">${guide.next || 'NEXT RACE'}<small>VS ${ri.name} &middot; ${ri.place.name}</small></span></button>`;
+      g.classList.remove('in'); void g.offsetWidth; g.classList.add('in');
+      tap($('guGoBtn'), () => { guideEnd(); closePart(true); $('againBtn').click(); }, null);
+    }, 1300);
+  }
+  function guideEnd() {
+    guide = null;
+    document.body.classList.remove('guide');
+    for (const id of ['guTip', 'guGo']) { const e = $(id); if (e) e.classList.remove('in'); }
+  }
+  ui.guiding = () => !!guide;
+
+  // ---------- result ----------
+  // Win/lose manga scene first (photo finish, Mika cheering or the rival smirking), then the reward panel.
+  tap($('resDetBtn'), () => { const on = $('result').classList.toggle('det'); $('resDetBtn').setAttribute('aria-expanded', on ? 'true' : 'false'); });   /* RACE DETAILS: shift chips + stats, collapsed by default */
+  ui.showResult = (r) => {
+    const res = $('result');
+    shownCoins = save.coins - r.coins; shownGems = save.gems - r.gems; refreshCurrency(true); /* the pill shows the old wallet; coinFly ticks it up (the save already has the coins) */
+    $('topbar').classList.add('hidden');
+    if (r.pCar && r.rCar && !r.solo) {   // solo runs (tutorial / daily): no rival, no versus photo-finish scene
+      res.classList.add('hidden');
+      const rid = C.rivalChar(r.ri || null, (r.rCar || '').length);
+      S.resultScene({ won: r.won, margin: r.margin, p1: r.p1, p2: r.p2, pCar: r.pCar, rCar: r.rCar, boss: !!(r.ri && r.ri.isBoss), rival: { id: rid, name: r.ri ? r.ri.name : null },
+        onDone: () => { res.classList.remove('hidden'); reveal(r); } });
+    } else reveal(r);
+  };
+  function reveal(r) {
+    const g0 = window.__g && window.__g.G, mode = g0 && g0.lastOpts && g0.lastOpts.mode;
+    const res = $('result');   /* result redesign (2026-11-13): hero -> one reward line -> unlock ribbon -> ONE progress module (+ 2 small) -> RACE DETAILS (collapsed) -> buttons; index.html #result, prog.css */
+    { const c = $('resType'), t = r.type || 'drag', I = M.TYPE_INFO[t];
+      c.className = 'rtChip rt_' + t; c.innerHTML = t === 'drag' && mode !== 'career' ? '' : I.icon + I.name;
+      $('resPlace').textContent = r.place || ''; }   /* the place raced at (same name as the VS banner and the map stop) */
+    res.classList.toggle('won', !!r.won); res.classList.toggle('lost', !r.won);
+    res.classList.remove('det'); $('resDetBtn').setAttribute('aria-expanded', 'false');
+    $('topbar').classList.remove('hidden'); $('topbar').classList.add('noback'); $('scrTitle').textContent = '';
+    refreshCurrency(true);
+    const box = $('resReward');
+    // the lines must add up to the total: anything the lines don't cover gets its own line
+    const lines = r.lines.slice(), sum = lines.reduce((a, l) => a + l[1], 0);
+    if (r.coins !== sum) lines.push([r.coins > sum ? 'BONUS' : 'ADJUSTMENT', r.coins - sum]);
+    const STEP = 0.2, L0 = 0.35;   /* each breakdown line pops in as the total counts through it */
+    box.innerHTML = `<div class="rzAmt"><small>REWARD</small><span class="rzCoin">${coinI}<b id="rAmt">0</b></span>${r.gems ? `<span class="rzGem">${gemI}+${r.gems}</span>` : ''}</div>`
+      + `<div class="rzLines">${lines.map(([l, v], i) => `<span class="rzL" style="animation-delay:${(L0 + i * STEP).toFixed(2)}s">${l}<b>${v < 0 ? '&minus;' : '+'}${fmt(Math.abs(v))}</b></span>`).join('')}</div>`;
+    const rib = $('resRibbon'), un = (r.unlock || '').split('<br>').filter(Boolean);
+    rib.innerHTML = un.map((u) => `<span>${u}</span>`).join(''); rib.classList.toggle('hidden', !un.length);
+    $('againBtn').innerHTML = `<span>${r.again}</span>`;
+    res.classList.toggle('soloRes', !!r.solo); res.classList.toggle('cop', r.type === 'cop');
+    if (mode === 'daily' && ui._dres) { // daily: your time vs the three targets; medal headline, next target + gap
+      const d = ui._dres, t = d.t; ui._dres = null;
+      $('resBanner').textContent = d.medal === 'g' ? 'GOLD!' : d.medal ? D.MEDAL_NAME[d.medal] : 'TRY AGAIN';
+      $('resBanner').className = 'banner' + (d.medal ? ' medal m_' + d.medal : ' lose');
+      res.classList.toggle('won', !!d.medal); res.classList.toggle('lost', !d.medal);
+      const nx = d.medal === 'g' ? null : d.medal === 's' ? 'g' : d.medal === 'b' ? 's' : 'b';
+      $('resMargin').innerHTML = `<span class="tgts">${['g', 's', 'b'].map((m) => `<span class="tgt${d.et && d.et <= t[m] ? ' hit' : ''}"><i class="md ${m}"></i>${t[m].toFixed(2)}</span>`).join('')}</span>`
+        + `<span class="nextT">${nx ? `${D.MEDAL_NAME[nx]} NEEDS ${t[nx].toFixed(2)}s · ${d.et ? (d.et - t[nx]).toFixed(3) + 's OFF' : 'NO TIME'}` : 'TOP MEDAL TODAY'}</span>`;
+    } else if (mode === 'tutorial' && r.won) {
+      $('resBanner').textContent = 'FIRST WIN!';
+    }
+    const bu = mode === 'daily' ? null : bestUp(save.car), gap = r.p1 && r.p2 ? r.p1 - r.p2 : 0;
+    const wouldWin = !r.won && bu && gap > 0 && bu.gain >= gap;
+    const upFirst = !r.won && bu && bu.afford;   /* after a loss with an affordable upgrade, UPGRADE <part> (gain, price) is the main button */
+    const pr = save.prog || (save.prog = { got: [], q: [], fu: 0 });
+    /* guided FIRST UPGRADE (once): the first career win with enough coins makes UPGRADE the main button; the garage then
+       points at the part, the purchase shows the gain, and a big NEXT RACE button comes back (guideStart) */
+    const guided = mode === 'career' && r.won && !pr.fu && bu && bu.afford && (save.career.D || 0) >= 1;
+    const gains = ui._gains.splice(0);
+    const mods = {};
+    if (gains.length) { const tot = gains.reduce((a, g) => a + g[1], 0);
+      mods.gain = { cls: 'k_gain', ico: '<span class="rzIco ok"><svg class="i" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span>', label: 'YOUR UPGRADES', title: gains.map((g) => g[0] + ' +1').join(' · '),
+        val: `${tot.toFixed(2)} s`, sub: 'SAVED', mini: `SAVED ${tot.toFixed(2)} s` }; }
+    if (bu) mods.up = { cls: 'k_up' + (bu.afford ? ' can' : '') + (upFirst || guided ? ' hot' : ''), ico: `<span class="rzIco"><span class="ico up${bu.part.icon}"></span></span>`,
+      label: guided ? 'FIRST UPGRADE' : bu.afford ? 'BEST UPGRADE' : 'SAVE UP FOR', title: `${bu.part.name} LV ${bu.lv + 1}`, val: `&minus;${bu.gain.toFixed(2)} s`,
+      sub: costHtml({ coins: bu.price }), tag: wouldWin ? 'YOU&rsquo;D HAVE WON' : '', mini: `<span class="ico up${bu.part.icon}"></span>${bu.part.name} &minus;${bu.gain.toFixed(2)} s` };
+    if (mode === 'career' || mode === 'tutorial') {
+      const p = careerPos();
+      if (!p.done) { const ri = M.rungInfo(p.t, p.i), my = M.predictET(save.car, M.upOf(save, save.car)) + 0.04, ok = my < ri.et;
+        mods.rival = { cls: 'k_rival', ico: `<span class="rzIco rv">${ri.isBoss ? 'B' : p.i + 1}</span>`, label: `TIER ${p.t} · ${ri.isBoss ? 'BOSS' : `RIVAL ${p.i + 1}/${M.RUNGS}`}`, title: ri.name,
+          val: `~${ri.et.toFixed(2)}s`, valCls: ok ? 'good' : 'bad', sub: `YOU ~${my.toFixed(2)}s`, bar: save.career[p.t] / M.RUNGS, mini: `${ri.isBoss ? 'BOSS' : 'NEXT RIVAL'} ~${ri.et.toFixed(2)}s` }; }
+    }
+    const nc = (mode === 'career' || mode === 'tutorial' || mode === 'quick') ? nextCarInfo() : null;
+    if (nc) mods.car = { cls: 'k_car' + (nc.left ? '' : ' ready'), ico: `<i class="rzThumb" style="background-image:url(sprites/thumb_${nc.k}.webp)"></i>`, label: 'NEXT CAR', title: P.CARS[nc.k].name,
+      val: nc.left ? `${coinI}${fmt(nc.left)}` : 'READY!', sub: nc.left ? 'TO GO' : 'AT THE DEALER', bar: Math.min(1, save.coins / nc.price), mini: nc.left ? `${P.CARS[nc.k].name} ${coinI}${fmt(nc.left)}` : `${P.CARS[nc.k].name} READY` };
+    else if (mode === 'career' || mode === 'tutorial' || mode === 'quick') { const nb = M.nextBeat(save);
+      if (nb) { const I = M.beatInfo(nb.b); mods.car = { cls: 'k_unlock', ico: beatIcon(nb.b, 'rzThumb'), label: 'NEXT UNLOCK', title: I.name + (nb.b.kind === 'rim' ? ' RIMS' : ''),
+        val: `${nb.left}`, sub: `CAREER WIN${nb.left > 1 ? 'S' : ''}`, mini: `${I.name} · ${nb.left} WIN${nb.left > 1 ? 'S' : ''}` }; } }
+    const prim = /* ONE progress module = the most useful next step; the others become small pills */ guided || upFirst || (wouldWin && mods.up) ? 'up' : mods.car && /ready/.test(mods.car.cls) ? 'car'
+      : r.won ? (mods.car ? 'car' : mods.up && bu.afford ? 'up' : mods.rival ? 'rival' : 'up') : (mods.rival ? 'rival' : mods.up ? 'up' : 'car');
+    const modHTML = (m) => `<div class="rzMod ${m.cls}">${m.ico}<div class="rzMt"><small>${m.label}</small><b>${m.title}</b>${m.bar != null ? `<u><i style="transform:scaleX(${m.bar.toFixed(3)})"></i></u>` : ''}</div>`
+      + `<div class="rzMv"><em class="${m.valCls || ''}">${m.val}</em>${m.sub ? `<span>${m.sub}</span>` : ''}</div>${m.tag ? `<strong>${m.tag}</strong>` : ''}</div>`;
+    const rest = ['gain', 'up', 'rival', 'car'].filter((k) => k !== prim && mods[k]).slice(0, 2);
+    const rn = $('resNext');
+    rn.innerHTML = mods[prim] ? modHTML(mods[prim]) + (rest.length ? `<div class="rzMinis">${rest.map((k) => `<span class="rzMini ${mods[k].cls}">${mods[k].mini}</span>`).join('')}</div>` : '') : '';
+    rn.classList.toggle('hidden', !mods[prim]); res.classList.toggle('noNext', !mods[prim] && !un.length);
+    ui._focusPart = bu ? bu.part.id : null;
+    ui._guide = null;
+    if (guided) { pr.fu = 1; persist(); ui._guide = { part: bu.part.id, name: bu.part.name, gain: bu.gain, price: bu.price, next: r.again }; }
+    const upMain = upFirst || guided;
+    $('upBtn').innerHTML = upMain ? `<span class="upMain">UPGRADE ${bu.part.name}<small>&minus;${bu.gain.toFixed(2)} s &middot; ${costHtml({ coins: bu.price })}</small></span>` : '<span>UPGRADE</span>';
+    $('upBtn').classList.toggle('gold', !!upMain); $('upBtn').classList.toggle('pulse', !!upMain);
+    $('againBtn').classList.toggle('gold', !upMain);
+    res.classList.toggle('upMain', !!upMain);
+    res.classList.toggle('guided', !!guided);
+    if (r.beats && r.beats.length) for (const b of r.beats) if (b.kind === 'rim') newRims.add(b.id);
+    const cum = []; lines.reduce((a, l, i) => (cum[i] = a + l[1]), 0);
+    const t0 = performance.now() + L0 * 1000 /* the total counts up line by line, then the coins fly to the counter */, dur = Math.max(1, lines.length) * STEP * 1000, amt = $('rAmt');
+    const step = (now) => {
+      const e = Math.max(0, now - t0), i = Math.min(lines.length - 1, Math.floor(e / (STEP * 1000))), k = Math.min(1, (e - i * STEP * 1000) / (STEP * 1000));
+      const v = e >= dur || !lines.length ? r.coins : (i ? cum[i - 1] : 0) + lines[i][1] * (1 - Math.pow(1 - k, 3));
+      amt.textContent = fmt(Math.max(0, v));
+      if (e < dur) requestAnimationFrame(step);
+      else {
+        amt.textContent = fmt(r.coins); box.classList.add('done');
+        const n = Math.min(26, 6 + Math.round(r.coins / 120));
+        coinFly(amt, $('coinPill'), n, r.coins, 'coin');
+        if (r.gems) setTimeout(() => coinFly(amt, $('gemPill'), Math.min(10, r.gems + 2), r.gems, 'gem'), 250);
+        if (beatsWaiting() || (save.carGift && giftHeld)) setTimeout(() => { if (!$('result').classList.contains('hidden') && !showBeats() && save.carGift && giftHeld) showGift(); }, 1100);   /* the unboxing after the coins land (a gift held back by a race too) */
+      }
+    };
+    box.classList.remove('done');
+    requestAnimationFrame(step);
+    setTimeout(() => { if (amt.isConnected && !box.dataset.x2) amt.textContent = fmt(r.coins); }, t0 - performance.now() + dur + 50); // rAF can stall in a background tab
+    setTimeout(() => { if (!box.dataset.x2 && (shownCoins !== save.coins || shownGems !== save.gems)) refreshCurrency(false); }, t0 - performance.now() + dur + 1800); /* safety: the flying coins have landed by now */
+    // x2 COINS: a rewarded ad doubles this race's coins. window.GTReward exists only in the store apps (gt-platform.js),
+    // so browsers (CrazyGames, the test link) never show the button or any ad wording. Shown only while an ad is loaded.
+    delete box.dataset.x2;
+    const RW = window.GTReward;
+    if (RW && r.coins > 0) {
+      const b = document.createElement('button');
+      b.className = 'btn mid gold x2Btn hidden'; b.style.cssText = 'width:100%;margin-top:calc(var(--u) * 6)';
+      /* user (2026-11-14): say it's an ad: a 'play video' icon + WATCH AD under the label */
+      b.innerHTML = `<span class="x2In"><svg class="i x2Ad" viewBox="0 0 24 24"><rect x="2.5" y="5" width="19" height="14" rx="3"/><path d="M10 9.2v5.6l4.8-2.8z" fill="currentColor" stroke="none"/></svg>${coinI} ×2 COINS<small>WATCH AD</small></span>`;
+      box.appendChild(b);
+      const poll = setInterval(() => { if (!b.isConnected) { clearInterval(poll); return; } b.classList.toggle('hidden', !RW.can()); }, 400);
+      let going = false;
+      tap(b, async () => {
+        if (going) return; going = true; b.classList.add('off');
+        let ok = false; try { ok = await RW.show(); } catch (e) { /* no ad */ }
+        if (!ok) { going = false; b.classList.remove('off'); return; }
+        clearInterval(poll); b.remove(); box.dataset.x2 = '1';
+        save.coins += r.coins; persist();
+        amt.textContent = fmt(r.coins * 2);
+        coinFly(amt, $('coinPill'), Math.min(26, 6 + Math.round(r.coins / 120)), r.coins, 'coin');
+        snd.play('ui_confirm');
+      });
+    }
+  }
+
+  // ---------- 2D juice (juice.js): sparks, coins, confetti, rings on the #fx2d canvas ----------
+  const J = createJuice($('fx2d'));
+  ui.juice = J;
+  S.init(J);
+  function center(el) { const r = el.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }
+  let clickN = 0;
+  function coinFly(fromEl, toEl, n, value, kind) {
+    const [x, y] = center(fromEl), [tx, ty] = center(toEl);
+    J.fly(x, y, tx, ty, n, value, kind, (per) => {
+      if (kind === 'coin') shownCoins = Math.min(save.coins, shownCoins + per); else shownGems = Math.min(save.gems, shownGems + per);
+      refreshCurrency(true); bump(toEl);
+      if (clickN++ % 3 === 0) snd.play('ui_click', { volume: 0.35, detune: 0.15 });
+    });
+  }
+  function burstAt(el, n) {
+    const [x, y] = center(el);
+    J.spark(x, y, { n: Math.ceil(n / 2), cols: ['#ffffff', '#3dffb0'], speed: 220, size: 4, grav: 300 });
+  }
+  ui.burstAt = burstAt;
+
+  // ---------- settings as segmented controls (GRAPHICS LOW/MED/HIGH, ENGINE LIVE/SIM/CLASSIC) ----------
+  // main.js / audio.js own the settings and cycle them through #gfxBtn / [data-eng-switch] (kept hidden): a segment press
+  // cycles the hidden button until its label matches, and a MutationObserver keeps the segments in sync.
+  const SEGS = {
+    gfx: { opts: [['LOW', 'LOW'], ['MEDIUM', 'MED'], ['HIGH', 'HIGH']], src: () => $('gfxBtn'), re: /GRAPHICS:\s*(\w+)/,
+      step: (b) => { b.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); b.dispatchEvent(new PointerEvent('pointerup', { bubbles: true })); } },
+    eng: { opts: [['LIVE', 'LIVE'], ['CLASSIC', 'CLASSIC']], src: () => document.querySelector('.hiddenCtl [data-eng-switch]'), re: /ENGINE:\s*(\w+)/,
+      step: (b) => b.click() },
+  };
+  SEGS.theme = { opts: TH.THEMES, get: () => TH.current(), set: (v) => TH.apply(v) };
+  function segVal(k) { if (SEGS[k].get) return SEGS[k].get(); const b = SEGS[k].src(); const m = b && b.textContent.match(SEGS[k].re); return m ? m[1] : ''; }
+  function syncSegs() {
+    for (const el of document.querySelectorAll('.seg[data-seg]')) {
+      const v = segVal(el.dataset.seg);
+      for (const b of el.children) b.classList.toggle('on', b.dataset.v === v);
+    }
+  }
+  for (const el of document.querySelectorAll('.seg[data-seg]')) {
+    const S0 = SEGS[el.dataset.seg];
+    el.innerHTML = S0.opts.map(([v, l]) => `<button data-v="${v}">${l}</button>`).join('');
+    for (const b of el.children) {
+      b.addEventListener('pointerdown', (e) => e.stopPropagation());
+      b.addEventListener('click', (e) => {
+        e.stopPropagation(); api.audioInit();
+        if (S0.set) { S0.set(b.dataset.v); syncSegs(); return; }
+        const src = S0.src(); if (!src) return;
+        for (let i = 0; i < 3 && segVal(el.dataset.seg) !== b.dataset.v; i++) S0.step(src);
+        syncSegs();
+      });
+    }
+  }
+  $('tutBtn').addEventListener('click', (e) => { e.stopPropagation(); save.tutorialReplay = true; persist(); snd.play('ui_click'); toast('TUTORIAL ON THE NEXT START'); });
+  addEventListener('themechange', syncSegs);
+  for (const k in SEGS) { const b = SEGS[k].src && SEGS[k].src(); if (b) new MutationObserver(syncSegs).observe(b, { subtree: true, childList: true, characterData: true }); }
+  syncSegs();
+
+  return ui;
+}

@@ -1,0 +1,121 @@
+{
+ "_doc": "Story script (STORY.md, approved; no voice). Scene = beats; beat = one panel + 1-4 lines. panel = painted art/story/<id>.webp (used when listed in art/story/panels.json), else the fallback: bg (area_d..area_s | world | live) + bust (character id, right side) + bust2 (left, mirrored). focus/fbFocus = [x, y] 0..1 point kept in frame; pan = Ken Burns drift [dx, dy, zoomFrom, zoomTo]. fx: rain | fog | lantern | sepia | dawn | speed | neon. cap = caption plate. line = [who, text, tag]; who '' = narration.",
+ "chapters": [
+  { "id": "intro", "name": "PROLOGUE", "scenes": ["prologue", "after_tut"] },
+  { "id": "D", "name": "CH.1 NEON ALLEY", "scenes": ["ch1_enter", "ch1_boss", "ch1_beaten"] },
+  { "id": "C", "name": "CH.2 HARBOR DOCKS", "scenes": ["ch2_enter", "ch2_boss", "ch2_beaten"] },
+  { "id": "B", "name": "CH.3 LANTERN ROW", "scenes": ["ch3_enter", "ch3_boss", "ch3_beaten"] },
+  { "id": "A", "name": "CH.4 BAYSHORE LOOP", "scenes": ["ch4_enter", "ch4_boss", "ch4_beaten"] },
+  { "id": "S", "name": "CH.5 CROWN SUMMIT", "scenes": ["ch5_enter", "ch5_boss", "finale"] }
+ ],
+ "scenes": {
+  "prologue": { "title": "LAST LIGHT AT KUROGANE GARAGE", "beats": [
+   { "panel": "pro_rain", "bg": "live", "bust": "rei", "fx": "rain", "focus": [0.5, 0.45], "cap": "KUROGANE GARAGE · FOR SALE",
+     "lines": [["rei", "One month. Then the bank takes the keys.", "TO HERSELF"]] },
+   { "panel": "pro_arrive", "bg": "live", "bust": "rei", "fx": "rain", "focus": [0.74, 0.45], "pan": [-0.5, 0, 1.04, 1.1],
+     "lines": [["", "Headlights in the rain. A rookie walks in with a fistful of cash."], ["rei", "You answered the ad? Two starters left on the floor. Your cash buys one."]] },
+   { "panel": "pro_glove", "bg": "live", "bust": "rei", "bust2": "driver", "focus": [0.5, 0.35], "pan": [0.3, -0.08, 1.04, 1.1],
+     "lines": [["rei", "Pick your ride. Then show me what it can do."], ["rei", "Pick well. The street doesn't do refunds."]] }
+  ]},
+  "after_tut": { "title": "THE STREET PAYS CASH", "beats": [
+   { "panel": "tut_after", "bg": "live", "bust": "rei", "focus": [0.49, 0.2], "pan": [0, 0, 1.05, 1.15],
+     "lines": [["rei", "Not bad, rookie. The street pays cash."], ["rei", "Win enough and this place stays open."]] },
+   { "panel": "tut_line", "bg": "area_d", "bust": "mika", "fx": "neon", "focus": [0.55, 0.3], "cap": "NEON ALLEY · START LINE",
+     "lines": [["mika", "New car on my line? Cute."], ["mika", "Don't disappoint me."]] }
+  ]},
+
+  "ch1_enter": { "title": "NEON ALLEY", "beats": [
+   { "panel": "ch1_alley", "bg": "area_d", "bust": "kaito", "fx": "neon", "focus": [0.48, 0.2], "cap": "CHAPTER 1 · NEON ALLEY",
+     "lines": [["kaito", "Another tourist in my alley?"]] },
+   { "panel": "ch1_alley", "bg": "area_d", "bust": "rei", "fx": "neon", "focus": [0.35, 0.5], "pan": [-0.05, 0, 1.15, 1.08],
+     "lines": [["rei", "Kaito runs these streets. Beat his crew and he can't ignore you.", "RADIO"]] }
+  ]},
+  "ch1_boss": { "title": "BOSS · KAITO", "beats": [
+   { "panel": "ch1_boss", "bg": "area_d", "bust": "kaito", "fx": "speed", "focus": [0.5, 0.35], "pan": [0, 0, 1.04, 1.14],
+     "lines": [["kaito", "My alley, my rules. Lose, and you never come back."]] }
+  ]},
+  "ch1_beaten": { "title": "LUCKY LAUNCH", "beats": [
+   { "panel": "ch1_beaten", "bg": "area_d", "bust": "kaito", "fx": "neon", "focus": [0.6, 0.22],
+     "lines": [["", "Kaito slams the hood."], ["kaito", "...Lucky launch."]] },
+   { "panel": "ch1_beaten", "bg": "area_d", "bust": "mika", "bust2": "kaito", "focus": [0.3, 0.35], "pan": [0.25, -0.1, 1.1, 1.04],
+     "lines": [["mika", "Lucky? You lost by a whole car, Kaito."]] },
+   { "panel": "", "bg": "area_c", "bust": "rei", "fx": "fog", "focus": [0.5, 0.5],
+     "lines": [["rei", "Word travels fast down at the docks."], ["rei", "Someone's going to come looking for you."]] }
+  ]},
+
+  "ch2_enter": { "title": "HARBOR DOCKS", "beats": [
+   { "panel": "ch2_docks", "bg": "area_c", "fx": "fog", "focus": [0.5, 0.45], "cap": "CHAPTER 2 · HARBOR DOCKS",
+     "lines": [["", "Cranes. Fog. A silver coupe waits under a sodium lamp."]] },
+   { "panel": "ch2_docks", "bg": "area_c", "bust": "misaki", "fx": "fog", "focus": [0.5, 0.2], "pan": [0, 0, 1.08, 1.18],
+     "lines": [["misaki", "So you're Rei's new driver."], ["misaki", "Funny... she swore she'd never race again."]] },
+   { "panel": "", "bg": "area_c", "bust": "rei", "bust2": "driver", "fx": "fog", "focus": [0.5, 0.5],
+     "lines": [["", "You look at Rei."], ["rei", "Just drive."]] }
+  ]},
+  "ch2_boss": { "title": "BOSS · MISAKI", "beats": [
+   { "panel": "ch2_boss", "bg": "area_c", "bust": "misaki", "fx": "speed", "focus": [0.46, 0.35], "pan": [0, 0, 1.04, 1.14],
+     "lines": [["misaki", "Let's see if she taught you the same tricks she taught me."]] }
+  ]},
+  "ch2_beaten": { "title": "LIKE HER", "beats": [
+   { "panel": "", "bg": "area_c", "bust": "misaki", "fx": "fog", "focus": [0.5, 0.5],
+     "lines": [["misaki", "You shift like her. Exactly like her."]] },
+   { "panel": "ch2_beaten", "bg": "area_c", "bust": "misaki", "fx": "fog", "focus": [0.44, 0.16], "pan": [0.2, 0.1, 1.08, 1.02],
+     "lines": [["misaki", "Ask her about the night on Crown Summit.", "LEAVING"], ["misaki", "Ask her who she raced."]] }
+  ]},
+
+  "ch3_enter": { "title": "LANTERN ROW", "beats": [
+   { "panel": "ch3_lanterns", "bg": "area_b", "bust": "goro", "fx": "lantern", "focus": [0.5, 0.15], "pan": [0, 0.15, 1.12, 1.04], "cap": "CHAPTER 3 · LANTERN ROW",
+     "lines": [["", "Red lanterns. A festival crowd. Goro cracks his knuckles."], ["goro", "Rei's kid? Hah!"], ["goro", "Old Lantern Row eats fast cars for breakfast."]] }
+  ]},
+  "ch3_boss": { "title": "BOSS · GORO", "beats": [
+   { "panel": "ch3_boss", "bg": "area_b", "bust": "goro", "fx": "speed", "focus": [0.5, 0.15], "pan": [0, 0, 1, 1.06],
+     "lines": [["goro", "You want respect? Earn it in a straight line."]] }
+  ]},
+  "ch3_beaten": { "title": "PARTNERS", "beats": [
+   { "panel": "", "bg": "area_b", "bust": "goro", "fx": "lantern", "focus": [0.5, 0.5],
+     "lines": [["", "Goro laughs, and bows."], ["goro", "A real driver. I haven't said that in ten years."]] },
+   { "panel": "ch3_flash", "bg": "area_s", "bust": "rei", "bust2": "empress", "fx": "sepia", "focus": [0.4, 0.25], "pan": [0.04, 0, 1.03, 1.1], "cap": "YEARS AGO · CROWN SUMMIT",
+     "lines": [["goro", "I raced Rei back then. Her and the Empress: partners."], ["goro", "Fastest pair this bay ever saw."]] },
+   { "panel": "ch3_flash", "bg": "area_s", "fx": "sepia", "focus": [0.5, 0.6], "pan": [0, 0, 1.12, 1.2],
+     "lines": [["goro", "Then the crash on the summit."], ["goro", "Rei walked away from racing. The Empress took the crown."]] },
+   { "panel": "", "bg": "live", "bust": "rei", "focus": [0.5, 0.5], "cap": "KUROGANE GARAGE",
+     "lines": [["rei", "...Goro talks too much.", "QUIET"], ["rei", "Upgrades are on the bench."]] }
+  ]},
+
+  "ch4_enter": { "title": "BAYSHORE LOOP", "beats": [
+   { "panel": "ch4_express", "bg": "area_a", "bust": "shin", "fx": "speed", "focus": [0.45, 0.45], "pan": [0.22, -0.05, 1.04, 1.2], "cap": "CHAPTER 4 · BAYSHORE LOOP",
+     "lines": [["", "The expressway. City lights below. A blue car glides up beside you."], ["shin", "The Empress wants to know who's climbing her ladder."], ["shin", "I'm here to end it."]] }
+  ]},
+  "ch4_boss": { "title": "BOSS · SHIN", "beats": [
+   { "panel": "ch4_boss", "bg": "area_a", "bust": "shin", "fx": "speed", "focus": [0.42, 0.33], "pan": [0, 0, 1.04, 1.14],
+     "lines": [["shin", "Your shift points are predictable. I've done the math."]] }
+  ]},
+  "ch4_beaten": { "title": "BRING REI", "beats": [
+   { "panel": "", "bg": "area_a", "bust": "shin", "focus": [0.5, 0.5],
+     "lines": [["shin", "Variance... I didn't account for nerve.", "STUNNED"], ["shin", "She'll race you herself. Crown Summit. Midnight."], ["shin", "Bring Rei."]] },
+   { "panel": "ch4_photo", "bg": "live", "bust": "rei", "focus": [0.53, 0.45], "pan": [0, -0.2, 1.2, 1.05], "cap": "KUROGANE GARAGE · LATE",
+     "lines": [["", "Rei holds an old photo. Two girls, two cars, a summit sign."], ["rei", "I'm coming with you."]] }
+  ]},
+
+  "ch5_enter": { "title": "CROWN SUMMIT", "beats": [
+   { "panel": "ch5_summit", "bg": "area_s", "bust": "empress", "fx": "fog", "focus": [0.7, 0.25], "pan": [-0.28, -0.08, 1.04, 1.14], "cap": "CHAPTER 5 · CROWN SUMMIT",
+     "lines": [["empress", "Rei. You finally sent someone up the mountain."]] },
+   { "panel": "", "bg": "area_s", "bust": "rei", "bust2": "empress", "fx": "fog", "focus": [0.5, 0.5],
+     "lines": [["rei", "I didn't send them."], ["rei", "They came on their own."]] }
+  ]},
+  "ch5_boss": { "title": "BOSS · THE MIDNIGHT EMPRESS", "beats": [
+   { "panel": "ch5_boss", "bg": "area_s", "bust": "empress", "fx": "speed", "focus": [0.46, 0.35], "pan": [0, 0, 1.04, 1.14],
+     "lines": [["empress", "Win, and the crown is yours."], ["empress", "Lose, and you never race this bay again."]] }
+  ]},
+  "finale": { "title": "THE MIDNIGHT CROWN", "beats": [
+   { "panel": "fin_gloves", "bg": "area_s", "bust": "empress", "fx": "dawn", "focus": [0.33, 0.2], "pan": [0, 0.08, 1.2, 1.1],
+     "lines": [["", "The Empress pulls off her gloves."], ["empress", "...You drive like she used to."]] },
+   { "panel": "fin_gloves", "bg": "area_s", "bust": "empress", "bust2": "rei", "fx": "dawn", "focus": [0.5, 0.22], "pan": [0, 0, 1.06, 1.0],
+     "lines": [["empress", "That night wasn't your fault, Rei.", "TO REI"], ["empress", "I should have said it years ago."]] },
+   { "panel": "fin_gloves", "bg": "area_s", "bust": "rei", "fx": "dawn", "focus": [0.67, 0.18], "pan": [0, 0, 1.15, 1.3],
+     "lines": [["", "Rei smiles. For the first time."], ["rei", "Took you long enough."]] },
+   { "panel": "fin_morning", "bg": "live", "bust": "mika", "bust2": "rei", "fx": "dawn", "focus": [0.5, 0.1], "pan": [0, 0.2, 1.12, 1.05], "cap": "KUROGANE GARAGE · HOME OF THE MIDNIGHT CROWN",
+     "lines": [["", "Morning. The FOR SALE sign is gone."], ["mika", "Crown's yours, champ."], ["mika", "...So. Who's next?"]],
+     "end": "ENDGAME UNLOCKED · DAILY CHALLENGES · STREAK CARS · BOSS REMATCHES" }
+  ]}
+ }
+}

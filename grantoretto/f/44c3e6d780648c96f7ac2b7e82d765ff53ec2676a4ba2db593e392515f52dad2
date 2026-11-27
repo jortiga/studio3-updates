@@ -1,0 +1,267 @@
+// HUD: DOM panels/buttons + a canvas tachometer. Minimal style (min.css): a slim open arc with thin ticks, the shift
+// window as a coloured segment, a thin needle line and a row of small shift LEDs above it; gear + km/h are DOM text in
+// the arc's centre. Static part baked once per size/redline, needle/windows/LEDs per frame, no shadowBlur.
+import * as Coach from './coach.js';
+const $ = (s) => document.querySelector(s);
+const FONT = '"Barlow Condensed", "Arial Narrow", Arial, sans-serif';
+// hint slot: one short line above the tach (main.js passes the long tutorial strings)
+const SHORT = {};   /* main.js now passes the short, unified strings (HOLD to rev, TAP to shift, N for nitro, GREEN) */
+const MOBILE = matchMedia('(pointer: coarse)').matches || /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && innerWidth < 900);
+
+export class Hud {
+  constructor() {
+    this.root = $('#hud');
+    this.tach = $('#tach'); this.tg = this.tach.getContext('2d');
+    this.face = document.createElement('canvas');
+    this.gearEl = $('#gear'); this.kmhEl = $('#kmh');
+    this.p1t = $('#p1t'); this.p2t = $('#p2t'); this.m1 = $('#mk1'); this.m2 = $('#mk2');
+    this.nitroBtn = $('#nitro'); this.nitroFill = $('#nitroFill');
+    this.prompt = $('#prompt');
+    this.pops = [...document.querySelectorAll('.pop')]; this.popI = 0;
+    this.last = { gear: null, kmh: -1, p1: '', p2: '', m1: -1, m2: -1, nitro: -1 };
+    this.faceKey = '';
+    this.wrap = $('#tachWrap');
+    // live gap to the rival (top centre, under the progress line) + the desktop keyboard overlay (CrazyGames review)
+    this.gap = document.createElement('div'); this.gap.id = 'gap';
+    this.gap.innerHTML = '<div class="gBar"><i class="gZero"></i><i class="gFill"></i></div><b class="gTxt"></b>';
+    this.root.appendChild(this.gap); this.gapFill = this.gap.querySelector('.gFill'); this.gapTxt = this.gap.querySelector('.gTxt');
+    this.keys = document.createElement('div'); this.keys.id = 'keys';
+    this.keys.innerHTML = '<div class="kRow"><kbd class="wide">SPACE</kbd><span><b>HOLD</b> REV &middot; <b>TAP</b> GEAR UP</span></div>'
+      + '<div class="kRow"><kbd class="wide">&#8679; SHIFT</kbd><span><b>NITRO</b> &middot; OR &rarr; / RIGHT CLICK</span></div><div class="kRow"><kbd>P</kbd><span>PAUSE</span></div>';
+    if (!MOBILE) this.root.appendChild(this.keys);
+    // first-shift callout (bullet time, main.js): device-specific words, an arrow at the shift control on touch
+    this.call = document.createElement('div'); this.call.id = 'shiftCall';
+    this.call.innerHTML = MOBILE ? '<b>TAP <kbd><svg viewBox="0 0 24 24" style="width:1em;height:1em;fill:none;stroke:currentColor;stroke-width:3;stroke-linecap:round;stroke-linejoin:round"><path d="M12 20V7M6 12.5l6-6.5 6 6.5M6 4h12"/></svg></kbd></b><span>TO GEAR UP · NEEDLE IN THE GREEN</span><i class="scArrow"></i>' : '<b>PRESS <kbd class="wide">SPACE</kbd></b><span>TO GEAR UP · NEEDLE IN THE GREEN</span>';
+    this.root.appendChild(this.call);
+    this.readTheme();
+    addEventListener('themechange', () => { this.readTheme(); this.faceKey = ''; });
+  }
+
+  // tach look from the theme's CSS variables (theme_*.css): angles in degrees (0 = right, clockwise), colours, widths
+  readTheme() {
+    const cs = getComputedStyle(document.documentElement), v = (k, d) => (cs.getPropertyValue(k).trim() || d);
+    this.tv = {
+      a0: +v('--tach-a0', 144) * Math.PI / 180, a1: +v('--tach-a1', 396) * Math.PI / 180,
+      face: v('--tach-face', 'rgba(6,6,14,0.36)'), ring: v('--tach-ring', 'rgba(255,255,255,0.32)'), ring2: v('--tach-ring2', ''), ringW: +v('--tach-ring-w', 1.5),
+      prog: v('--tach-prog', '#ffffff'), tick: v('--tach-tick', 'rgba(255,255,255,0.85)'), tick2: v('--tach-tick2', 'rgba(255,255,255,0.35)'),
+      num: v('--tach-num', 'rgba(255,255,255,0.6)'), red: v('--tach-red', 'rgba(255,60,90,0.9)'), needle: v('--tach-needle', '#ffffff'),
+      glow: +v('--tach-glow', 0), border: v('--tach-border', ''), borderW: +v('--tach-border-w', 0),
+      font: v('--tach-font', FONT), fontW: v('--tach-font-w', '600'), ledOff: v('--tach-led-off', 'rgba(255,255,255,0.18)'),
+    };
+  }
+
+  resize() {
+    const r = this.tach.getBoundingClientRect();
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const w = Math.max(10, Math.round(r.width * dpr)), h = Math.max(10, Math.round(r.height * dpr));
+    if (this.tach.width !== w || this.tach.height !== h) { this.tach.width = w; this.tach.height = h; this.faceKey = ''; }
+    const lw = this.m1.parentElement ? this.m1.parentElement.clientWidth : 0;   /* the progress lane (setProgress) */
+    if (lw && lw !== this.laneW) { this.laneW = lw; this.last.m1 = this.last.m2 = -1; }
+  }
+
+  // Canvas is w x 0.96 w: LEDs on top (y 0.07 w), arc centre at 0.55 w, radius 0.38 w (#gear / #speedo / the flash ring in
+  // min.css use the same numbers). 252 deg sweep, open at the bottom where the km/h readout sits.
+  geom() {
+    const w = this.tach.width, h = this.tach.height;
+    return { w, h, R: w * 0.38, cx: w / 2, cy: w * 0.55, a0: this.tv.a0, a1: this.tv.a1, px: w / 150 };
+  }
+
+  bakeFace(spec) {
+    const key = spec.redline + 'x' + this.tach.width + 'x' + this.tach.height + document.documentElement.dataset.theme;
+    if (key === this.faceKey) return;
+    this.faceKey = key;
+    const { w, h, R, cx, cy, a0, a1, px } = this.geom();
+    const f = this.face; f.width = w; f.height = h;
+    const g = f.getContext('2d');
+    const maxK = Math.ceil(spec.redline / 1000 + 0.6);
+    this.maxRpm = maxK * 1000;
+    const ang = (rpm) => a0 + (a1 - a0) * rpm / this.maxRpm;
+    // backing disc (theme --tach-face), optional outline, then the arc (optionally a gradient + glow)
+    const T = this.tv;
+    if (T.face && T.face !== 'none' && T.face !== 'transparent') {
+      const bg = g.createRadialGradient(cx, cy, R * 0.2, cx, cy, R * 1.15);
+      bg.addColorStop(0, T.face); bg.addColorStop(0.8, T.face); bg.addColorStop(1, 'rgba(0,0,0,0)');
+      g.fillStyle = bg; g.beginPath(); g.arc(cx, cy, R * 1.15, 0, 7); g.fill();
+    }
+    if (T.border && T.borderW) { g.strokeStyle = T.border; g.lineWidth = T.borderW * px; g.beginPath(); g.arc(cx, cy, R * 1.12, a0 - 0.12, a1 + 0.12); g.stroke(); }
+    g.lineCap = 'butt';
+    let ring = T.ring;
+    if (T.ring2) { const lg = g.createLinearGradient(cx - R, cy, cx + R, cy); lg.addColorStop(0, T.ring); lg.addColorStop(1, T.ring2); ring = lg; }
+    if (T.glow) { g.shadowColor = T.ring2 || T.ring; g.shadowBlur = T.glow * px; }
+    g.strokeStyle = ring; g.lineWidth = T.ringW * px;
+    g.beginPath(); g.arc(cx, cy, R, a0, ang(spec.redline)); g.stroke();
+    g.strokeStyle = T.red; g.lineWidth = Math.max(3, T.ringW * 1.6) * px;
+    g.beginPath(); g.arc(cx, cy, R, ang(spec.redline), a1); g.stroke();
+    g.shadowBlur = 0;
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    for (let r = 0; r <= this.maxRpm; r += 500) {
+      const a = ang(r), major = r % 1000 === 0, red = r >= spec.redline;
+      const r0 = R * (major ? 0.84 : 0.9), r1 = R * 0.97;
+      g.strokeStyle = red ? T.red : major ? T.tick : T.tick2;
+      g.lineWidth = (major ? 1.5 : 1) * px;
+      g.beginPath(); g.moveTo(cx + Math.cos(a) * r0, cy + Math.sin(a) * r0); g.lineTo(cx + Math.cos(a) * r1, cy + Math.sin(a) * r1); g.stroke();
+      if (major) {
+        g.fillStyle = red ? T.red : T.num;
+        g.font = `${T.fontW} ${Math.round(R * 0.17)}px ${T.font}`;
+        g.fillText(String(r / 1000), cx + Math.cos(a) * R * 0.7, cy + Math.sin(a) * R * 0.7);
+      }
+    }
+  }
+
+  // st: {spec, rpm, gear, shiftLo, shiftHi, goodLo, goodHi, limiter, launchMode, now}
+  drawTach(st) {
+    const g = this.tg;
+    /* phone perf (2026-11-14): the dial was redrawn every frame even when nothing changed (staging, coasting, the result
+       fly-by); skip when the needle moved under ~15 rpm and the windows / gear / flags are the same */
+    const sig = Math.round(st.rpm / 15) + '|' + st.gear + '|' + st.shiftLo + '|' + st.shiftHi + '|' + st.goodLo + '|' + st.goodHi + '|' + st.limiter + '|' + st.nitro + '|' + (st.limiter ? Math.floor(st.now * 16) % 2 : 0) + '|' + this.tg.canvas.width;
+    if (sig === this.lastSig) return;
+    this.lastSig = sig;
+    this.bakeFace(st.spec);
+    const { w, h, R, cx, cy, a0, a1, px } = this.geom();
+    const ang = (rpm) => a0 + (a1 - a0) * Math.max(0, Math.min(this.maxRpm, rpm)) / this.maxRpm;
+    g.clearRect(0, 0, w, h);
+    g.drawImage(this.face, 0, 0);
+    if (this.last.gear === 'N') { // RPM digits in the centre while staging
+      const t = String(Math.round(st.rpm / 10) * 10);
+      if (t !== this.last.rpmTxt) { this.last.rpmTxt = t; this.gearEl.innerHTML = `${t}<small>RPM</small>`; }
+    }
+    // timing windows: segments just outside the arc (GOOD amber, PERFECT cyan-green)
+    if (st.goodLo != null) {
+      /* CrazyGames review: the shift window must read at a glance -> a lit wedge from the hub to the rim plus thick
+         amber (GOOD) and green (PERFECT) bands; the GREEN band glows while the needle is inside it */
+      g.lineCap = 'butt';
+      const ga = ang(st.goodLo), gb = ang(st.goodHi), pa = ang(st.shiftLo), pb = Math.max(ang(st.shiftHi), pa + 0.05);
+      const inP = st.rpm >= st.shiftLo && st.rpm <= st.shiftHi;
+      g.fillStyle = inP ? 'rgba(61,255,140,0.30)' : 'rgba(61,255,140,0.16)';
+      g.beginPath(); g.moveTo(cx + Math.cos(pa) * R * 0.5, cy + Math.sin(pa) * R * 0.5); g.arc(cx, cy, R * 1.02, pa, pb); g.arc(cx, cy, R * 0.5, pb, pa, true); g.closePath(); g.fill();
+      g.strokeStyle = 'rgba(255,200,60,0.9)'; g.lineWidth = 7 * px;
+      g.beginPath(); g.arc(cx, cy, R + 6 * px, ga, gb); g.stroke();
+      if (inP) { g.shadowColor = '#3dff8c'; g.shadowBlur = 10 * px; }
+      g.strokeStyle = '#3dff8c'; g.lineWidth = 12 * px;
+      g.beginPath(); g.arc(cx, cy, R + 6 * px, pa, pb); g.stroke();
+      g.shadowBlur = 0;
+    }
+    // progress along the arc + the needle as a thin bright line crossing it
+    const a = ang(st.rpm), hot = st.rpm >= st.spec.redline - 120;
+    const T = this.tv;
+    g.strokeStyle = hot ? T.red : T.prog; g.lineWidth = Math.max(2.5, T.ringW + 1) * px; g.lineCap = 'round';
+    g.beginPath(); g.arc(cx, cy, R, a0, Math.max(a0 + 0.001, a)); g.stroke();
+    const nx = Math.cos(a), ny = Math.sin(a);
+    if (st.nitro) { const tr = g.createLinearGradient(cx + Math.cos(a - 0.5) * R, cy + Math.sin(a - 0.5) * R, cx + nx * R, cy + ny * R); tr.addColorStop(0, 'rgba(60,150,255,0)'); tr.addColorStop(1, 'rgba(90,190,255,0.9)'); g.strokeStyle = tr; g.lineWidth = 5 * px; g.beginPath(); g.arc(cx, cy, R, Math.max(a0, a - 0.5), a); g.stroke(); }   // NOS: blue needle trail
+    g.strokeStyle = hot ? T.red : T.needle; g.lineWidth = 2 * px;
+    g.beginPath(); g.moveTo(cx + nx * R * 0.62, cy + ny * R * 0.62); g.lineTo(cx + nx * (R + 9 * px), cy + ny * (R + 9 * px)); g.stroke();
+    g.lineCap = 'butt';
+    // shift LEDs: one thin row above the arc. Fill toward the shift point, all cyan inside PERFECT, red strobe on limiter
+    const N = 9, gap = w * 0.06, x0 = cx - gap * (N - 1) / 2, y = w * 0.07, lr = 2.6 * px;
+    let lit = 0;
+    if (st.shiftLo != null) {
+      const span = Math.max(600, (st.shiftHi - st.shiftLo) * 7);
+      lit = Math.max(0, Math.min(1, 1 - (st.shiftLo - st.rpm) / span));
+    }
+    const inWin = st.shiftLo != null && st.rpm >= st.shiftLo && st.rpm <= st.shiftHi;
+    const strobe = st.limiter && Math.floor(st.now * 16) % 2 === 0;
+    for (let i = 0; i < N; i++) {
+      const on = (i + 1) / N <= lit + 1e-6;
+      let col = i < 3 ? '#3dff9a' : i < 6 ? '#ffd23a' : '#ff3a5c';
+      if (inWin) col = '#3dff8c';   /* one colour word: GREEN */
+      if (strobe) col = '#ff2040';
+      const xx = x0 + gap * i;
+      if (on || inWin || strobe) {
+        g.globalAlpha = 0.3; g.fillStyle = col; g.beginPath(); g.arc(xx, y, lr * 2, 0, 7); g.fill();
+        g.globalAlpha = 1; g.beginPath(); g.arc(xx, y, lr, 0, 7); g.fill();
+      } else { g.fillStyle = T.ledOff; g.beginPath(); g.arc(xx, y, lr * 0.8, 0, 7); g.fill(); }
+    }
+  }
+
+  // staging (gear N): the tach centre shows big RPM digits and only the gas pedal is up; racing: gear ("1ST") + km/h,
+  // only + and NITRO. body.staging drives the control set in min.css.
+  setGear(g) {
+    if (g === this.last.gear) return;
+    this.last.gear = g;
+    const staging = g === 'N';
+    document.body.classList.toggle('staging', staging);
+    this.wrap.classList.toggle('rpmMode', staging);
+    if (staging) { this.last.rpmTxt = ''; return; }
+    const n = +g;   /* user: plain gear numbers 1-6, no 1st/2nd/3rd */
+    this.gearEl.textContent = Number.isFinite(n) ? String(n) : g;
+    this.gearEl.classList.remove('bump'); void this.gearEl.offsetWidth; this.gearEl.classList.add('bump');
+  }
+  holdStage(G, p, dt, save, STAGE) { return Coach.holdStage(G, p, dt, save, STAGE, this); }
+  setKmh(v) { const k = Math.round(v); if (k !== this.last.kmh) { this.last.kmh = k; this.kmhEl.textContent = k; } }
+  setTimes(t1, t2) {
+    const a = t1.toFixed(3), b = t2.toFixed(3);
+    if (a !== this.last.p1) { this.last.p1 = a; this.p1t.textContent = a; }
+    if (b !== this.last.p2) { this.last.p2 = b; this.p2t.textContent = b; }
+  }
+  // markers live in .lane (inset by the dot radius), so 0 % and 100 % stay inside the track
+  setProgress(f1, f2) {
+    const q1 = Math.round(Math.max(0, Math.min(1, f1)) * 1000), q2 = Math.round(Math.max(0, Math.min(1, f2)) * 1000);
+    /* perf 2026-11-14: a px transform on a composited dot (min.css will-change) instead of left: %, which re-laid-out and
+       repainted the HUD every race frame; laneW is measured in resize() */
+    const L = this.laneW || 0;
+    if (q1 !== this.last.m1) { this.last.m1 = q1; this.m1.style.transform = `translate(${(q1 / 1000 * L).toFixed(1)}px,0) translate(-50%,-50%)`; }
+    if (q2 !== this.last.m2) { this.last.m2 = q2; this.m2.style.transform = `translate(${(q2 / 1000 * L).toFixed(1)}px,0) translate(-50%,-50%)`; }
+  }
+  setNitro(frac, active) {
+    const q = Math.round(frac * 100) + (active ? 1000 : 0);
+    if (q === this.last.nitro) return;
+    this.last.nitro = q;
+    this.nitroFill.style.strokeDashoffset = String(100 - Math.round(frac * 100));
+    this.nitroBtn.classList.toggle('active', !!active);
+    this.nitroBtn.classList.toggle('empty', frac <= 0 && !active);
+  }
+  setPrompt(t, nag = false) {
+    t = SHORT[t] || t;
+    if (this.prompt.textContent !== t) { this.prompt.textContent = t; this.prompt.classList.toggle('show', !!t); }
+    if (nag !== this.last.nag) { this.last.nag = nag; this.prompt.classList.toggle('nag', nag); document.body.classList.toggle('hintNag', nag); }
+  }
+  /** Live gap to the rival in seconds (+ = ahead), null hides it. The bar fills from the centre: green ahead, pink behind. */
+  setGap(sec, label = null) {
+    const on = sec != null;
+    if (on !== this.last.gapOn) { this.last.gapOn = on; this.gap.classList.toggle('show', on); }
+    if (!on) return;
+    const q = Math.round(sec * 100);
+    if (q === this.last.gapQ && label === this.last.gapL) return;
+    this.last.gapL = label;
+    this.last.gapQ = q;
+    const k = Math.max(-1, Math.min(1, sec / 0.5));
+    this.gap.classList.toggle('ahead', q > 0); this.gap.classList.toggle('behind', q < 0);
+    this.gapFill.style.transform = `scaleX(${Math.abs(k).toFixed(3)})`;
+    this.gapFill.style.transformOrigin = k >= 0 ? 'left' : 'right';
+    this.gapFill.style.left = k >= 0 ? '50%' : '0'; 
+    this.gap.classList.toggle('cop', !!label);
+    if (label) { this.gapTxt.textContent = label; return; }
+    this.gapTxt.textContent = q === 0 ? 'DEAD EVEN' : `${q > 0 ? 'AHEAD +' : 'BEHIND −'}${Math.abs(sec).toFixed(2)}s`;
+  }
+  /** Keyboard overlay (desktop only): shown while staging and the first seconds of the early races. */
+  /* MANUAL controls: desktop key hints (staging overlay) and the first-shift callout say gas / stick instead of SPACE / TAP */
+  setManual(on) {
+    if (this._callAuto == null) this._callAuto = this.call.innerHTML;
+    if (!MOBILE) this.keys.innerHTML = on
+      ? '<div class="kRow"><kbd class="wide">SPACE</kbd><span><b>HOLD</b> GAS &middot; REV</span></div><div class="kRow"><kbd class="wide">&uarr; E</kbd><span><b>GEAR UP</b> &middot; &darr; Q DOWN</span></div>'
+        + '<div class="kRow"><kbd class="wide">&#8679; SHIFT</kbd><span><b>NITRO</b> &middot; OR &rarr;</span></div>'
+      : '<div class="kRow"><kbd class="wide">SPACE</kbd><span><b>HOLD</b> REV &middot; <b>TAP</b> GEAR UP</span></div>'
+        + '<div class="kRow"><kbd class="wide">&#8679; SHIFT</kbd><span><b>NITRO</b> &middot; OR &rarr; / RIGHT CLICK</span></div><div class="kRow"><kbd>P</kbd><span>PAUSE</span></div>';
+    this.call.innerHTML = !on ? this._callAuto : MOBILE ? '<b>SHIFT</b><span>NEEDLE IN THE GREEN</span>' : '<b>PRESS <kbd class="wide">&uarr; / E</kbd></b><span>TO GEAR UP · NEEDLE IN THE GREEN</span>';
+  }
+  setKeys(on) { if (on !== this.last.keys) { this.last.keys = on; this.keys.classList.toggle('show', on); } }
+
+  flashBezel(cls) {
+    const w = this.wrap; w.classList.remove('perf', 'good'); void w.offsetWidth; w.classList.add(cls);
+    clearTimeout(this._fb); this._fb = setTimeout(() => w.classList.remove(cls), 700);
+  }
+
+  pop(text, cls = '', sub = '') {
+    /* stagger: the launch grade waits until the GO numeral has cleared, so they never stack (portrait) */
+    if (document.body.classList.contains('ov-count')) { clearTimeout(this._popWait); this._popWait = setTimeout(() => this.pop(text, cls, sub), 380); return; }
+    if (/^PERFECT/.test(text)) this.flashBezel('perf'); else if (/^GOOD/.test(text)) this.flashBezel('good');
+    // action slot: one pop at a time (a new one replaces the visible one instead of stacking on it)
+    for (const p of this.pops) if (p.classList.contains('show')) p.className = 'pop';
+    const el = this.pops[this.popI++ % this.pops.length];
+    el.className = 'pop';
+    el.querySelector('b').textContent = text;
+    el.querySelector('i').textContent = sub;
+    void el.offsetWidth;
+    el.className = 'pop show ' + cls;
+  }
+}

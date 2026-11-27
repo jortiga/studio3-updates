@@ -1,0 +1,54 @@
+// Overlay manager: fixed, non-overlapping slots for transient UI.
+//   banner  - race name plate (#vsTag, started by main.js)        speech - the subtitle box (#subs, cast.say)
+//   hint    - one short line above the tach (#prompt, hud.js)     toast  - one line under the top bar (#toast, ui.toast)
+//   action  - hud.pop texts (one at a time, hud.js)
+// Each slot shows one item at a time; later items wait in a short queue (a small gap between them). Speech outranks the
+// banner: while someone talks, body.ov-speech hides the banner (min.css) and the VS slam text, so they never stack.
+// Every slot's on-screen position lives in min.css (search "slot:"), per context class on the element.
+const GAP = 160; // ms between two items in the same slot
+const slots = {};
+const S = (name) => (slots[name] || (slots[name] = { until: 0, q: [], t: 0, cur: null }));
+
+function setFlag(name, on) { document.body.classList.toggle('ov-' + name, on); }
+
+function run(name) {
+  const s = S(name);
+  clearTimeout(s.t);
+  const now = performance.now();
+  if (s.until > now) { s.t = setTimeout(() => run(name), s.until - now); return; }
+  const it = s.q.shift();
+  if (!it) { s.cur = null; setFlag(name, false); return; }
+  s.cur = it;
+  setFlag(name, true);
+  const ms = Math.max(200, it.show() * 1000);
+  s.until = now + ms + GAP;
+  s.t = setTimeout(() => { it.hide && it.hide(); run(name); }, ms);
+}
+
+/** Queue an item in a slot. show() puts it on screen and returns its duration (s); hide() takes it off.
+ *  max = how many may wait (older waiting items are dropped first); key = drop a waiting item with the same key. */
+export function push(name, show, hide, { max = 2, key = null, now = false } = {}) {
+  const s = S(name);
+  if (key) s.q = s.q.filter((q) => q.key !== key);
+  if (now) { // replace whatever is showing (e.g. a newer speech line from the same speaker)
+    s.q.length = 0; if (s.cur && s.cur.hide) s.cur.hide(); s.until = 0;
+  }
+  s.q.push({ show, hide, key });
+  while (s.q.length > max) s.q.shift();
+  run(name);
+}
+
+/** Clear a slot (hide the current item, drop the queue). */
+export function clear(name) {
+  const s = S(name);
+  clearTimeout(s.t); s.q.length = 0;
+  if (s.cur && s.cur.hide) s.cur.hide();
+  s.cur = null; s.until = 0; setFlag(name, false);
+}
+
+export const busy = (name) => !!S(name).cur;
+/** Seconds until the slot is free (current item + gap; queued items count too, roughly). */
+export function freeIn(name) {
+  const s = S(name);
+  return Math.max(0, (s.until - performance.now()) / 1000) + s.q.length * 2;
+}

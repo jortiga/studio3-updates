@@ -1,0 +1,4408 @@
+{
+ "version": 2,
+ "codec": "m4a",
+ "sets": {
+  "v8cross_sports": {
+   "engine": "v8cross",
+   "vehicle": "sports",
+   "eIdle": 700,
+   "eRed": 7000,
+   "on": [
+    {
+     "file": "baked/v8cross_sports/on_00.m4a",
+     "erpm": 700,
+     "loopStart": 0.07,
+     "loopEnd": 2.641429,
+     "gain": 1,
+     "rms": 0.1905
+    },
+    {
+     "file": "baked/v8cross_sports/on_01.m4a",
+     "erpm": 761,
+     "loopStart": 0.07,
+     "loopEnd": 2.592993,
+     "gain": 1,
+     "rms": 0.1884
+    },
+    {
+     "file": "baked/v8cross_sports/on_02.m4a",
+     "erpm": 828,
+     "loopStart": 0.07,
+     "loopEnd": 2.678685,
+     "gain": 1,
+     "rms": 0.1576
+    },
+    {
+     "file": "baked/v8cross_sports/on_03.m4a",
+     "erpm": 901,
+     "loopStart": 0.07,
+     "loopEnd": 2.733696,
+     "gain": 1,
+     "rms": 0.1246
+    },
+    {
+     "file": "baked/v8cross_sports/on_04.m4a",
+     "erpm": 979,
+     "loopStart": 0.07,
+     "loopEnd": 2.644059,
+     "gain": 1,
+     "rms": 0.1428
+    },
+    {
+     "file": "baked/v8cross_sports/on_05.m4a",
+     "erpm": 1065,
+     "loopStart": 0.07,
+     "loopEnd": 2.661542,
+     "gain": 1,
+     "rms": 0.1221
+    },
+    {
+     "file": "baked/v8cross_sports/on_06.m4a",
+     "erpm": 1158,
+     "loopStart": 0.07,
+     "loopEnd": 2.66068,
+     "gain": 1,
+     "rms": 0.101
+    },
+    {
+     "file": "baked/v8cross_sports/on_07.m4a",
+     "erpm": 1260,
+     "loopStart": 0.07,
+     "loopEnd": 2.641429,
+     "gain": 1,
+     "rms": 0.0733
+    },
+    {
+     "file": "baked/v8cross_sports/on_08.m4a",
+     "erpm": 1370,
+     "loopStart": 0.07,
+     "loopEnd": 2.697732,
+     "gain": 1,
+     "rms": 0.059
+    },
+    {
+     "file": "baked/v8cross_sports/on_09.m4a",
+     "erpm": 1490,
+     "loopStart": 0.07,
+     "loopEnd": 2.647188,
+     "gain": 1,
+     "rms": 0.0567
+    },
+    {
+     "file": "baked/v8cross_sports/on_10.m4a",
+     "erpm": 1621,
+     "loopStart": 0.07,
+     "loopEnd": 2.660998,
+     "gain": 1,
+     "rms": 0.0678
+    },
+    {
+     "file": "baked/v8cross_sports/on_11.m4a",
+     "erpm": 1763,
+     "loopStart": 0.07,
+     "loopEnd": 2.656508,
+     "gain": 1,
+     "rms": 0.0987
+    },
+    {
+     "file": "baked/v8cross_sports/on_12.m4a",
+     "erpm": 1917,
+     "loopStart": 0.07,
+     "loopEnd": 2.699116,
+     "gain": 1,
+     "rms": 0.1971
+    },
+    {
+     "file": "baked/v8cross_sports/on_13.m4a",
+     "erpm": 2085,
+     "loopStart": 0.07,
+     "loopEnd": 2.659932,
+     "gain": 1,
+     "rms": 0.2217
+    },
+    {
+     "file": "baked/v8cross_sports/on_14.m4a",
+     "erpm": 2268,
+     "loopStart": 0.07,
+     "loopEnd": 2.662585,
+     "gain": 1,
+     "rms": 0.1523
+    },
+    {
+     "file": "baked/v8cross_sports/on_15.m4a",
+     "erpm": 2466,
+     "loopStart": 0.07,
+     "loopEnd": 2.64907,
+     "gain": 1,
+     "rms": 0.1066
+    },
+    {
+     "file": "baked/v8cross_sports/on_16.m4a",
+     "erpm": 2682,
+     "loopStart": 0.07,
+     "loopEnd": 2.665079,
+     "gain": 1,
+     "rms": 0.0838
+    },
+    {
+     "file": "baked/v8cross_sports/on_17.m4a",
+     "erpm": 2917,
+     "loopStart": 0.07,
+     "loopEnd": 2.661701,
+     "gain": 1,
+     "rms": 0.0939
+    },
+    {
+     "file": "baked/v8cross_sports/on_18.m4a",
+     "erpm": 3173,
+     "loopStart": 0.07,
+     "loopEnd": 2.679524,
+     "gain": 1,
+     "rms": 0.089
+    },
+    {
+     "file": "baked/v8cross_sports/on_19.m4a",
+     "erpm": 3451,
+     "loopStart": 0.07,
+     "loopEnd": 2.677937,
+     "gain": 1,
+     "rms": 0.0939
+    },
+    {
+     "file": "baked/v8cross_sports/on_20.m4a",
+     "erpm": 3753,
+     "loopStart": 0.07,
+     "loopEnd": 2.659932,
+     "gain": 1,
+     "rms": 0.097
+    },
+    {
+     "file": "baked/v8cross_sports/on_21.m4a",
+     "erpm": 4082,
+     "loopStart": 0.07,
+     "loopEnd": 2.656961,
+     "gain": 1,
+     "rms": 0.0961
+    },
+    {
+     "file": "baked/v8cross_sports/on_22.m4a",
+     "erpm": 4439,
+     "loopStart": 0.07,
+     "loopEnd": 2.66517,
+     "gain": 1,
+     "rms": 0.0933
+    },
+    {
+     "file": "baked/v8cross_sports/on_23.m4a",
+     "erpm": 4828,
+     "loopStart": 0.07,
+     "loopEnd": 2.679773,
+     "gain": 1,
+     "rms": 0.0994
+    },
+    {
+     "file": "baked/v8cross_sports/on_24.m4a",
+     "erpm": 5251,
+     "loopStart": 0.07,
+     "loopEnd": 2.675215,
+     "gain": 1,
+     "rms": 0.1082
+    },
+    {
+     "file": "baked/v8cross_sports/on_25.m4a",
+     "erpm": 5711,
+     "loopStart": 0.07,
+     "loopEnd": 2.675488,
+     "gain": 1,
+     "rms": 0.093
+    },
+    {
+     "file": "baked/v8cross_sports/on_26.m4a",
+     "erpm": 6211,
+     "loopStart": 0.07,
+     "loopEnd": 2.678277,
+     "gain": 1,
+     "rms": 0.07
+    },
+    {
+     "file": "baked/v8cross_sports/on_27.m4a",
+     "erpm": 6755,
+     "loopStart": 0.07,
+     "loopEnd": 2.663628,
+     "gain": 1,
+     "rms": 0.0872
+    }
+   ],
+   "off": [
+    {
+     "file": "baked/v8cross_sports/off_00.m4a",
+     "erpm": 700,
+     "loopStart": 0.07,
+     "loopEnd": 2.641429,
+     "gain": 1,
+     "rms": 0.0626
+    },
+    {
+     "file": "baked/v8cross_sports/off_01.m4a",
+     "erpm": 833,
+     "loopStart": 0.07,
+     "loopEnd": 2.663039,
+     "gain": 1,
+     "rms": 0.0408
+    },
+    {
+     "file": "baked/v8cross_sports/off_02.m4a",
+     "erpm": 992,
+     "loopStart": 0.07,
+     "loopEnd": 2.610317,
+     "gain": 1,
+     "rms": 0.0389
+    },
+    {
+     "file": "baked/v8cross_sports/off_03.m4a",
+     "erpm": 1181,
+     "loopStart": 0.07,
+     "loopEnd": 2.711837,
+     "gain": 1,
+     "rms": 0.0285
+    },
+    {
+     "file": "baked/v8cross_sports/off_04.m4a",
+     "erpm": 1406,
+     "loopStart": 0.07,
+     "loopEnd": 2.630454,
+     "gain": 1,
+     "rms": 0.0247
+    },
+    {
+     "file": "baked/v8cross_sports/off_05.m4a",
+     "erpm": 1674,
+     "loopStart": 0.07,
+     "loopEnd": 2.650635,
+     "gain": 1,
+     "rms": 0.0296
+    },
+    {
+     "file": "baked/v8cross_sports/off_06.m4a",
+     "erpm": 1993,
+     "loopStart": 0.07,
+     "loopEnd": 2.65907,
+     "gain": 1,
+     "rms": 0.0804
+    },
+    {
+     "file": "baked/v8cross_sports/off_07.m4a",
+     "erpm": 2373,
+     "loopStart": 0.07,
+     "loopEnd": 2.649025,
+     "gain": 1,
+     "rms": 0.0298
+    },
+    {
+     "file": "baked/v8cross_sports/off_08.m4a",
+     "erpm": 2825,
+     "loopStart": 0.07,
+     "loopEnd": 2.661156,
+     "gain": 1,
+     "rms": 0.0173
+    },
+    {
+     "file": "baked/v8cross_sports/off_09.m4a",
+     "erpm": 3363,
+     "loopStart": 0.07,
+     "loopEnd": 2.674807,
+     "gain": 1,
+     "rms": 0.0207
+    },
+    {
+     "file": "baked/v8cross_sports/off_10.m4a",
+     "erpm": 4003,
+     "loopStart": 0.07,
+     "loopEnd": 2.67805,
+     "gain": 1,
+     "rms": 0.0217
+    },
+    {
+     "file": "baked/v8cross_sports/off_11.m4a",
+     "erpm": 4766,
+     "loopStart": 0.07,
+     "loopEnd": 2.663379,
+     "gain": 1,
+     "rms": 0.0193
+    },
+    {
+     "file": "baked/v8cross_sports/off_12.m4a",
+     "erpm": 5674,
+     "loopStart": 0.07,
+     "loopEnd": 2.671338,
+     "gain": 1,
+     "rms": 0.0204
+    },
+    {
+     "file": "baked/v8cross_sports/off_13.m4a",
+     "erpm": 6755,
+     "loopStart": 0.07,
+     "loopEnd": 2.663628,
+     "gain": 1,
+     "rms": 0.0209
+    }
+   ],
+   "ex": {
+    "stock": {
+     "vol": 0.85,
+     "eq": {
+      "level": -0.4,
+      "g": [
+       0.97,
+       -1.88,
+       1.39,
+       -2.43,
+       -3.93,
+       -0.57
+      ],
+      "resid": 0.39,
+      "spread": 0.73
+     },
+     "lift": {
+      "hi": {
+       "erpm": 6440,
+       "egt": 0.75,
+       "tries": 4,
+       "shots": [
+        {
+         "file": "baked/v8cross_sports/stock_lift_hi0.m4a",
+         "dur": 0.477,
+         "peak": 0.786,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.059,
+           0.99
+          ],
+          [
+           0.052,
+           0.13
+          ]
+         ]
+        },
+        {
+         "file": "baked/v8cross_sports/stock_lift_hi1.m4a",
+         "dur": 0.431,
+         "peak": 0.748,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.059,
+           0.61
+          ],
+          [
+           0.052,
+           0.13
+          ]
+         ]
+        },
+        {
+         "file": "baked/v8cross_sports/stock_lift_hi2.m4a",
+         "dur": 0.442,
+         "peak": 0.74,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.059,
+           0.59
+          ],
+          [
+           0.052,
+           0.13
+          ]
+         ]
+        },
+        {
+         "file": "baked/v8cross_sports/stock_lift_hi3.m4a",
+         "dur": 0.568,
+         "peak": 0.061,
+         "pops": [
+          [
+           0.052,
+           0.13
+          ],
+          [
+           0.355,
+           0.03
+          ]
+         ]
+        }
+       ]
+      },
+      "mid": {
+       "erpm": 4200,
+       "egt": 0.75,
+       "tries": 2,
+       "shots": [
+        {
+         "file": "baked/v8cross_sports/stock_lift_mid0.m4a",
+         "dur": 0.331,
+         "peak": 0.548,
+         "pops": [
+          [
+           0.015,
+           0.46
+          ],
+          [
+           0.059,
+           0.2
+          ],
+          [
+           0.052,
+           0.07
+          ]
+         ]
+        },
+        {
+         "file": "baked/v8cross_sports/stock_lift_mid1.m4a",
+         "dur": 0.33,
+         "peak": 0.505,
+         "pops": [
+          [
+           0.015,
+           0.37
+          ],
+          [
+           0.059,
+           0.16
+          ],
+          [
+           0.052,
+           0.06
+          ]
+         ]
+        }
+       ]
+      }
+     },
+     "shift": [
+      {
+       "file": "baked/v8cross_sports/stock_shift0.m4a",
+       "dur": 0.486,
+       "peak": 0.426,
+       "pops": [
+        [
+         0.018,
+         0.35
+        ],
+        [
+         0.06,
+         0.34
+        ],
+        [
+         0.077,
+         0.16
+        ]
+       ]
+      },
+      {
+       "file": "baked/v8cross_sports/stock_shift1.m4a",
+       "dur": 0.47,
+       "peak": 0.424,
+       "pops": [
+        [
+         0.018,
+         0.35
+        ],
+        [
+         0.06,
+         0.34
+        ],
+        [
+         0.077,
+         0.16
+        ]
+       ]
+      }
+     ]
+    },
+    "sport": {
+     "vol": 1,
+     "eq": {
+      "level": 0,
+      "g": [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ],
+      "resid": 0
+     },
+     "lift": {
+      "hi": {
+       "erpm": 6440,
+       "egt": 0.75,
+       "tries": 4,
+       "shots": [
+        {
+         "file": "baked/v8cross_sports/sport_lift_hi0.m4a",
+         "dur": 0.477,
+         "peak": 0.788,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.059,
+           0.99
+          ],
+          [
+           0.052,
+           0.13
+          ]
+         ]
+        },
+        {
+         "file": "baked/v8cross_sports/sport_lift_hi1.m4a",
+         "dur": 0.42,
+         "peak": 0.75,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.059,
+           0.61
+          ],
+          [
+           0.052,
+           0.13
+          ]
+         ]
+        },
+        {
+         "file": "baked/v8cross_sports/sport_lift_hi2.m4a",
+         "dur": 0.472,
+         "peak": 0.743,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.059,
+           0.59
+          ],
+          [
+           0.052,
+           0.13
+          ]
+         ]
+        },
+        {
+         "file": "baked/v8cross_sports/sport_lift_hi3.m4a",
+         "dur": 0.567,
+         "peak": 0.057,
+         "pops": [
+          [
+           0.052,
+           0.13
+          ],
+          [
+           0.355,
+           0.03
+          ]
+         ]
+        }
+       ]
+      },
+      "mid": {
+       "erpm": 4200,
+       "egt": 0.75,
+       "tries": 2,
+       "shots": [
+        {
+         "file": "baked/v8cross_sports/sport_lift_mid0.m4a",
+         "dur": 0.331,
+         "peak": 0.555,
+         "pops": [
+          [
+           0.015,
+           0.46
+          ],
+          [
+           0.059,
+           0.2
+          ],
+          [
+           0.052,
+           0.07
+          ]
+         ]
+        },
+        {
+         "file": "baked/v8cross_sports/sport_lift_mid1.m4a",
+         "dur": 0.33,
+         "peak": 0.509,
+         "pops": [
+          [
+           0.015,
+           0.37
+          ],
+          [
+           0.059,
+           0.16
+          ],
+          [
+           0.052,
+           0.06
+          ]
+         ]
+        }
+       ]
+      }
+     },
+     "shift": [
+      {
+       "file": "baked/v8cross_sports/sport_shift0.m4a",
+       "dur": 0.486,
+       "peak": 0.425,
+       "pops": [
+        [
+         0.018,
+         0.35
+        ],
+        [
+         0.06,
+         0.34
+        ],
+        [
+         0.077,
+         0.16
+        ]
+       ]
+      },
+      {
+       "file": "baked/v8cross_sports/sport_shift1.m4a",
+       "dur": 0.47,
+       "peak": 0.423,
+       "pops": [
+        [
+         0.018,
+         0.35
+        ],
+        [
+         0.06,
+         0.34
+        ],
+        [
+         0.077,
+         0.16
+        ]
+       ]
+      }
+     ]
+    },
+    "straight": {
+     "vol": 1.1,
+     "eq": {
+      "level": 1.12,
+      "g": [
+       -2.15,
+       2.13,
+       -1.61,
+       -0.41,
+       4.5,
+       0.41
+      ],
+      "resid": 0.48,
+      "spread": 0.73
+     },
+     "lift": {
+      "hi": {
+       "erpm": 6440,
+       "egt": 0.75,
+       "tries": 4,
+       "shots": [
+        {
+         "file": "baked/v8cross_sports/straight_lift_hi0.m4a",
+         "dur": 0.474,
+         "peak": 0.791,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.059,
+           0.99
+          ],
+          [
+           0.052,
+           0.13
+          ]
+         ]
+        },
+        {
+         "file": "baked/v8cross_sports/straight_lift_hi1.m4a",
+         "dur": 0.413,
+         "peak": 0.753,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.059,
+           0.61
+          ],
+          [
+           0.052,
+           0.13
+          ]
+         ]
+        },
+        {
+         "file": "baked/v8cross_sports/straight_lift_hi2.m4a",
+         "dur": 0.472,
+         "peak": 0.746,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.059,
+           0.59
+          ],
+          [
+           0.052,
+           0.13
+          ]
+         ]
+        },
+        {
+         "file": "baked/v8cross_sports/straight_lift_hi3.m4a",
+         "dur": 0.56,
+         "peak": 0.053,
+         "pops": [
+          [
+           0.052,
+           0.13
+          ],
+          [
+           0.355,
+           0.03
+          ]
+         ]
+        }
+       ]
+      },
+      "mid": {
+       "erpm": 4200,
+       "egt": 0.75,
+       "tries": 2,
+       "shots": [
+        {
+         "file": "baked/v8cross_sports/straight_lift_mid0.m4a",
+         "dur": 0.345,
+         "peak": 0.548,
+         "pops": [
+          [
+           0.015,
+           0.46
+          ],
+          [
+           0.059,
+           0.2
+          ],
+          [
+           0.052,
+           0.07
+          ]
+         ]
+        },
+        {
+         "file": "baked/v8cross_sports/straight_lift_mid1.m4a",
+         "dur": 0.391,
+         "peak": 0.5,
+         "pops": [
+          [
+           0.015,
+           0.37
+          ],
+          [
+           0.059,
+           0.16
+          ],
+          [
+           0.052,
+           0.06
+          ]
+         ]
+        }
+       ]
+      }
+     },
+     "shift": [
+      {
+       "file": "baked/v8cross_sports/straight_shift0.m4a",
+       "dur": 0.486,
+       "peak": 0.4,
+       "pops": [
+        [
+         0.018,
+         0.35
+        ],
+        [
+         0.06,
+         0.34
+        ],
+        [
+         0.077,
+         0.16
+        ]
+       ]
+      },
+      {
+       "file": "baked/v8cross_sports/straight_shift1.m4a",
+       "dur": 0.47,
+       "peak": 0.396,
+       "pops": [
+        [
+         0.018,
+         0.35
+        ],
+        [
+         0.06,
+         0.34
+        ],
+        [
+         0.077,
+         0.16
+        ]
+       ]
+      }
+     ]
+    },
+    "antilag": {
+     "vol": 1.12,
+     "eq": {
+      "level": 1.74,
+      "g": [
+       -3.35,
+       2.74,
+       -2.26,
+       -1.11,
+       5.64,
+       0.37
+      ],
+      "resid": 0.63,
+      "spread": 0.94
+     },
+     "lift": {
+      "hi": {
+       "erpm": 6440,
+       "egt": 0.75,
+       "tries": 4,
+       "shots": [
+        {
+         "file": "baked/v8cross_sports/antilag_lift_hi0.m4a",
+         "dur": 0.603,
+         "peak": 0.799,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.059,
+           1
+          ],
+          [
+           0.052,
+           0.21
+          ],
+          [
+           0.508,
+           0.08
+          ]
+         ]
+        },
+        {
+         "file": "baked/v8cross_sports/antilag_lift_hi1.m4a",
+         "dur": 0.597,
+         "peak": 0.786,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.059,
+           0.89
+          ],
+          [
+           0.052,
+           0.21
+          ],
+          [
+           0.508,
+           0.08
+          ]
+         ]
+        },
+        {
+         "file": "baked/v8cross_sports/antilag_lift_hi2.m4a",
+         "dur": 0.603,
+         "peak": 0.779,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.059,
+           0.86
+          ],
+          [
+           0.052,
+           0.21
+          ],
+          [
+           0.508,
+           0.08
+          ]
+         ]
+        },
+        {
+         "file": "baked/v8cross_sports/antilag_lift_hi3.m4a",
+         "dur": 0.49,
+         "peak": 0.138,
+         "pops": [
+          [
+           0.052,
+           0.21
+          ],
+          [
+           0.265,
+           0.06
+          ]
+         ]
+        }
+       ]
+      },
+      "mid": {
+       "erpm": 4200,
+       "egt": 0.75,
+       "tries": 2,
+       "shots": [
+        {
+         "file": "baked/v8cross_sports/antilag_lift_mid0.m4a",
+         "dur": 0.368,
+         "peak": 0.64,
+         "pops": [
+          [
+           0.015,
+           0.75
+          ],
+          [
+           0.059,
+           0.33
+          ],
+          [
+           0.052,
+           0.13
+          ]
+         ]
+        },
+        {
+         "file": "baked/v8cross_sports/antilag_lift_mid1.m4a",
+         "dur": 0.392,
+         "peak": 0.59,
+         "pops": [
+          [
+           0.015,
+           0.61
+          ],
+          [
+           0.059,
+           0.27
+          ],
+          [
+           0.052,
+           0.13
+          ]
+         ]
+        }
+       ]
+      }
+     },
+     "shift": [
+      {
+       "file": "baked/v8cross_sports/antilag_shift0.m4a",
+       "dur": 0.501,
+       "peak": 0.484,
+       "pops": [
+        [
+         0.018,
+         0.5
+        ],
+        [
+         0.06,
+         0.48
+        ],
+        [
+         0.077,
+         0.23
+        ],
+        [
+         0.187,
+         0.12
+        ]
+       ]
+      },
+      {
+       "file": "baked/v8cross_sports/antilag_shift1.m4a",
+       "dur": 0.485,
+       "peak": 0.485,
+       "pops": [
+        [
+         0.018,
+         0.5
+        ],
+        [
+         0.06,
+         0.48
+        ],
+        [
+         0.077,
+         0.23
+        ],
+        [
+         0.187,
+         0.12
+        ]
+       ]
+      }
+     ],
+     "crackle": {
+      "file": "baked/v8cross_sports/antilag_crackle.m4a",
+      "loopStart": 0.07,
+      "loopEnd": 2.47,
+      "erpm": 4200,
+      "rms": 0
+     }
+    },
+    "popcorn": {
+     "vol": 1.05,
+     "eq": {
+      "level": 0.76,
+      "g": [
+       -1.69,
+       1.66,
+       -1.2,
+       -0.08,
+       3.51,
+       0.3
+      ],
+      "resid": 0.36,
+      "spread": 0.57
+     },
+     "lift": {
+      "hi": {
+       "erpm": 6440,
+       "egt": 0.75,
+       "tries": 4,
+       "shots": [
+        {
+         "file": "baked/v8cross_sports/popcorn_lift_hi0.m4a",
+         "dur": 0.679,
+         "peak": 0.798,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.059,
+           1
+          ],
+          [
+           0.052,
+           0.17
+          ],
+          [
+           0.586,
+           0.05
+          ]
+         ]
+        },
+        {
+         "file": "baked/v8cross_sports/popcorn_lift_hi1.m4a",
+         "dur": 0.679,
+         "peak": 0.776,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.059,
+           0.76
+          ],
+          [
+           0.052,
+           0.17
+          ],
+          [
+           0.586,
+           0.05
+          ]
+         ]
+        },
+        {
+         "file": "baked/v8cross_sports/popcorn_lift_hi2.m4a",
+         "dur": 0.679,
+         "peak": 0.772,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.059,
+           0.73
+          ],
+          [
+           0.052,
+           0.17
+          ],
+          [
+           0.586,
+           0.05
+          ]
+         ]
+        },
+        {
+         "file": "baked/v8cross_sports/popcorn_lift_hi3.m4a",
+         "dur": 0.514,
+         "peak": 0.068,
+         "pops": [
+          [
+           0.052,
+           0.17
+          ],
+          [
+           0.301,
+           0.05
+          ]
+         ]
+        }
+       ]
+      },
+      "mid": {
+       "erpm": 4200,
+       "egt": 0.75,
+       "tries": 2,
+       "shots": [
+        {
+         "file": "baked/v8cross_sports/popcorn_lift_mid0.m4a",
+         "dur": 0.368,
+         "peak": 0.607,
+         "pops": [
+          [
+           0.015,
+           0.63
+          ],
+          [
+           0.059,
+           0.28
+          ],
+          [
+           0.052,
+           0.11
+          ]
+         ]
+        },
+        {
+         "file": "baked/v8cross_sports/popcorn_lift_mid1.m4a",
+         "dur": 0.392,
+         "peak": 0.561,
+         "pops": [
+          [
+           0.015,
+           0.52
+          ],
+          [
+           0.059,
+           0.23
+          ],
+          [
+           0.052,
+           0.11
+          ]
+         ]
+        }
+       ]
+      }
+     },
+     "shift": [
+      {
+       "file": "baked/v8cross_sports/popcorn_shift0.m4a",
+       "dur": 0.501,
+       "peak": 0.501,
+       "pops": [
+        [
+         0.018,
+         0.5
+        ],
+        [
+         0.06,
+         0.48
+        ],
+        [
+         0.077,
+         0.23
+        ]
+       ]
+      },
+      {
+       "file": "baked/v8cross_sports/popcorn_shift1.m4a",
+       "dur": 0.485,
+       "peak": 0.498,
+       "pops": [
+        [
+         0.018,
+         0.5
+        ],
+        [
+         0.06,
+         0.48
+        ],
+        [
+         0.077,
+         0.23
+        ]
+       ]
+      }
+     ],
+     "crackle": {
+      "file": "baked/v8cross_sports/popcorn_crackle.m4a",
+      "loopStart": 0.07,
+      "loopEnd": 2.47,
+      "erpm": 4200,
+      "rms": 0
+     }
+    }
+   },
+   "free": [
+    {
+     "file": "baked/v8cross_sports/free_00.m4a",
+     "erpm": 700,
+     "loopStart": 0.07,
+     "loopEnd": 2.641429,
+     "gain": 1,
+     "rms": 0.0607
+    },
+    {
+     "file": "baked/v8cross_sports/free_01.m4a",
+     "erpm": 900,
+     "loopStart": 0.07,
+     "loopEnd": 2.736667,
+     "gain": 1,
+     "rms": 0.0372
+    },
+    {
+     "file": "baked/v8cross_sports/free_02.m4a",
+     "erpm": 1158,
+     "loopStart": 0.07,
+     "loopEnd": 2.66068,
+     "gain": 1,
+     "rms": 0.0298
+    },
+    {
+     "file": "baked/v8cross_sports/free_03.m4a",
+     "erpm": 1490,
+     "loopStart": 0.07,
+     "loopEnd": 2.647188,
+     "gain": 1,
+     "rms": 0.0249
+    },
+    {
+     "file": "baked/v8cross_sports/free_04.m4a",
+     "erpm": 1917,
+     "loopStart": 0.07,
+     "loopEnd": 2.699116,
+     "gain": 1,
+     "rms": 0.0701
+    },
+    {
+     "file": "baked/v8cross_sports/free_05.m4a",
+     "erpm": 2466,
+     "loopStart": 0.07,
+     "loopEnd": 2.64907,
+     "gain": 1,
+     "rms": 0.0266
+    },
+    {
+     "file": "baked/v8cross_sports/free_06.m4a",
+     "erpm": 3172,
+     "loopStart": 0.07,
+     "loopEnd": 2.68034,
+     "gain": 1,
+     "rms": 0.0317
+    },
+    {
+     "file": "baked/v8cross_sports/free_07.m4a",
+     "erpm": 4081,
+     "loopStart": 0.07,
+     "loopEnd": 2.657596,
+     "gain": 1,
+     "rms": 0.0243
+    },
+    {
+     "file": "baked/v8cross_sports/free_08.m4a",
+     "erpm": 5250,
+     "loopStart": 0.07,
+     "loopEnd": 2.675714,
+     "gain": 1,
+     "rms": 0.0231
+    }
+   ],
+   "cut": {
+    "dt": 0.005011337868480726,
+    "g": [
+     1,
+     1,
+     1,
+     1,
+     1,
+     1.002,
+     1.003,
+     0.994,
+     0.99,
+     0.979,
+     0.969,
+     0.942,
+     0.914,
+     0.914,
+     0.91,
+     0.915,
+     0.849,
+     0.763,
+     0.689,
+     0.631,
+     0.537,
+     0.49,
+     0.449,
+     0.486,
+     0.465,
+     0.429,
+     0.402,
+     0.371,
+     0.413,
+     0.391,
+     0.431,
+     0.432,
+     0.506,
+     0.606,
+     0.659,
+     0.637,
+     0.59,
+     0.561,
+     0.6,
+     0.63,
+     0.654,
+     0.634,
+     0.638,
+     0.693,
+     0.711,
+     0.733,
+     0.745,
+     0.787,
+     0.819,
+     0.818,
+     0.806,
+     0.797,
+     0.808,
+     0.83,
+     0.879,
+     0.909,
+     0.922,
+     0.882,
+     0.852,
+     0.876,
+     0.896,
+     0.922,
+     0.91,
+     0.895,
+     0.885,
+     0.877,
+     0.884,
+     0.891,
+     0.896,
+     0.896,
+     0.894,
+     0.891,
+     0.893,
+     0.884,
+     0.893,
+     0.879,
+     0.878,
+     0.871,
+     0.883,
+     0.881,
+     0.878,
+     0.876,
+     0.884,
+     0.882,
+     0.891,
+     0.889,
+     0.883,
+     0.882,
+     0.895,
+     0.912,
+     0.916,
+     0.927,
+     0.94,
+     0.956,
+     1
+    ]
+   },
+   "whine": {
+    "on": {
+     "file": "baked/v8cross_sports/whine_on.m4a",
+     "loopStart": 0.07,
+     "loopEnd": 1.67,
+     "rms": 0.004
+    },
+    "off": {
+     "file": "baked/v8cross_sports/whine_off.m4a",
+     "loopStart": 0.07,
+     "loopEnd": 1.67,
+     "rms": 0.0001
+    },
+    "erpm": 4200,
+    "gear": 3,
+    "k": [
+     10.986,
+     16.098,
+     20.144,
+     25,
+     26.829,
+     28.358
+    ]
+   }
+  },
+  "i6_sports": {
+   "engine": "i6",
+   "vehicle": "sports",
+   "eIdle": 750,
+   "eRed": 7000,
+   "on": [
+    {
+     "file": "baked/i6_sports/on_00.m4a",
+     "erpm": 750,
+     "loopStart": 0.07,
+     "loopEnd": 2.63,
+     "gain": 1,
+     "rms": 0.1401
+    },
+    {
+     "file": "baked/i6_sports/on_01.m4a",
+     "erpm": 814,
+     "loopStart": 0.07,
+     "loopEnd": 2.72356,
+     "gain": 1,
+     "rms": 0.1437
+    },
+    {
+     "file": "baked/i6_sports/on_02.m4a",
+     "erpm": 883,
+     "loopStart": 0.07,
+     "loopEnd": 2.652109,
+     "gain": 1,
+     "rms": 0.1705
+    },
+    {
+     "file": "baked/i6_sports/on_03.m4a",
+     "erpm": 957,
+     "loopStart": 0.07,
+     "loopEnd": 2.70322,
+     "gain": 1,
+     "rms": 0.2
+    },
+    {
+     "file": "baked/i6_sports/on_04.m4a",
+     "erpm": 1039,
+     "loopStart": 0.07,
+     "loopEnd": 2.726395,
+     "gain": 1,
+     "rms": 0.197
+    },
+    {
+     "file": "baked/i6_sports/on_05.m4a",
+     "erpm": 1127,
+     "loopStart": 0.07,
+     "loopEnd": 2.625465,
+     "gain": 1,
+     "rms": 0.1858
+    },
+    {
+     "file": "baked/i6_sports/on_06.m4a",
+     "erpm": 1222,
+     "loopStart": 0.07,
+     "loopEnd": 2.623197,
+     "gain": 1,
+     "rms": 0.1601
+    },
+    {
+     "file": "baked/i6_sports/on_07.m4a",
+     "erpm": 1326,
+     "loopStart": 0.07,
+     "loopEnd": 2.694444,
+     "gain": 1,
+     "rms": 0.1275
+    },
+    {
+     "file": "baked/i6_sports/on_08.m4a",
+     "erpm": 1438,
+     "loopStart": 0.07,
+     "loopEnd": 2.656916,
+     "gain": 1,
+     "rms": 0.1659
+    },
+    {
+     "file": "baked/i6_sports/on_09.m4a",
+     "erpm": 1560,
+     "loopStart": 0.07,
+     "loopEnd": 2.685374,
+     "gain": 1,
+     "rms": 0.1735
+    },
+    {
+     "file": "baked/i6_sports/on_10.m4a",
+     "erpm": 1693,
+     "loopStart": 0.07,
+     "loopEnd": 2.692562,
+     "gain": 1,
+     "rms": 0.1258
+    },
+    {
+     "file": "baked/i6_sports/on_11.m4a",
+     "erpm": 1836,
+     "loopStart": 0.07,
+     "loopEnd": 2.684376,
+     "gain": 1,
+     "rms": 0.0833
+    },
+    {
+     "file": "baked/i6_sports/on_12.m4a",
+     "erpm": 1992,
+     "loopStart": 0.07,
+     "loopEnd": 2.660363,
+     "gain": 1,
+     "rms": 0.0583
+    },
+    {
+     "file": "baked/i6_sports/on_13.m4a",
+     "erpm": 2161,
+     "loopStart": 0.07,
+     "loopEnd": 2.679909,
+     "gain": 1,
+     "rms": 0.0552
+    },
+    {
+     "file": "baked/i6_sports/on_14.m4a",
+     "erpm": 2344,
+     "loopStart": 0.07,
+     "loopEnd": 2.68093,
+     "gain": 1,
+     "rms": 0.0773
+    },
+    {
+     "file": "baked/i6_sports/on_15.m4a",
+     "erpm": 2543,
+     "loopStart": 0.07,
+     "loopEnd": 2.665351,
+     "gain": 1,
+     "rms": 0.1192
+    },
+    {
+     "file": "baked/i6_sports/on_16.m4a",
+     "erpm": 2759,
+     "loopStart": 0.07,
+     "loopEnd": 2.679637,
+     "gain": 1,
+     "rms": 0.1906
+    },
+    {
+     "file": "baked/i6_sports/on_17.m4a",
+     "erpm": 2993,
+     "loopStart": 0.07,
+     "loopEnd": 2.676077,
+     "gain": 1,
+     "rms": 0.2803
+    },
+    {
+     "file": "baked/i6_sports/on_18.m4a",
+     "erpm": 3247,
+     "loopStart": 0.07,
+     "loopEnd": 2.657007,
+     "gain": 1,
+     "rms": 0.2329
+    },
+    {
+     "file": "baked/i6_sports/on_19.m4a",
+     "erpm": 3522,
+     "loopStart": 0.07,
+     "loopEnd": 2.659433,
+     "gain": 1,
+     "rms": 0.1653
+    },
+    {
+     "file": "baked/i6_sports/on_20.m4a",
+     "erpm": 3821,
+     "loopStart": 0.07,
+     "loopEnd": 2.676644,
+     "gain": 1,
+     "rms": 0.114
+    },
+    {
+     "file": "baked/i6_sports/on_21.m4a",
+     "erpm": 4145,
+     "loopStart": 0.07,
+     "loopEnd": 2.675556,
+     "gain": 1,
+     "rms": 0.0746
+    },
+    {
+     "file": "baked/i6_sports/on_22.m4a",
+     "erpm": 4496,
+     "loopStart": 0.07,
+     "loopEnd": 2.658957,
+     "gain": 1,
+     "rms": 0.0767
+    },
+    {
+     "file": "baked/i6_sports/on_23.m4a",
+     "erpm": 4878,
+     "loopStart": 0.07,
+     "loopEnd": 2.677619,
+     "gain": 1,
+     "rms": 0.1842
+    },
+    {
+     "file": "baked/i6_sports/on_24.m4a",
+     "erpm": 5291,
+     "loopStart": 0.07,
+     "loopEnd": 2.678209,
+     "gain": 1,
+     "rms": 0.1252
+    },
+    {
+     "file": "baked/i6_sports/on_25.m4a",
+     "erpm": 5740,
+     "loopStart": 0.07,
+     "loopEnd": 2.662336,
+     "gain": 1,
+     "rms": 0.1755
+    },
+    {
+     "file": "baked/i6_sports/on_26.m4a",
+     "erpm": 6227,
+     "loopStart": 0.07,
+     "loopEnd": 2.671565,
+     "gain": 1,
+     "rms": 0.0927
+    },
+    {
+     "file": "baked/i6_sports/on_27.m4a",
+     "erpm": 6755,
+     "loopStart": 0.07,
+     "loopEnd": 2.663628,
+     "gain": 1,
+     "rms": 0.1794
+    }
+   ],
+   "off": [
+    {
+     "file": "baked/i6_sports/off_00.m4a",
+     "erpm": 750,
+     "loopStart": 0.07,
+     "loopEnd": 2.63,
+     "gain": 1,
+     "rms": 0.0456
+    },
+    {
+     "file": "baked/i6_sports/off_01.m4a",
+     "erpm": 888,
+     "loopStart": 0.07,
+     "loopEnd": 2.637574,
+     "gain": 1,
+     "rms": 0.07
+    },
+    {
+     "file": "baked/i6_sports/off_02.m4a",
+     "erpm": 1052,
+     "loopStart": 0.07,
+     "loopEnd": 2.693583,
+     "gain": 1,
+     "rms": 0.074
+    },
+    {
+     "file": "baked/i6_sports/off_03.m4a",
+     "erpm": 1246,
+     "loopStart": 0.07,
+     "loopEnd": 2.670317,
+     "gain": 1,
+     "rms": 0.0468
+    },
+    {
+     "file": "baked/i6_sports/off_04.m4a",
+     "erpm": 1475,
+     "loopStart": 0.07,
+     "loopEnd": 2.673379,
+     "gain": 1,
+     "rms": 0.0568
+    },
+    {
+     "file": "baked/i6_sports/off_05.m4a",
+     "erpm": 1747,
+     "loopStart": 0.07,
+     "loopEnd": 2.680181,
+     "gain": 1,
+     "rms": 0.0252
+    },
+    {
+     "file": "baked/i6_sports/off_06.m4a",
+     "erpm": 2068,
+     "loopStart": 0.07,
+     "loopEnd": 2.681224,
+     "gain": 1,
+     "rms": 0.018
+    },
+    {
+     "file": "baked/i6_sports/off_07.m4a",
+     "erpm": 2449,
+     "loopStart": 0.07,
+     "loopEnd": 2.666984,
+     "gain": 1,
+     "rms": 0.0232
+    },
+    {
+     "file": "baked/i6_sports/off_08.m4a",
+     "erpm": 2901,
+     "loopStart": 0.07,
+     "loopEnd": 2.676009,
+     "gain": 1,
+     "rms": 0.0762
+    },
+    {
+     "file": "baked/i6_sports/off_09.m4a",
+     "erpm": 3435,
+     "loopStart": 0.07,
+     "loopEnd": 2.655147,
+     "gain": 1,
+     "rms": 0.029
+    },
+    {
+     "file": "baked/i6_sports/off_10.m4a",
+     "erpm": 4068,
+     "loopStart": 0.07,
+     "loopEnd": 2.665873,
+     "gain": 1,
+     "rms": 0.016
+    },
+    {
+     "file": "baked/i6_sports/off_11.m4a",
+     "erpm": 4817,
+     "loopStart": 0.07,
+     "loopEnd": 2.660816,
+     "gain": 1,
+     "rms": 0.028
+    },
+    {
+     "file": "baked/i6_sports/off_12.m4a",
+     "erpm": 5704,
+     "loopStart": 0.07,
+     "loopEnd": 2.678685,
+     "gain": 1,
+     "rms": 0.0206
+    },
+    {
+     "file": "baked/i6_sports/off_13.m4a",
+     "erpm": 6755,
+     "loopStart": 0.07,
+     "loopEnd": 2.663628,
+     "gain": 1,
+     "rms": 0.0192
+    }
+   ],
+   "ex": {
+    "stock": {
+     "vol": 0.85,
+     "eq": {
+      "level": 1.23,
+      "g": [
+       -0.84,
+       -3.37,
+       -0.82,
+       -1.93,
+       -5.77,
+       -2.44
+      ],
+      "resid": 0.39,
+      "spread": 0.67
+     },
+     "lift": {
+      "hi": {
+       "erpm": 6440,
+       "egt": 0.75,
+       "tries": 4,
+       "shots": [
+        {
+         "file": "baked/i6_sports/stock_lift_hi0.m4a",
+         "dur": 0.463,
+         "peak": 0.793,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.066,
+           0.9
+          ],
+          [
+           0.052,
+           0.12
+          ]
+         ]
+        },
+        {
+         "file": "baked/i6_sports/stock_lift_hi1.m4a",
+         "dur": 0.41,
+         "peak": 0.725,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.066,
+           0.56
+          ],
+          [
+           0.052,
+           0.12
+          ]
+         ]
+        },
+        {
+         "file": "baked/i6_sports/stock_lift_hi2.m4a",
+         "dur": 0.432,
+         "peak": 0.714,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.066,
+           0.54
+          ],
+          [
+           0.052,
+           0.12
+          ]
+         ]
+        },
+        {
+         "file": "baked/i6_sports/stock_lift_hi3.m4a",
+         "dur": 0.609,
+         "peak": 0.077,
+         "pops": [
+          [
+           0.052,
+           0.12
+          ],
+          [
+           0.421,
+           0.03
+          ]
+         ]
+        }
+       ]
+      },
+      "mid": {
+       "erpm": 4200,
+       "egt": 0.75,
+       "tries": 2,
+       "shots": [
+        {
+         "file": "baked/i6_sports/stock_lift_mid0.m4a",
+         "dur": 0.33,
+         "peak": 0.414,
+         "pops": [
+          [
+           0.015,
+           0.41
+          ],
+          [
+           0.066,
+           0.18
+          ],
+          [
+           0.052,
+           0.07
+          ]
+         ]
+        },
+        {
+         "file": "baked/i6_sports/stock_lift_mid1.m4a",
+         "dur": 0.303,
+         "peak": 0.379,
+         "pops": [
+          [
+           0.015,
+           0.34
+          ],
+          [
+           0.066,
+           0.15
+          ],
+          [
+           0.052,
+           0.05
+          ]
+         ]
+        }
+       ]
+      }
+     },
+     "shift": [
+      {
+       "file": "baked/i6_sports/stock_shift0.m4a",
+       "dur": 0.452,
+       "peak": 0.338,
+       "pops": [
+        [
+         0.018,
+         0.32
+        ],
+        [
+         0.06,
+         0.31
+        ]
+       ]
+      },
+      {
+       "file": "baked/i6_sports/stock_shift1.m4a",
+       "dur": 0.366,
+       "peak": 0.341,
+       "pops": [
+        [
+         0.018,
+         0.32
+        ],
+        [
+         0.06,
+         0.31
+        ]
+       ]
+      }
+     ]
+    },
+    "sport": {
+     "vol": 1,
+     "eq": {
+      "level": 0,
+      "g": [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ],
+      "resid": 0
+     },
+     "lift": {
+      "hi": {
+       "erpm": 6440,
+       "egt": 0.75,
+       "tries": 4,
+       "shots": [
+        {
+         "file": "baked/i6_sports/sport_lift_hi0.m4a",
+         "dur": 0.462,
+         "peak": 0.794,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.066,
+           0.9
+          ],
+          [
+           0.052,
+           0.12
+          ]
+         ]
+        },
+        {
+         "file": "baked/i6_sports/sport_lift_hi1.m4a",
+         "dur": 0.41,
+         "peak": 0.728,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.066,
+           0.56
+          ],
+          [
+           0.052,
+           0.12
+          ]
+         ]
+        },
+        {
+         "file": "baked/i6_sports/sport_lift_hi2.m4a",
+         "dur": 0.429,
+         "peak": 0.717,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.066,
+           0.54
+          ],
+          [
+           0.052,
+           0.12
+          ]
+         ]
+        },
+        {
+         "file": "baked/i6_sports/sport_lift_hi3.m4a",
+         "dur": 0.608,
+         "peak": 0.072,
+         "pops": [
+          [
+           0.052,
+           0.12
+          ],
+          [
+           0.421,
+           0.03
+          ]
+         ]
+        }
+       ]
+      },
+      "mid": {
+       "erpm": 4200,
+       "egt": 0.75,
+       "tries": 2,
+       "shots": [
+        {
+         "file": "baked/i6_sports/sport_lift_mid0.m4a",
+         "dur": 0.316,
+         "peak": 0.413,
+         "pops": [
+          [
+           0.015,
+           0.41
+          ],
+          [
+           0.066,
+           0.18
+          ],
+          [
+           0.052,
+           0.07
+          ]
+         ]
+        },
+        {
+         "file": "baked/i6_sports/sport_lift_mid1.m4a",
+         "dur": 0.303,
+         "peak": 0.374,
+         "pops": [
+          [
+           0.015,
+           0.34
+          ],
+          [
+           0.066,
+           0.15
+          ],
+          [
+           0.052,
+           0.05
+          ]
+         ]
+        }
+       ]
+      }
+     },
+     "shift": [
+      {
+       "file": "baked/i6_sports/sport_shift0.m4a",
+       "dur": 0.452,
+       "peak": 0.331,
+       "pops": [
+        [
+         0.018,
+         0.32
+        ],
+        [
+         0.06,
+         0.31
+        ]
+       ]
+      },
+      {
+       "file": "baked/i6_sports/sport_shift1.m4a",
+       "dur": 0.366,
+       "peak": 0.334,
+       "pops": [
+        [
+         0.018,
+         0.32
+        ],
+        [
+         0.06,
+         0.31
+        ]
+       ]
+      }
+     ]
+    },
+    "straight": {
+     "vol": 1.1,
+     "eq": {
+      "level": -0.68,
+      "g": [
+       -0.2,
+       3.42,
+       0.96,
+       -0.2,
+       5.76,
+       2.63
+      ],
+      "resid": 0.5,
+      "spread": 0.7
+     },
+     "lift": {
+      "hi": {
+       "erpm": 6440,
+       "egt": 0.75,
+       "tries": 4,
+       "shots": [
+        {
+         "file": "baked/i6_sports/straight_lift_hi0.m4a",
+         "dur": 0.462,
+         "peak": 0.796,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.066,
+           0.9
+          ],
+          [
+           0.052,
+           0.12
+          ]
+         ]
+        },
+        {
+         "file": "baked/i6_sports/straight_lift_hi1.m4a",
+         "dur": 0.393,
+         "peak": 0.732,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.066,
+           0.56
+          ],
+          [
+           0.052,
+           0.12
+          ]
+         ]
+        },
+        {
+         "file": "baked/i6_sports/straight_lift_hi2.m4a",
+         "dur": 0.428,
+         "peak": 0.722,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.066,
+           0.54
+          ],
+          [
+           0.052,
+           0.12
+          ]
+         ]
+        },
+        {
+         "file": "baked/i6_sports/straight_lift_hi3.m4a",
+         "dur": 0.598,
+         "peak": 0.065,
+         "pops": [
+          [
+           0.052,
+           0.12
+          ],
+          [
+           0.421,
+           0.03
+          ]
+         ]
+        }
+       ]
+      },
+      "mid": {
+       "erpm": 4200,
+       "egt": 0.75,
+       "tries": 2,
+       "shots": [
+        {
+         "file": "baked/i6_sports/straight_lift_mid0.m4a",
+         "dur": 0.316,
+         "peak": 0.399,
+         "pops": [
+          [
+           0.015,
+           0.41
+          ],
+          [
+           0.066,
+           0.18
+          ],
+          [
+           0.052,
+           0.07
+          ]
+         ]
+        },
+        {
+         "file": "baked/i6_sports/straight_lift_mid1.m4a",
+         "dur": 0.303,
+         "peak": 0.357,
+         "pops": [
+          [
+           0.015,
+           0.34
+          ],
+          [
+           0.066,
+           0.15
+          ],
+          [
+           0.052,
+           0.05
+          ]
+         ]
+        }
+       ]
+      }
+     },
+     "shift": [
+      {
+       "file": "baked/i6_sports/straight_shift0.m4a",
+       "dur": 0.451,
+       "peak": 0.326,
+       "pops": [
+        [
+         0.018,
+         0.32
+        ],
+        [
+         0.06,
+         0.31
+        ]
+       ]
+      },
+      {
+       "file": "baked/i6_sports/straight_shift1.m4a",
+       "dur": 0.365,
+       "peak": 0.326,
+       "pops": [
+        [
+         0.018,
+         0.32
+        ],
+        [
+         0.06,
+         0.31
+        ]
+       ]
+      }
+     ]
+    },
+    "antilag": {
+     "vol": 1.12,
+     "eq": {
+      "level": -0.71,
+      "g": [
+       -0.76,
+       4.46,
+       1.2,
+       -0.53,
+       7.12,
+       3.44
+      ],
+      "resid": 0.71,
+      "spread": 0.93
+     },
+     "lift": {
+      "hi": {
+       "erpm": 6440,
+       "egt": 0.75,
+       "tries": 4,
+       "shots": [
+        {
+         "file": "baked/i6_sports/antilag_lift_hi0.m4a",
+         "dur": 0.706,
+         "peak": 0.786,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.066,
+           1
+          ],
+          [
+           0.052,
+           0.2
+          ],
+          [
+           0.623,
+           0.05
+          ]
+         ]
+        },
+        {
+         "file": "baked/i6_sports/antilag_lift_hi1.m4a",
+         "dur": 0.708,
+         "peak": 0.791,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.066,
+           0.82
+          ],
+          [
+           0.052,
+           0.2
+          ],
+          [
+           0.623,
+           0.05
+          ]
+         ]
+        },
+        {
+         "file": "baked/i6_sports/antilag_lift_hi2.m4a",
+         "dur": 0.708,
+         "peak": 0.787,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.066,
+           0.79
+          ],
+          [
+           0.052,
+           0.2
+          ],
+          [
+           0.623,
+           0.05
+          ]
+         ]
+        },
+        {
+         "file": "baked/i6_sports/antilag_lift_hi3.m4a",
+         "dur": 0.509,
+         "peak": 0.076,
+         "pops": [
+          [
+           0.052,
+           0.19
+          ],
+          [
+           0.318,
+           0.05
+          ]
+         ]
+        }
+       ]
+      },
+      "mid": {
+       "erpm": 4200,
+       "egt": 0.75,
+       "tries": 2,
+       "shots": [
+        {
+         "file": "baked/i6_sports/antilag_lift_mid0.m4a",
+         "dur": 0.37,
+         "peak": 0.489,
+         "pops": [
+          [
+           0.015,
+           0.68
+          ],
+          [
+           0.066,
+           0.3
+          ],
+          [
+           0.052,
+           0.12
+          ]
+         ]
+        },
+        {
+         "file": "baked/i6_sports/antilag_lift_mid1.m4a",
+         "dur": 0.324,
+         "peak": 0.441,
+         "pops": [
+          [
+           0.015,
+           0.55
+          ],
+          [
+           0.066,
+           0.24
+          ],
+          [
+           0.052,
+           0.12
+          ]
+         ]
+        }
+       ]
+      }
+     },
+     "shift": [
+      {
+       "file": "baked/i6_sports/antilag_shift0.m4a",
+       "dur": 0.52,
+       "peak": 0.413,
+       "pops": [
+        [
+         0.018,
+         0.46
+        ],
+        [
+         0.06,
+         0.44
+        ],
+        [
+         0.181,
+         0.09
+        ]
+       ]
+      },
+      {
+       "file": "baked/i6_sports/antilag_shift1.m4a",
+       "dur": 0.478,
+       "peak": 0.411,
+       "pops": [
+        [
+         0.018,
+         0.46
+        ],
+        [
+         0.06,
+         0.44
+        ],
+        [
+         0.181,
+         0.09
+        ]
+       ]
+      }
+     ],
+     "crackle": {
+      "file": "baked/i6_sports/antilag_crackle.m4a",
+      "loopStart": 0.07,
+      "loopEnd": 2.47,
+      "erpm": 4200,
+      "rms": 0
+     }
+    },
+    "popcorn": {
+     "vol": 1.05,
+     "eq": {
+      "level": -0.59,
+      "g": [
+       -0.21,
+       2.65,
+       0.75,
+       -0.04,
+       4.54,
+       1.97
+      ],
+      "resid": 0.36,
+      "spread": 0.55
+     },
+     "lift": {
+      "hi": {
+       "erpm": 6440,
+       "egt": 0.75,
+       "tries": 4,
+       "shots": [
+        {
+         "file": "baked/i6_sports/popcorn_lift_hi0.m4a",
+         "dur": 0.462,
+         "peak": 0.789,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.066,
+           1
+          ],
+          [
+           0.052,
+           0.16
+          ]
+         ]
+        },
+        {
+         "file": "baked/i6_sports/popcorn_lift_hi1.m4a",
+         "dur": 0.411,
+         "peak": 0.772,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.066,
+           0.69
+          ],
+          [
+           0.052,
+           0.16
+          ]
+         ]
+        },
+        {
+         "file": "baked/i6_sports/popcorn_lift_hi2.m4a",
+         "dur": 0.431,
+         "peak": 0.765,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.066,
+           0.67
+          ],
+          [
+           0.052,
+           0.16
+          ]
+         ]
+        },
+        {
+         "file": "baked/i6_sports/popcorn_lift_hi3.m4a",
+         "dur": 0.553,
+         "peak": 0.062,
+         "pops": [
+          [
+           0.052,
+           0.15
+          ],
+          [
+           0.36,
+           0.04
+          ]
+         ]
+        }
+       ]
+      },
+      "mid": {
+       "erpm": 4200,
+       "egt": 0.75,
+       "tries": 2,
+       "shots": [
+        {
+         "file": "baked/i6_sports/popcorn_lift_mid0.m4a",
+         "dur": 0.356,
+         "peak": 0.463,
+         "pops": [
+          [
+           0.015,
+           0.58
+          ],
+          [
+           0.066,
+           0.25
+          ],
+          [
+           0.052,
+           0.1
+          ]
+         ]
+        },
+        {
+         "file": "baked/i6_sports/popcorn_lift_mid1.m4a",
+         "dur": 0.303,
+         "peak": 0.421,
+         "pops": [
+          [
+           0.015,
+           0.47
+          ],
+          [
+           0.066,
+           0.21
+          ],
+          [
+           0.052,
+           0.1
+          ]
+         ]
+        }
+       ]
+      }
+     },
+     "shift": [
+      {
+       "file": "baked/i6_sports/popcorn_shift0.m4a",
+       "dur": 0.459,
+       "peak": 0.404,
+       "pops": [
+        [
+         0.018,
+         0.46
+        ],
+        [
+         0.06,
+         0.44
+        ]
+       ]
+      },
+      {
+       "file": "baked/i6_sports/popcorn_shift1.m4a",
+       "dur": 0.421,
+       "peak": 0.406,
+       "pops": [
+        [
+         0.018,
+         0.46
+        ],
+        [
+         0.06,
+         0.44
+        ]
+       ]
+      }
+     ],
+     "crackle": {
+      "file": "baked/i6_sports/popcorn_crackle.m4a",
+      "loopStart": 0.07,
+      "loopEnd": 2.47,
+      "erpm": 4200,
+      "rms": 0
+     }
+    }
+   },
+   "free": [
+    {
+     "file": "baked/i6_sports/free_00.m4a",
+     "erpm": 750,
+     "loopStart": 0.07,
+     "loopEnd": 2.63,
+     "gain": 1,
+     "rms": 0.0469
+    },
+    {
+     "file": "baked/i6_sports/free_01.m4a",
+     "erpm": 957,
+     "loopStart": 0.07,
+     "loopEnd": 2.70322,
+     "gain": 1,
+     "rms": 0.0779
+    },
+    {
+     "file": "baked/i6_sports/free_02.m4a",
+     "erpm": 1220,
+     "loopStart": 0.07,
+     "loopEnd": 2.62737,
+     "gain": 1,
+     "rms": 0.0514
+    },
+    {
+     "file": "baked/i6_sports/free_03.m4a",
+     "erpm": 1556,
+     "loopStart": 0.07,
+     "loopEnd": 2.692109,
+     "gain": 1,
+     "rms": 0.046
+    },
+    {
+     "file": "baked/i6_sports/free_04.m4a",
+     "erpm": 1984,
+     "loopStart": 0.07,
+     "loopEnd": 2.670816,
+     "gain": 1,
+     "rms": 0.0169
+    },
+    {
+     "file": "baked/i6_sports/free_05.m4a",
+     "erpm": 2531,
+     "loopStart": 0.07,
+     "loopEnd": 2.677664,
+     "gain": 1,
+     "rms": 0.0435
+    },
+    {
+     "file": "baked/i6_sports/free_06.m4a",
+     "erpm": 3228,
+     "loopStart": 0.07,
+     "loopEnd": 2.672222,
+     "gain": 1,
+     "rms": 0.0768
+    },
+    {
+     "file": "baked/i6_sports/free_07.m4a",
+     "erpm": 4116,
+     "loopStart": 0.07,
+     "loopEnd": 2.664762,
+     "gain": 1,
+     "rms": 0.0185
+    },
+    {
+     "file": "baked/i6_sports/free_08.m4a",
+     "erpm": 5250,
+     "loopStart": 0.07,
+     "loopEnd": 2.675714,
+     "gain": 1,
+     "rms": 0.0336
+    }
+   ],
+   "cut": {
+    "dt": 0.005011337868480726,
+    "g": [
+     1,
+     1,
+     1,
+     1,
+     1,
+     1.004,
+     1.011,
+     1.013,
+     1.011,
+     1.008,
+     0.996,
+     0.977,
+     0.948,
+     0.918,
+     0.888,
+     0.857,
+     0.83,
+     0.782,
+     0.681,
+     0.621,
+     0.585,
+     0.601,
+     0.598,
+     0.579,
+     0.564,
+     0.578,
+     0.588,
+     0.618,
+     0.604,
+     0.685,
+     0.729,
+     0.798,
+     0.817,
+     0.829,
+     0.849,
+     0.836,
+     0.877,
+     0.916,
+     0.958,
+     1.037,
+     1.062,
+     1.138,
+     1.184,
+     1.244,
+     1.3,
+     1.3,
+     1.3,
+     1.3,
+     1.3,
+     1.3,
+     1.272,
+     1.238,
+     1.163,
+     1.148,
+     1.12,
+     1.114,
+     1.09,
+     1.092,
+     1.072,
+     1.116,
+     1.097,
+     1.14,
+     1.111,
+     1.129,
+     1.108,
+     1.126,
+     1.132,
+     1.124,
+     1.124,
+     1.099,
+     1.11,
+     1.083,
+     1.088,
+     1.085,
+     1.084,
+     1.092,
+     1.093,
+     1.097,
+     1.101,
+     1.094,
+     1.091,
+     1.083,
+     1.078,
+     1.076,
+     1.062,
+     1.061,
+     1.064,
+     1.057,
+     1
+    ]
+   },
+   "whine": {
+    "on": {
+     "file": "baked/i6_sports/whine_on.m4a",
+     "loopStart": 0.07,
+     "loopEnd": 1.67,
+     "rms": 0.0032
+    },
+    "off": {
+     "file": "baked/i6_sports/whine_off.m4a",
+     "loopStart": 0.07,
+     "loopEnd": 1.67,
+     "rms": 0.0001
+    },
+    "erpm": 4200,
+    "gear": 3,
+    "k": [
+     10.986,
+     16.098,
+     20.144,
+     25,
+     26.829,
+     28.358
+    ]
+   }
+  },
+  "rotary2_sports": {
+   "engine": "rotary2",
+   "vehicle": "sports",
+   "eIdle": 900,
+   "eRed": 9000,
+   "on": [
+    {
+     "file": "baked/rotary2_sports/on_00.m4a",
+     "erpm": 900,
+     "loopStart": 0.07,
+     "loopEnd": 2.736667,
+     "gain": 1,
+     "rms": 0.0594
+    },
+    {
+     "file": "baked/rotary2_sports/on_01.m4a",
+     "erpm": 978,
+     "loopStart": 0.07,
+     "loopEnd": 2.646689,
+     "gain": 1,
+     "rms": 0.0662
+    },
+    {
+     "file": "baked/rotary2_sports/on_02.m4a",
+     "erpm": 1063,
+     "loopStart": 0.07,
+     "loopEnd": 2.666417,
+     "gain": 1,
+     "rms": 0.0689
+    },
+    {
+     "file": "baked/rotary2_sports/on_03.m4a",
+     "erpm": 1155,
+     "loopStart": 0.07,
+     "loopEnd": 2.667392,
+     "gain": 1,
+     "rms": 0.0676
+    },
+    {
+     "file": "baked/rotary2_sports/on_04.m4a",
+     "erpm": 1255,
+     "loopStart": 0.07,
+     "loopEnd": 2.651678,
+     "gain": 1,
+     "rms": 0.0665
+    },
+    {
+     "file": "baked/rotary2_sports/on_05.m4a",
+     "erpm": 1364,
+     "loopStart": 0.07,
+     "loopEnd": 2.709297,
+     "gain": 1,
+     "rms": 0.063
+    },
+    {
+     "file": "baked/rotary2_sports/on_06.m4a",
+     "erpm": 1482,
+     "loopStart": 0.07,
+     "loopEnd": 2.661088,
+     "gain": 1,
+     "rms": 0.074
+    },
+    {
+     "file": "baked/rotary2_sports/on_07.m4a",
+     "erpm": 1610,
+     "loopStart": 0.07,
+     "loopEnd": 2.678685,
+     "gain": 1,
+     "rms": 0.0766
+    },
+    {
+     "file": "baked/rotary2_sports/on_08.m4a",
+     "erpm": 1750,
+     "loopStart": 0.07,
+     "loopEnd": 2.675714,
+     "gain": 1,
+     "rms": 0.0899
+    },
+    {
+     "file": "baked/rotary2_sports/on_09.m4a",
+     "erpm": 1902,
+     "loopStart": 0.07,
+     "loopEnd": 2.656757,
+     "gain": 1,
+     "rms": 0.1034
+    },
+    {
+     "file": "baked/rotary2_sports/on_10.m4a",
+     "erpm": 2067,
+     "loopStart": 0.07,
+     "loopEnd": 2.682472,
+     "gain": 1,
+     "rms": 0.1138
+    },
+    {
+     "file": "baked/rotary2_sports/on_11.m4a",
+     "erpm": 2246,
+     "loopStart": 0.07,
+     "loopEnd": 2.687982,
+     "gain": 1,
+     "rms": 0.1018
+    },
+    {
+     "file": "baked/rotary2_sports/on_12.m4a",
+     "erpm": 2440,
+     "loopStart": 0.07,
+     "loopEnd": 2.676553,
+     "gain": 1,
+     "rms": 0.0951
+    },
+    {
+     "file": "baked/rotary2_sports/on_13.m4a",
+     "erpm": 2652,
+     "loopStart": 0.07,
+     "loopEnd": 2.649184,
+     "gain": 1,
+     "rms": 0.093
+    },
+    {
+     "file": "baked/rotary2_sports/on_14.m4a",
+     "erpm": 2882,
+     "loopStart": 0.07,
+     "loopEnd": 2.651542,
+     "gain": 1,
+     "rms": 0.11
+    },
+    {
+     "file": "baked/rotary2_sports/on_15.m4a",
+     "erpm": 3132,
+     "loopStart": 0.07,
+     "loopEnd": 2.675374,
+     "gain": 1,
+     "rms": 0.0979
+    },
+    {
+     "file": "baked/rotary2_sports/on_16.m4a",
+     "erpm": 3403,
+     "loopStart": 0.07,
+     "loopEnd": 2.679456,
+     "gain": 1,
+     "rms": 0.0783
+    },
+    {
+     "file": "baked/rotary2_sports/on_17.m4a",
+     "erpm": 3698,
+     "loopStart": 0.07,
+     "loopEnd": 2.666009,
+     "gain": 1,
+     "rms": 0.0601
+    },
+    {
+     "file": "baked/rotary2_sports/on_18.m4a",
+     "erpm": 4019,
+     "loopStart": 0.07,
+     "loopEnd": 2.667664,
+     "gain": 1,
+     "rms": 0.0607
+    },
+    {
+     "file": "baked/rotary2_sports/on_19.m4a",
+     "erpm": 4367,
+     "loopStart": 0.07,
+     "loopEnd": 2.680499,
+     "gain": 1,
+     "rms": 0.0844
+    },
+    {
+     "file": "baked/rotary2_sports/on_20.m4a",
+     "erpm": 4746,
+     "loopStart": 0.07,
+     "loopEnd": 2.674308,
+     "gain": 1,
+     "rms": 0.1185
+    },
+    {
+     "file": "baked/rotary2_sports/on_21.m4a",
+     "erpm": 5157,
+     "loopStart": 0.07,
+     "loopEnd": 2.676168,
+     "gain": 1,
+     "rms": 0.1509
+    },
+    {
+     "file": "baked/rotary2_sports/on_22.m4a",
+     "erpm": 5604,
+     "loopStart": 0.07,
+     "loopEnd": 2.660998,
+     "gain": 1,
+     "rms": 0.1914
+    },
+    {
+     "file": "baked/rotary2_sports/on_23.m4a",
+     "erpm": 6090,
+     "loopStart": 0.07,
+     "loopEnd": 2.670975,
+     "gain": 1,
+     "rms": 0.207
+    },
+    {
+     "file": "baked/rotary2_sports/on_24.m4a",
+     "erpm": 6618,
+     "loopStart": 0.07,
+     "loopEnd": 2.662925,
+     "gain": 1,
+     "rms": 0.1487
+    },
+    {
+     "file": "baked/rotary2_sports/on_25.m4a",
+     "erpm": 7191,
+     "loopStart": 0.07,
+     "loopEnd": 2.673265,
+     "gain": 1,
+     "rms": 0.142
+    },
+    {
+     "file": "baked/rotary2_sports/on_26.m4a",
+     "erpm": 7815,
+     "loopStart": 0.07,
+     "loopEnd": 2.665011,
+     "gain": 1,
+     "rms": 0.107
+    },
+    {
+     "file": "baked/rotary2_sports/on_27.m4a",
+     "erpm": 8492,
+     "loopStart": 0.07,
+     "loopEnd": 2.670091,
+     "gain": 1,
+     "rms": 0.1148
+    }
+   ],
+   "off": [
+    {
+     "file": "baked/rotary2_sports/off_00.m4a",
+     "erpm": 900,
+     "loopStart": 0.07,
+     "loopEnd": 2.736667,
+     "gain": 1,
+     "rms": 0.0156
+    },
+    {
+     "file": "baked/rotary2_sports/off_01.m4a",
+     "erpm": 1070,
+     "loopStart": 0.07,
+     "loopEnd": 2.649433,
+     "gain": 1,
+     "rms": 0.0174
+    },
+    {
+     "file": "baked/rotary2_sports/off_02.m4a",
+     "erpm": 1271,
+     "loopStart": 0.07,
+     "loopEnd": 2.713583,
+     "gain": 1,
+     "rms": 0.0167
+    },
+    {
+     "file": "baked/rotary2_sports/off_03.m4a",
+     "erpm": 1511,
+     "loopStart": 0.07,
+     "loopEnd": 2.690771,
+     "gain": 1,
+     "rms": 0.0213
+    },
+    {
+     "file": "baked/rotary2_sports/off_04.m4a",
+     "erpm": 1795,
+     "loopStart": 0.07,
+     "loopEnd": 2.677234,
+     "gain": 1,
+     "rms": 0.0174
+    },
+    {
+     "file": "baked/rotary2_sports/off_05.m4a",
+     "erpm": 2134,
+     "loopStart": 0.07,
+     "loopEnd": 2.656689,
+     "gain": 1,
+     "rms": 0.0185
+    },
+    {
+     "file": "baked/rotary2_sports/off_06.m4a",
+     "erpm": 2536,
+     "loopStart": 0.07,
+     "loopEnd": 2.672517,
+     "gain": 1,
+     "rms": 0.0147
+    },
+    {
+     "file": "baked/rotary2_sports/off_07.m4a",
+     "erpm": 3014,
+     "loopStart": 0.07,
+     "loopEnd": 2.657914,
+     "gain": 1,
+     "rms": 0.0168
+    },
+    {
+     "file": "baked/rotary2_sports/off_08.m4a",
+     "erpm": 3582,
+     "loopStart": 0.07,
+     "loopEnd": 2.683061,
+     "gain": 1,
+     "rms": 0.0117
+    },
+    {
+     "file": "baked/rotary2_sports/off_09.m4a",
+     "erpm": 4257,
+     "loopStart": 0.07,
+     "loopEnd": 2.663379,
+     "gain": 1,
+     "rms": 0.0172
+    },
+    {
+     "file": "baked/rotary2_sports/off_10.m4a",
+     "erpm": 5059,
+     "loopStart": 0.07,
+     "loopEnd": 2.679206,
+     "gain": 1,
+     "rms": 0.0258
+    },
+    {
+     "file": "baked/rotary2_sports/off_11.m4a",
+     "erpm": 6012,
+     "loopStart": 0.07,
+     "loopEnd": 2.664807,
+     "gain": 1,
+     "rms": 0.0388
+    },
+    {
+     "file": "baked/rotary2_sports/off_12.m4a",
+     "erpm": 7145,
+     "loopStart": 0.07,
+     "loopEnd": 2.67322,
+     "gain": 1,
+     "rms": 0.0222
+    },
+    {
+     "file": "baked/rotary2_sports/off_13.m4a",
+     "erpm": 8492,
+     "loopStart": 0.07,
+     "loopEnd": 2.670091,
+     "gain": 1,
+     "rms": 0.0205
+    }
+   ],
+   "ex": {
+    "stock": {
+     "vol": 0.85,
+     "eq": {
+      "level": -0.92,
+      "g": [
+       1.55,
+       1.5,
+       -0.52,
+       2.27,
+       -2.16,
+       -2.01
+      ],
+      "resid": 0.39,
+      "spread": 0.47
+     },
+     "lift": {
+      "hi": {
+       "erpm": 8096,
+       "egt": 0.75,
+       "tries": 4,
+       "shots": [
+        {
+         "file": "baked/rotary2_sports/stock_lift_hi0.m4a",
+         "dur": 0.457,
+         "peak": 0.791,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.08,
+           0.81
+          ],
+          [
+           0.052,
+           0.11
+          ]
+         ]
+        },
+        {
+         "file": "baked/rotary2_sports/stock_lift_hi1.m4a",
+         "dur": 0.433,
+         "peak": 0.654,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.08,
+           0.5
+          ],
+          [
+           0.052,
+           0.11
+          ]
+         ]
+        },
+        {
+         "file": "baked/rotary2_sports/stock_lift_hi2.m4a",
+         "dur": 0.401,
+         "peak": 0.651,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.08,
+           0.48
+          ],
+          [
+           0.052,
+           0.11
+          ]
+         ]
+        },
+        {
+         "file": "baked/rotary2_sports/stock_lift_hi3.m4a",
+         "dur": 0.691,
+         "peak": 0.045,
+         "pops": [
+          [
+           0.052,
+           0.11
+          ],
+          [
+           0.523,
+           0.02
+          ]
+         ]
+        }
+       ]
+      },
+      "mid": {
+       "erpm": 5280,
+       "egt": 0.75,
+       "tries": 2,
+       "shots": [
+        {
+         "file": "baked/rotary2_sports/stock_lift_mid0.m4a",
+         "dur": 0.294,
+         "peak": 0.341,
+         "pops": [
+          [
+           0.015,
+           0.37
+          ],
+          [
+           0.08,
+           0.16
+          ],
+          [
+           0.052,
+           0.06
+          ]
+         ]
+        },
+        {
+         "file": "baked/rotary2_sports/stock_lift_mid1.m4a",
+         "dur": 0.286,
+         "peak": 0.276,
+         "pops": [
+          [
+           0.015,
+           0.3
+          ],
+          [
+           0.08,
+           0.13
+          ],
+          [
+           0.052,
+           0.05
+          ]
+         ]
+        }
+       ]
+      }
+     },
+     "shift": [
+      {
+       "file": "baked/rotary2_sports/stock_shift0.m4a",
+       "dur": 0.419,
+       "peak": 0.259,
+       "pops": [
+        [
+         0.018,
+         0.29
+        ],
+        [
+         0.06,
+         0.28
+        ]
+       ]
+      },
+      {
+       "file": "baked/rotary2_sports/stock_shift1.m4a",
+       "dur": 0.37,
+       "peak": 0.258,
+       "pops": [
+        [
+         0.018,
+         0.29
+        ],
+        [
+         0.06,
+         0.28
+        ]
+       ]
+      }
+     ]
+    },
+    "sport": {
+     "vol": 1,
+     "eq": {
+      "level": 0,
+      "g": [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ],
+      "resid": 0
+     },
+     "lift": {
+      "hi": {
+       "erpm": 8096,
+       "egt": 0.75,
+       "tries": 4,
+       "shots": [
+        {
+         "file": "baked/rotary2_sports/sport_lift_hi0.m4a",
+         "dur": 0.457,
+         "peak": 0.794,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.08,
+           0.81
+          ],
+          [
+           0.052,
+           0.11
+          ]
+         ]
+        },
+        {
+         "file": "baked/rotary2_sports/sport_lift_hi1.m4a",
+         "dur": 0.433,
+         "peak": 0.674,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.08,
+           0.5
+          ],
+          [
+           0.052,
+           0.11
+          ]
+         ]
+        },
+        {
+         "file": "baked/rotary2_sports/sport_lift_hi2.m4a",
+         "dur": 0.397,
+         "peak": 0.669,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.08,
+           0.48
+          ],
+          [
+           0.052,
+           0.11
+          ]
+         ]
+        },
+        {
+         "file": "baked/rotary2_sports/sport_lift_hi3.m4a",
+         "dur": 0.685,
+         "peak": 0.046,
+         "pops": [
+          [
+           0.052,
+           0.11
+          ],
+          [
+           0.523,
+           0.02
+          ]
+         ]
+        }
+       ]
+      },
+      "mid": {
+       "erpm": 5280,
+       "egt": 0.75,
+       "tries": 2,
+       "shots": [
+        {
+         "file": "baked/rotary2_sports/sport_lift_mid0.m4a",
+         "dur": 0.294,
+         "peak": 0.34,
+         "pops": [
+          [
+           0.015,
+           0.37
+          ],
+          [
+           0.08,
+           0.16
+          ],
+          [
+           0.052,
+           0.06
+          ]
+         ]
+        },
+        {
+         "file": "baked/rotary2_sports/sport_lift_mid1.m4a",
+         "dur": 0.268,
+         "peak": 0.274,
+         "pops": [
+          [
+           0.015,
+           0.3
+          ],
+          [
+           0.08,
+           0.13
+          ],
+          [
+           0.052,
+           0.05
+          ]
+         ]
+        }
+       ]
+      }
+     },
+     "shift": [
+      {
+       "file": "baked/rotary2_sports/sport_shift0.m4a",
+       "dur": 0.404,
+       "peak": 0.258,
+       "pops": [
+        [
+         0.018,
+         0.29
+        ],
+        [
+         0.06,
+         0.28
+        ]
+       ]
+      },
+      {
+       "file": "baked/rotary2_sports/sport_shift1.m4a",
+       "dur": 0.37,
+       "peak": 0.261,
+       "pops": [
+        [
+         0.018,
+         0.29
+        ],
+        [
+         0.06,
+         0.28
+        ]
+       ]
+      }
+     ]
+    },
+    "straight": {
+     "vol": 1.1,
+     "eq": {
+      "level": 0.27,
+      "g": [
+       -1.34,
+       -1.01,
+       1.75,
+       -1.12,
+       0.62,
+       5.34
+      ],
+      "resid": 0.5,
+      "spread": 0.55
+     },
+     "lift": {
+      "hi": {
+       "erpm": 8096,
+       "egt": 0.75,
+       "tries": 4,
+       "shots": [
+        {
+         "file": "baked/rotary2_sports/straight_lift_hi0.m4a",
+         "dur": 0.457,
+         "peak": 0.798,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.08,
+           0.81
+          ],
+          [
+           0.052,
+           0.11
+          ]
+         ]
+        },
+        {
+         "file": "baked/rotary2_sports/straight_lift_hi1.m4a",
+         "dur": 0.353,
+         "peak": 0.693,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.08,
+           0.5
+          ],
+          [
+           0.052,
+           0.11
+          ]
+         ]
+        },
+        {
+         "file": "baked/rotary2_sports/straight_lift_hi2.m4a",
+         "dur": 0.397,
+         "peak": 0.687,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.08,
+           0.48
+          ],
+          [
+           0.052,
+           0.11
+          ]
+         ]
+        },
+        {
+         "file": "baked/rotary2_sports/straight_lift_hi3.m4a",
+         "dur": 0.685,
+         "peak": 0.046,
+         "pops": [
+          [
+           0.052,
+           0.11
+          ],
+          [
+           0.523,
+           0.02
+          ]
+         ]
+        }
+       ]
+      },
+      "mid": {
+       "erpm": 5280,
+       "egt": 0.75,
+       "tries": 2,
+       "shots": [
+        {
+         "file": "baked/rotary2_sports/straight_lift_mid0.m4a",
+         "dur": 0.294,
+         "peak": 0.335,
+         "pops": [
+          [
+           0.015,
+           0.37
+          ],
+          [
+           0.08,
+           0.16
+          ],
+          [
+           0.052,
+           0.06
+          ]
+         ]
+        },
+        {
+         "file": "baked/rotary2_sports/straight_lift_mid1.m4a",
+         "dur": 0.268,
+         "peak": 0.268,
+         "pops": [
+          [
+           0.015,
+           0.3
+          ],
+          [
+           0.08,
+           0.13
+          ],
+          [
+           0.052,
+           0.05
+          ]
+         ]
+        }
+       ]
+      }
+     },
+     "shift": [
+      {
+       "file": "baked/rotary2_sports/straight_shift0.m4a",
+       "dur": 0.404,
+       "peak": 0.269,
+       "pops": [
+        [
+         0.018,
+         0.29
+        ],
+        [
+         0.06,
+         0.28
+        ]
+       ]
+      },
+      {
+       "file": "baked/rotary2_sports/straight_shift1.m4a",
+       "dur": 0.37,
+       "peak": 0.27,
+       "pops": [
+        [
+         0.018,
+         0.29
+        ],
+        [
+         0.06,
+         0.28
+        ]
+       ]
+      }
+     ]
+    },
+    "antilag": {
+     "vol": 1.12,
+     "eq": {
+      "level": -0.04,
+      "g": [
+       -1.64,
+       -0.93,
+       2.84,
+       -1.05,
+       0.76,
+       7.67
+      ],
+      "resid": 0.66,
+      "spread": 0.73
+     },
+     "lift": {
+      "hi": {
+       "erpm": 8096,
+       "egt": 0.75,
+       "tries": 4,
+       "shots": [
+        {
+         "file": "baked/rotary2_sports/antilag_lift_hi0.m4a",
+         "dur": 0.457,
+         "peak": 0.814,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.08,
+           0.91
+          ],
+          [
+           0.052,
+           0.17
+          ]
+         ]
+        },
+        {
+         "file": "baked/rotary2_sports/antilag_lift_hi1.m4a",
+         "dur": 0.434,
+         "peak": 0.778,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.08,
+           0.73
+          ],
+          [
+           0.052,
+           0.17
+          ]
+         ]
+        },
+        {
+         "file": "baked/rotary2_sports/antilag_lift_hi2.m4a",
+         "dur": 0.401,
+         "peak": 0.769,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.08,
+           0.7
+          ],
+          [
+           0.052,
+           0.17
+          ]
+         ]
+        },
+        {
+         "file": "baked/rotary2_sports/antilag_lift_hi3.m4a",
+         "dur": 0.563,
+         "peak": 0.073,
+         "pops": [
+          [
+           0.052,
+           0.17
+          ],
+          [
+           0.406,
+           0.04
+          ]
+         ]
+        }
+       ]
+      },
+      "mid": {
+       "erpm": 5280,
+       "egt": 0.75,
+       "tries": 2,
+       "shots": [
+        {
+         "file": "baked/rotary2_sports/antilag_lift_mid0.m4a",
+         "dur": 0.349,
+         "peak": 0.506,
+         "pops": [
+          [
+           0.015,
+           0.61
+          ],
+          [
+           0.08,
+           0.27
+          ],
+          [
+           0.052,
+           0.11
+          ]
+         ]
+        },
+        {
+         "file": "baked/rotary2_sports/antilag_lift_mid1.m4a",
+         "dur": 0.314,
+         "peak": 0.418,
+         "pops": [
+          [
+           0.015,
+           0.5
+          ],
+          [
+           0.08,
+           0.22
+          ],
+          [
+           0.052,
+           0.11
+          ]
+         ]
+        }
+       ]
+      }
+     },
+     "shift": [
+      {
+       "file": "baked/rotary2_sports/antilag_shift0.m4a",
+       "dur": 0.42,
+       "peak": 0.33,
+       "pops": [
+        [
+         0.018,
+         0.41
+        ],
+        [
+         0.06,
+         0.39
+        ],
+        [
+         0.195,
+         0.07
+        ]
+       ]
+      },
+      {
+       "file": "baked/rotary2_sports/antilag_shift1.m4a",
+       "dur": 0.398,
+       "peak": 0.33,
+       "pops": [
+        [
+         0.018,
+         0.41
+        ],
+        [
+         0.06,
+         0.39
+        ],
+        [
+         0.195,
+         0.07
+        ]
+       ]
+      }
+     ],
+     "crackle": {
+      "file": "baked/rotary2_sports/antilag_crackle.m4a",
+      "loopStart": 0.07,
+      "loopEnd": 2.47,
+      "erpm": 5280,
+      "rms": 0
+     }
+    },
+    "popcorn": {
+     "vol": 1.05,
+     "eq": {
+      "level": 0.38,
+      "g": [
+       -1.37,
+       -0.94,
+       1.14,
+       -1.08,
+       0.46,
+       3.72
+      ],
+      "resid": 0.38,
+      "spread": 0.42
+     },
+     "lift": {
+      "hi": {
+       "erpm": 8096,
+       "egt": 0.75,
+       "tries": 4,
+       "shots": [
+        {
+         "file": "baked/rotary2_sports/popcorn_lift_hi0.m4a",
+         "dur": 0.457,
+         "peak": 0.812,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.08,
+           0.91
+          ],
+          [
+           0.052,
+           0.14
+          ]
+         ]
+        },
+        {
+         "file": "baked/rotary2_sports/popcorn_lift_hi1.m4a",
+         "dur": 0.434,
+         "peak": 0.73,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.08,
+           0.62
+          ],
+          [
+           0.052,
+           0.14
+          ]
+         ]
+        },
+        {
+         "file": "baked/rotary2_sports/popcorn_lift_hi2.m4a",
+         "dur": 0.401,
+         "peak": 0.716,
+         "pops": [
+          [
+           0.015,
+           1
+          ],
+          [
+           0.08,
+           0.59
+          ],
+          [
+           0.052,
+           0.14
+          ]
+         ]
+        },
+        {
+         "file": "baked/rotary2_sports/popcorn_lift_hi3.m4a",
+         "dur": 0.617,
+         "peak": 0.06,
+         "pops": [
+          [
+           0.052,
+           0.14
+          ],
+          [
+           0.455,
+           0.03
+          ]
+         ]
+        }
+       ]
+      },
+      "mid": {
+       "erpm": 5280,
+       "egt": 0.75,
+       "tries": 2,
+       "shots": [
+        {
+         "file": "baked/rotary2_sports/popcorn_lift_mid0.m4a",
+         "dur": 0.312,
+         "peak": 0.44,
+         "pops": [
+          [
+           0.015,
+           0.51
+          ],
+          [
+           0.08,
+           0.23
+          ],
+          [
+           0.052,
+           0.09
+          ]
+         ]
+        },
+        {
+         "file": "baked/rotary2_sports/popcorn_lift_mid1.m4a",
+         "dur": 0.287,
+         "peak": 0.361,
+         "pops": [
+          [
+           0.015,
+           0.42
+          ],
+          [
+           0.08,
+           0.18
+          ],
+          [
+           0.052,
+           0.09
+          ]
+         ]
+        }
+       ]
+      }
+     },
+     "shift": [
+      {
+       "file": "baked/rotary2_sports/popcorn_shift0.m4a",
+       "dur": 0.42,
+       "peak": 0.33,
+       "pops": [
+        [
+         0.018,
+         0.41
+        ],
+        [
+         0.06,
+         0.39
+        ]
+       ]
+      },
+      {
+       "file": "baked/rotary2_sports/popcorn_shift1.m4a",
+       "dur": 0.398,
+       "peak": 0.33,
+       "pops": [
+        [
+         0.018,
+         0.41
+        ],
+        [
+         0.06,
+         0.39
+        ]
+       ]
+      }
+     ],
+     "crackle": {
+      "file": "baked/rotary2_sports/popcorn_crackle.m4a",
+      "loopStart": 0.07,
+      "loopEnd": 2.47,
+      "erpm": 5280,
+      "rms": 0
+     }
+    }
+   },
+   "free": [
+    {
+     "file": "baked/rotary2_sports/free_00.m4a",
+     "erpm": 900,
+     "loopStart": 0.07,
+     "loopEnd": 2.736667,
+     "gain": 1,
+     "rms": 0.0161
+    },
+    {
+     "file": "baked/rotary2_sports/free_01.m4a",
+     "erpm": 1155,
+     "loopStart": 0.07,
+     "loopEnd": 2.667392,
+     "gain": 1,
+     "rms": 0.0173
+    },
+    {
+     "file": "baked/rotary2_sports/free_02.m4a",
+     "erpm": 1481,
+     "loopStart": 0.07,
+     "loopEnd": 2.662834,
+     "gain": 1,
+     "rms": 0.0201
+    },
+    {
+     "file": "baked/rotary2_sports/free_03.m4a",
+     "erpm": 1900,
+     "loopStart": 0.07,
+     "loopEnd": 2.659478,
+     "gain": 1,
+     "rms": 0.029
+    },
+    {
+     "file": "baked/rotary2_sports/free_04.m4a",
+     "erpm": 2437,
+     "loopStart": 0.07,
+     "loopEnd": 2.679773,
+     "gain": 1,
+     "rms": 0.0261
+    },
+    {
+     "file": "baked/rotary2_sports/free_05.m4a",
+     "erpm": 3126,
+     "loopStart": 0.07,
+     "loopEnd": 2.680363,
+     "gain": 1,
+     "rms": 0.0262
+    },
+    {
+     "file": "baked/rotary2_sports/free_06.m4a",
+     "erpm": 4011,
+     "loopStart": 0.07,
+     "loopEnd": 2.672834,
+     "gain": 1,
+     "rms": 0.018
+    },
+    {
+     "file": "baked/rotary2_sports/free_07.m4a",
+     "erpm": 5145,
+     "loopStart": 0.07,
+     "loopEnd": 2.658912,
+     "gain": 1,
+     "rms": 0.0378
+    },
+    {
+     "file": "baked/rotary2_sports/free_08.m4a",
+     "erpm": 6600,
+     "loopStart": 0.07,
+     "loopEnd": 2.67,
+     "gain": 1,
+     "rms": 0.0439
+    }
+   ],
+   "cut": {
+    "dt": 0.005011337868480726,
+    "g": [
+     1,
+     1,
+     1,
+     1,
+     1,
+     1.002,
+     1.001,
+     0.995,
+     0.979,
+     0.962,
+     0.944,
+     0.923,
+     0.898,
+     0.862,
+     0.83,
+     0.824,
+     0.811,
+     0.807,
+     0.757,
+     0.734,
+     0.711,
+     0.672,
+     0.63,
+     0.592,
+     0.594,
+     0.594,
+     0.568,
+     0.668,
+     0.663,
+     0.714,
+     0.628,
+     0.667,
+     0.71,
+     0.77,
+     0.811,
+     0.832,
+     0.875,
+     0.909,
+     0.934,
+     0.949,
+     0.988,
+     1.019,
+     1.029,
+     1.033,
+     1.059,
+     1.079,
+     1.071,
+     1.069,
+     1.101,
+     1.129,
+     1.122,
+     1.1,
+     1.104,
+     1.104,
+     1.102,
+     1.097,
+     1.1,
+     1.098,
+     1.095,
+     1.099,
+     1.105,
+     1.1,
+     1.095,
+     1.091,
+     1.092,
+     1.087,
+     1.084,
+     1.081,
+     1.076,
+     1.068,
+     1.062,
+     1.061,
+     1.063,
+     1.062,
+     1.062,
+     1.062,
+     1.061,
+     1.058,
+     1
+    ]
+   },
+   "whine": {
+    "on": {
+     "file": "baked/rotary2_sports/whine_on.m4a",
+     "loopStart": 0.07,
+     "loopEnd": 1.67,
+     "rms": 0.0014
+    },
+    "off": {
+     "file": "baked/rotary2_sports/whine_off.m4a",
+     "loopStart": 0.07,
+     "loopEnd": 1.67,
+     "rms": 0.0002
+    },
+    "erpm": 5280,
+    "gear": 3,
+    "k": [
+     10.986,
+     16.098,
+     20.144,
+     25,
+     26.829,
+     28.358
+    ]
+   }
+  }
+ },
+ "lim": {
+  "car_hero": {
+   "file": "baked/v8cross_sports/lim_7000.m4a",
+   "erpm": 7000,
+   "loopStart": 0.07,
+   "loopEnd": 2.075714,
+   "gain": 1
+  },
+  "car_silver": {
+   "file": "baked/i6_sports/lim_7000.m4a",
+   "erpm": 7000,
+   "loopStart": 0.07,
+   "loopEnd": 2.075714,
+   "gain": 1
+  },
+  "car_drift": {
+   "file": "baked/i6_sports/lim_7000.m4a",
+   "erpm": 7000,
+   "loopStart": 0.07,
+   "loopEnd": 2.075714,
+   "gain": 1
+  },
+  "car_yellow": {
+   "file": "baked/rotary2_sports/lim_8800.m4a",
+   "erpm": 8800,
+   "loopStart": 0.07,
+   "loopEnd": 2.074535,
+   "gain": 1
+  }
+ },
+ "cars": {
+  "car_hero": "v8cross_sports",
+  "car_silver": "i6_sports",
+  "car_drift": "i6_sports",
+  "car_yellow": "rotary2_sports"
+ },
+ "note": "Baked LIVE Engine Sim (tools/bake_engine.mjs): stereo loops per engine+chassis (sport pipe, pops held off), limiter loop per car, shift cut envelope, per-exhaust lift / shift one-shots + decel crackle loop + EQ vs sport, gearbox whine. erpm = Engine Sim rpm. audio.js BakedVoice."
+}

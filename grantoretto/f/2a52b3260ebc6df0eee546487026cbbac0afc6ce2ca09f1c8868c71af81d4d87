@@ -1,0 +1,334 @@
+// Loads painted sprites listed in sprites/manifest.json; anything missing gets a procedural placeholder.
+import * as THREE from './vendor/three.module.min.js';
+
+export let MANIFEST = {}, META = {};
+
+async function getJSON(url) {
+  try { const r = await fetch(url, { cache: 'no-cache' }); return r.ok || r.status === 0 ? await r.json() : null;   /* status 0: iOS app asset handler */ } catch { return null; }
+}
+
+export async function loadMeta() {
+  MANIFEST = (await getJSON('sprites/manifest.json')) || {};
+  META = (await getJSON('sprites/cars.json')) || {};
+}
+
+function loadImage(url, tries = 4) {
+  return new Promise((res) => {
+    const im = new Image();
+    im.onload = () => res(im);
+    im.onerror = () => (tries > 1 ? setTimeout(() => loadImage(url, tries - 1).then(res), 400) : res(null));
+    im.src = url;
+  });
+}
+
+export function texFrom(src, { repeat = false, srgb = true, mips = true } = {}) {
+  const t = src instanceof THREE.Texture ? src : new THREE.Texture(src);
+  if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+  if (repeat) t.wrapS = THREE.RepeatWrapping;
+  t.anisotropy = 4;
+  t.generateMipmaps = mips;
+  t.minFilter = mips ? THREE.LinearMipmapLinearFilter : THREE.LinearFilter;
+  t.needsUpdate = true;
+  return t;
+}
+
+// Painted image if present in the manifest (or file exists for meta files), else null.
+export async function sprite(name) {
+  const m = MANIFEST[name];
+  if (!m) return null;
+  return loadImage('sprites/' + m.file);
+}
+export async function spriteFile(file) { return file ? loadImage('sprites/' + file) : null; }
+
+// ---------- procedural placeholders (canvas) ----------
+const cv = (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; };
+let seed = 1234;
+const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+
+// Car side profile, facing right, empty black arches at rear 0.215 / front 0.77.
+export function procCar(color = '#2fa84a', variant = 0) {
+  const W = 640, H = 200, c = cv(W, H), g = c.getContext('2d');
+  const m = cv(W, H), gm = m.getContext('2d');
+  const roofH = [62, 52, 58, 50, 70, 56][variant % 6], back = [70, 90, 60, 80, 120, 95][variant % 6];
+  const body = (ctx) => {
+    ctx.beginPath();
+    ctx.moveTo(8, 150); ctx.lineTo(10, 108); ctx.lineTo(40, 96); ctx.lineTo(back, 92);
+    ctx.lineTo(back + 70, roofH - 8 + 30); ctx.lineTo(back + 120, roofH - 20); ctx.lineTo(360, roofH - 22);
+    ctx.lineTo(430, 84); ctx.lineTo(560, 98); ctx.lineTo(626, 110); ctx.lineTo(634, 150); ctx.lineTo(620, 172);
+    ctx.lineTo(20, 172); ctx.closePath();
+  };
+  g.fillStyle = color; body(g); g.fill();
+  gm.fillStyle = '#fff'; body(gm); gm.fill();
+  // shading bands
+  const sh = g.createLinearGradient(0, 40, 0, 175);
+  sh.addColorStop(0, 'rgba(255,255,255,0.35)'); sh.addColorStop(0.45, 'rgba(255,255,255,0)'); sh.addColorStop(0.55, 'rgba(0,0,0,0.05)'); sh.addColorStop(1, 'rgba(0,0,0,0.45)');
+  g.save(); body(g); g.clip(); g.fillStyle = sh; g.fillRect(0, 0, W, H);
+  g.fillStyle = 'rgba(255,255,255,0.75)'; g.fillRect(60, 112, 520, 3);
+  g.restore();
+  // windows
+  const win = (ctx, col) => { ctx.fillStyle = col; ctx.beginPath(); ctx.moveTo(back + 82, 92); ctx.lineTo(back + 126, roofH - 12); ctx.lineTo(352, roofH - 14); ctx.lineTo(418, 90); ctx.closePath(); ctx.fill(); };
+  win(g, '#151a2c'); win(gm, '#000');
+  g.strokeStyle = 'rgba(160,200,255,0.5)'; g.lineWidth = 6; g.beginPath(); g.moveTo(back + 150, 88); g.lineTo(back + 180, roofH - 8); g.stroke();
+  g.fillStyle = '#0b0b10'; g.fillRect(262, roofH - 14, 8, 106 - roofH);
+  // lights
+  g.fillStyle = '#ffe9a8'; g.fillRect(606, 112, 24, 9); g.fillStyle = '#ff2030'; g.fillRect(10, 110, 16, 12);
+  gm.fillStyle = '#000'; gm.fillRect(600, 108, 40, 16); gm.fillRect(0, 106, 30, 20);
+  // arches
+  for (const [cx] of [[0.215 * W], [0.77 * W]]) {
+    for (const ctx of [g, gm]) {
+      ctx.fillStyle = '#000'; ctx.beginPath(); ctx.arc(cx, 172, 60, Math.PI, 0); ctx.lineTo(cx + 60, 200); ctx.lineTo(cx - 60, 200); ctx.fill();
+    }
+    g.clearRect(cx - 62, 174, 124, 30);
+  }
+  g.strokeStyle = '#06060a'; g.lineWidth = 3; body(g); g.stroke();
+  const meta = { w: W, h: H, wheels: [{ x: 0.215, y: 0.86, r: 0.083 }, { x: 0.77, y: 0.86, r: 0.083 }], paint: { lum_med: 0.45, lum_hi: 0.85 } };
+  return { img: c, mask: m, meta };
+}
+
+export function procWheel(variant = 0) {
+  const S = 256, c = cv(S, S), g = c.getContext('2d'), R = S / 2;
+  g.translate(R, R);
+  g.fillStyle = '#111'; g.beginPath(); g.arc(0, 0, R - 2, 0, 7); g.fill();
+  g.strokeStyle = '#2a2a30'; g.lineWidth = 6; g.beginPath(); g.arc(0, 0, R - 14, 0, 7); g.stroke();
+  const rim = variant ? '#cfd6de' : '#c08a3a';
+  g.fillStyle = '#222'; g.beginPath(); g.arc(0, 0, R * 0.68, 0, 7); g.fill();
+  g.fillStyle = '#c0151c'; g.fillRect(-R * 0.55, -R * 0.2, R * 0.25, R * 0.4);
+  g.strokeStyle = rim; g.lineWidth = variant ? 6 : 16; g.lineCap = 'round';
+  const n = variant ? 10 : 6;
+  for (let i = 0; i < n; i++) { const a = i / n * Math.PI * 2; g.beginPath(); g.moveTo(Math.cos(a) * 14, Math.sin(a) * 14); g.lineTo(Math.cos(a) * R * 0.66, Math.sin(a) * R * 0.66); g.stroke(); }
+  g.lineWidth = 8; g.beginPath(); g.arc(0, 0, R * 0.68, 0, 7); g.stroke();
+  g.fillStyle = '#eee'; g.beginPath(); g.arc(0, 0, 13, 0, 7); g.fill();
+  return c;
+}
+
+// Radially blurred copy of a wheel image (for high speed).
+export function blurWheel(img) {
+  const S = 256, c = cv(S, S), g = c.getContext('2d');
+  g.translate(S / 2, S / 2);
+  const N = 24;
+  g.globalAlpha = 1;
+  g.drawImage(img, -S / 2, -S / 2, S, S);
+  g.globalAlpha = 1 / 6;
+  for (let i = 0; i < N; i++) { g.rotate(Math.PI * 2 / N); g.drawImage(img, -S / 2, -S / 2, S, S); }
+  return c;
+}
+
+// Start light tree: housing; returns lamp layout (fractions) per row type.
+export function procTree() {
+  const W = 160, H = 640, c = cv(W, H), g = c.getContext('2d');
+  g.fillStyle = '#16161c'; g.fillRect(74, 330, 12, 300); g.fillRect(40, 616, 80, 24);
+  g.fillStyle = '#202028'; g.strokeStyle = '#3a3a48'; g.lineWidth = 3;
+  g.beginPath(); g.roundRect(20, 8, 120, 340, 10); g.fill(); g.stroke();
+  const rows = [['pre', 0.05, 0.022], ['stage', 0.1, 0.022], ['amber', 0.19, 0.04], ['amber', 0.27, 0.04], ['amber', 0.35, 0.04], ['green', 0.44, 0.04], ['red', 0.51, 0.033]];
+  const lamps = [];
+  for (const [type, y, r] of rows) for (const x of [0.33, 0.67]) {
+    g.fillStyle = '#0a0a0d'; g.beginPath(); g.arc(x * W, y * H, r * H + 4, 0, 7); g.fill();
+    g.fillStyle = type === 'green' ? '#0f2a14' : type === 'red' ? '#2a0f0f' : '#2a200c'; g.beginPath(); g.arc(x * W, y * H, r * H, 0, 7); g.fill();
+    lamps.push({ type, x, y, r: r * H / W, side: x < 0.5 ? 0 : 1 });
+  }
+  return { img: c, lamps };
+}
+
+// Assign lamp types to detected lamps on a painted tree (rows top->bottom: pre..., amber x3, green, red).
+export function treeLampsFromMeta(meta) {
+  if (!meta || !meta.lamps || meta.lamps.length < 7) return null;
+  const L = [...meta.lamps].sort((a, b) => a.y - b.y);
+  const rows = [];
+  for (const l of L) {
+    const r = rows.find((row) => Math.abs(row.y - l.y) < l.r * meta.w / meta.h * 0.9);
+    if (r) { r.items.push(l); r.y = (r.y + l.y) / 2; } else rows.push({ y: l.y, items: [l] });
+  }
+  if (rows.length < 5) return null;
+  const n = rows.length, types = [];
+  for (let i = 0; i < n; i++) types.push(i === n - 1 ? 'red' : i === n - 2 ? 'green' : i >= n - 5 ? 'amber' : i === 0 ? 'pre' : 'stage');
+  const out = [];
+  const midX = L.reduce((s, l) => s + l.x, 0) / L.length;
+  rows.forEach((row, i) => row.items.forEach((l) => out.push({ type: types[i], x: l.x, y: l.y, r: l.r, side: l.x < midX ? 0 : 1 })));
+  return out;
+}
+
+// ---------- environment layers ----------
+function wrapDraw(W, fn) { for (const off of [-W, 0, W]) fn(off); }
+
+export function procCityFar() {
+  const W = 2048, H = 1024, c = cv(W, H), g = c.getContext('2d');
+  const sky = g.createLinearGradient(0, 0, 0, H);
+  sky.addColorStop(0, '#05061a'); sky.addColorStop(0.5, '#1d0f45'); sky.addColorStop(0.85, '#5a1e6e'); sky.addColorStop(1, '#a02f7a');
+  g.fillStyle = sky; g.fillRect(0, 0, W, H);
+  for (let i = 0; i < 260; i++) { g.fillStyle = `rgba(255,255,255,${rnd() * 0.7})`; g.fillRect(rnd() * W, rnd() * H * 0.5, 2, 2); }
+  g.fillStyle = 'rgba(255,240,220,0.9)'; g.beginPath(); g.arc(1500, 200, 70, 0, 7); g.fill();
+  const glow = g.createRadialGradient(1500, 200, 60, 1500, 200, 260); glow.addColorStop(0, 'rgba(255,200,255,0.25)'); glow.addColorStop(1, 'rgba(255,200,255,0)');
+  g.fillStyle = glow; g.fillRect(1200, 0, 600, 500);
+  for (const layer of [0, 1]) {
+    let x = 0;
+    while (x < W) {
+      const bw = 40 + rnd() * 110, bh = (layer ? 200 : 320) + rnd() * (layer ? 280 : 420);
+      const col = layer ? '#120c2a' : '#0a0820';
+      wrapDraw(W, (o) => { g.fillStyle = col; g.fillRect(x + o, H - bh, bw, bh); });
+      for (let wy = H - bh + 10; wy < H - 8; wy += 14) for (let wx = x + 6; wx < x + bw - 6; wx += 10) {
+        if (rnd() < (layer ? 0.18 : 0.3)) { g.fillStyle = rnd() < 0.15 ? '#ff4fd8' : rnd() < 0.3 ? '#5ee7ff' : '#ffd98a'; g.globalAlpha = 0.4 + rnd() * 0.5; g.fillRect(wx, wy, 4, 6); g.globalAlpha = 1; }
+      }
+      if (!layer && rnd() < 0.15) { g.fillStyle = rnd() < 0.5 ? '#ff2fa8' : '#25e0ff'; g.globalAlpha = 0.8; g.fillRect(x + 6, H - bh + 30, bw - 12, 26); g.globalAlpha = 1; }
+      x += bw + rnd() * 8;
+    }
+  }
+  return c;
+}
+
+export function procCityMid() {
+  const W = 2048, H = 1024, c = cv(W, H), g = c.getContext('2d');
+  // overpass deck
+  g.fillStyle = '#1a1730'; g.fillRect(0, 560, W, 44); g.fillStyle = '#2b2550'; g.fillRect(0, 560, W, 8);
+  for (let x = 60; x < W; x += 256) { g.fillStyle = '#141226'; g.fillRect(x, 604, 40, 420); }
+  for (let x = 20; x < W; x += 128) { g.fillStyle = '#2a2a3a'; g.fillRect(x, 500, 4, 60); g.fillStyle = '#ffd27a'; g.fillRect(x - 10, 498, 24, 5); }
+  let x = 0;
+  while (x < W) {
+    const bw = 90 + rnd() * 140, bh = 160 + rnd() * 200;
+    g.fillStyle = '#0e0c1f'; g.fillRect(x, H - bh, bw, bh);
+    if (rnd() < 0.6) { const col = ['#ff3fb4', '#2fe3ff', '#ffcc3a', '#9b5bff'][Math.floor(rnd() * 4)]; g.fillStyle = col; g.globalAlpha = 0.85; g.fillRect(x + 10, H - bh + 20, bw * 0.6, 22); g.globalAlpha = 1; }
+    for (let wy = H - bh + 60; wy < H - 10; wy += 22) if (rnd() < 0.5) { g.fillStyle = 'rgba(255,220,150,0.5)'; g.fillRect(x + 8, wy, bw - 16, 8); }
+    x += bw + 6;
+  }
+  return c;
+}
+
+export function procCityNear() {
+  const W = 2048, H = 1024, c = cv(W, H), g = c.getContext('2d');
+  // grandstand
+  g.fillStyle = '#100d22'; g.beginPath(); g.moveTo(0, 640); g.lineTo(W, 640); g.lineTo(W, 880); g.lineTo(0, 880); g.fill();
+  for (let r = 0; r < 9; r++) {
+    const y = 660 + r * 24;
+    g.fillStyle = '#1b1636'; g.fillRect(0, y + 14, W, 4);
+    for (let x = rnd() * 10; x < W; x += 9 + rnd() * 8) {
+      const hue = rnd();
+      g.fillStyle = `hsl(${280 + hue * 80},40%,${18 + rnd() * 20}%)`;
+      g.beginPath(); g.arc(x, y + 6, 5, 0, 7); g.fill(); g.fillRect(x - 5, y + 9, 10, 9);
+      if (rnd() < 0.07) { g.fillStyle = '#fffbe0'; g.fillRect(x - 2, y - 6, 3, 5); }
+    }
+  }
+  // canopies
+  for (let x = 100; x < W; x += 512) { g.fillStyle = '#ff2f8a'; g.beginPath(); g.moveTo(x, 620); g.lineTo(x + 70, 590); g.lineTo(x + 140, 620); g.fill(); g.fillStyle = '#2a2040'; g.fillRect(x + 4, 620, 4, 60); g.fillRect(x + 132, 620, 4, 60); }
+  // barrier with chevrons
+  g.fillStyle = '#3a3550'; g.fillRect(0, 880, W, 144); g.fillStyle = '#56507a'; g.fillRect(0, 880, W, 10);
+  g.fillStyle = '#12101c'; g.fillRect(0, 1010, W, 14);
+  for (let x = 0; x < W; x += 256) {
+    g.fillStyle = '#0d0b18'; g.fillRect(x + 10, 905, 236, 90);
+    g.fillStyle = '#ff2fa0';
+    for (let k = 0; k < 3; k++) { const cx = x + 50 + k * 50; g.beginPath(); g.moveTo(cx, 920); g.lineTo(cx + 26, 950); g.lineTo(cx, 980); g.lineTo(cx + 14, 980); g.lineTo(cx + 40, 950); g.lineTo(cx + 14, 920); g.fill(); }
+  }
+  return c;
+}
+
+export function procRoad() {
+  const W = 1024, H = 512, c = cv(W, H), g = c.getContext('2d');
+  g.fillStyle = '#18171d'; g.fillRect(0, 0, W, H);
+  const id = g.getImageData(0, 0, W, H), d = id.data;
+  for (let i = 0; i < d.length; i += 4) { const n = (rnd() - 0.5) * 22; d[i] += n; d[i + 1] += n; d[i + 2] += n + 2; }
+  g.putImageData(id, 0, 0);
+  for (let i = 0; i < 30; i++) { g.fillStyle = `rgba(0,0,0,${0.08 + rnd() * 0.12})`; g.fillRect(rnd() * W, rnd() * H, 80 + rnd() * 300, 6 + rnd() * 20); }
+  return c;
+}
+
+// Rubber burnout marks for the launch area (alpha texture).
+export function procRubber() {
+  const W = 1024, H = 128, c = cv(W, H), g = c.getContext('2d');
+  for (let i = 0; i < 40; i++) {
+    const y = 20 + rnd() * 88, len = 200 + rnd() * 800;
+    const gr = g.createLinearGradient(0, 0, len, 0); gr.addColorStop(0, 'rgba(0,0,0,0.75)'); gr.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = gr; g.fillRect(0, y, len, 4 + rnd() * 10);
+  }
+  return c;
+}
+
+export function procChecker(n = 8, m = 2) {
+  const c = cv(64 * n, 64 * m), g = c.getContext('2d');
+  for (let i = 0; i < n; i++) for (let j = 0; j < m; j++) { g.fillStyle = (i + j) % 2 ? '#111' : '#f2f2f2'; g.fillRect(i * 64, j * 64, 64, 64); }
+  return c;
+}
+
+export function glowTex(inner = 'rgba(255,255,255,1)', outer = 'rgba(255,255,255,0)', S = 128) {
+  const c = cv(S, S), g = c.getContext('2d'), gr = g.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+  gr.addColorStop(0, inner); gr.addColorStop(0.25, inner.replace(/[\d.]+\)$/, '0.55)')); gr.addColorStop(1, outer);
+  g.fillStyle = gr; g.fillRect(0, 0, S, S);
+  return c;
+}
+
+// Flame: teardrop pointing LEFT (exhaust out the back), white-hot core.
+export function flameTex(core = '#ffffff', mid = '#ffb03a', edge = 'rgba(255,60,0,0)') {
+  const W = 256, H = 64, c = cv(W, H), g = c.getContext('2d');
+  const gr = g.createLinearGradient(W, 0, 0, 0);
+  gr.addColorStop(0, core); gr.addColorStop(0.25, mid); gr.addColorStop(1, edge);
+  g.fillStyle = gr;
+  g.beginPath(); g.moveTo(W, H / 2 - 12); g.quadraticCurveTo(W * 0.5, 0, 0, H / 2); g.quadraticCurveTo(W * 0.5, H, W, H / 2 + 12); g.closePath(); g.fill();
+  g.globalCompositeOperation = 'lighter';
+  const gr2 = g.createLinearGradient(W, 0, W * 0.4, 0); gr2.addColorStop(0, 'rgba(255,255,255,0.9)'); gr2.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = gr2; g.beginPath(); g.moveTo(W, H / 2 - 5); g.quadraticCurveTo(W * 0.7, H / 2 - 8, W * 0.4, H / 2); g.quadraticCurveTo(W * 0.7, H / 2 + 8, W, H / 2 + 5); g.fill();
+  return c;
+}
+
+export function smokeTex() {
+  const S = 128, c = cv(S, S), g = c.getContext('2d');
+  for (let i = 0; i < 9; i++) {
+    const x = S / 2 + (rnd() - 0.5) * 40, y = S / 2 + (rnd() - 0.5) * 40, r = 22 + rnd() * 26;
+    const gr = g.createRadialGradient(x, y, 0, x, y, r); gr.addColorStop(0, 'rgba(255,255,255,0.45)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = gr; g.fillRect(0, 0, S, S);
+  }
+  return c;
+}
+
+// Foreground light pole (tall, thin) with lamp head at top.
+export function poleTex() {
+  const W = 128, H = 1024, c = cv(W, H), g = c.getContext('2d');
+  const gr = g.createLinearGradient(40, 0, 88, 0); gr.addColorStop(0, '#0b0b12'); gr.addColorStop(0.5, '#3b3a52'); gr.addColorStop(1, '#09090f');
+  g.fillStyle = gr; g.fillRect(48, 60, 32, H - 60);
+  g.fillStyle = '#26253a'; g.fillRect(36, H - 60, 56, 60);
+  g.fillStyle = '#1a1a26'; g.fillRect(10, 30, 108, 34); g.fillStyle = '#fff2c8'; g.fillRect(16, 58, 96, 8);
+  return c;
+}
+
+// Distance boards: atlas of 4x4 boards, "100 FT" ... (index i -> (i+1)*100 ft), 1/8 mile special at 660.
+export function boardAtlas(labels) {
+  const BW = 256, BH = 160, c = cv(BW * 4, BH * 4), g = c.getContext('2d');
+  labels.forEach((t, i) => {
+    const x = (i % 4) * BW, y = Math.floor(i / 4) * BH;
+    g.fillStyle = '#0d0d16'; g.fillRect(x + 6, y + 6, BW - 12, BH - 12);
+    g.strokeStyle = i === labels.length - 1 ? '#ffd23a' : '#ff2fa0'; g.lineWidth = 8; g.strokeRect(x + 12, y + 12, BW - 24, BH - 24);
+    g.fillStyle = '#fff'; g.font = 'italic 900 64px Impact, "Arial Black", sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText(t[0], x + BW / 2, y + BH / 2 - 14);
+    g.font = 'italic 900 30px Impact, "Arial Black", sans-serif'; g.fillStyle = '#5ee7ff'; g.fillText(t[1], x + BW / 2, y + BH / 2 + 40);
+  });
+  return c;
+}
+
+export function coneTex() {
+  const W = 64, H = 96, c = cv(W, H), g = c.getContext('2d');
+  g.fillStyle = '#ff6a10'; g.beginPath(); g.moveTo(32, 4); g.lineTo(52, 84); g.lineTo(12, 84); g.fill();
+  g.fillStyle = '#f4f4f4'; g.fillRect(22, 40, 20, 10); g.fillRect(17, 62, 30, 9);
+  g.fillStyle = '#222'; g.fillRect(4, 84, 56, 10);
+  return c;
+}
+
+export function gantryTex() {
+  const W = 1024, H = 256, c = cv(W, H), g = c.getContext('2d');
+  g.fillStyle = '#0b0b14'; g.fillRect(0, 0, W, H);
+  for (let i = 0; i < 16; i++) for (let j = 0; j < 2; j++) { g.fillStyle = (i + j) % 2 ? '#111' : '#eee'; g.fillRect(i * 64, j * 32, 64, 32); g.fillRect(i * 64, H - 64 + j * 32, 64, 32); }
+  g.fillStyle = '#fff'; g.font = 'italic 900 110px Impact, "Arial Black", sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText('FINISH', W / 2, H / 2 + 4);
+  return c;
+}
+
+// Fraction of the image height (measured from the bottom) that holds visible pixels: lets layers be sized by content.
+export function contentFrac(img) {
+  try {
+    const w = 128, h = Math.max(16, Math.round(128 * img.height / img.width));
+    const c = cv(w, h), g = c.getContext('2d', { willReadFrequently: true });
+    g.drawImage(img, 0, 0, w, h);
+    const d = g.getImageData(0, 0, w, h).data;
+    for (let y = 0; y < h; y++) {
+      let n = 0;
+      for (let x = 0; x < w; x++) if (d[(y * w + x) * 4 + 3] > 40) n++;
+      if (n > w * 0.25) return 1 - y / h;
+    }
+  } catch { /* tainted or empty */ }
+  return 1;
+}

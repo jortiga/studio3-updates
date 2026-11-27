@@ -1,0 +1,66 @@
+// Durable saves for Drag Nights Race (MOBILE_PERFORMANCE.md 5b; same idea as rougulike/game/durable.js, done from the
+// wrapper so the game's own save code stays as it is). Every localStorage write to a game key (gt_*) is mirrored into a
+// second store, with a timestamp; at boot a newer mirrored copy is put back into localStorage and the page reloads once.
+// - Store app: native storage (@capacitor/preferences): iOS WKWebView can lose the last localStorage writes when iOS
+//   kills a backgrounded app.
+// - CrazyGames: the SDK's cloud data via the portal shim (window.__portalStore; needs "Progress Save" ticked in the
+//   submission, otherwise ready resolves false and this is a no-op).
+// - Plain web: neither exists, nothing happens.
+// Also: Capacitor App 'pause' (and Cordova 'pause') count as "hidden": the game saves and pauses on visibilitychange /
+// pagehide; this re-sends a visibilitychange-equivalent flush for the native pause event.
+(() => {
+  const C = window.Capacitor;
+  const native = !!(C && C.isNativePlatform && C.isNativePlatform());
+  const prefs = native && C.Plugins && C.Plugins.Preferences ? C.Plugins.Preferences : null;
+  const portal = () => window.__portalStore || null;
+  const KEY = (k) => typeof k === 'string' && k.startsWith('gt_') && !k.startsWith('gt_dur_');
+  const TS = (k) => 'gt_dur_t_' + k;   // localStorage: when this key was last written here
+  const ST = (k) => k + '__t';          // second store: the timestamp of its copy
+  let ls; try { ls = window.localStorage; } catch (e) { return; }
+  if (!ls) return;
+
+  function store() {
+    if (prefs) return { ready: Promise.resolve(true), get: async (k) => (await prefs.get({ key: k })).value, set: (k, v) => prefs.set({ key: k, value: v }), remove: (k) => prefs.remove({ key: k }), keys: async () => (await prefs.keys()).keys };
+    const p = portal();
+    if (p) return { ready: Promise.race([p.ready, new Promise((r) => setTimeout(() => r(false), 4000))]), get: async (k) => p.get(k), set: (k, v) => p.set(k, v), remove: (k) => p.remove(k), keys: null };
+    return null;
+  }
+
+  // mirror every game write (fire and forget)
+  const proto = Storage.prototype, setItem = proto.setItem, removeItem = proto.removeItem;
+  let restoring = false;
+  const send = (fn) => { const s = store(); if (!s) return; s.ready.then((ok) => ok && fn(s)).catch(() => {}); };
+  proto.setItem = function (k, v) {
+    setItem.call(this, k, v);
+    if (this === ls && KEY(k) && !restoring) {
+      const t = String(Date.now()); try { setItem.call(this, TS(k), t); } catch (e) { /* full */ }
+      send((s) => Promise.all([s.set(k, String(v)), s.set(ST(k), t)]).catch(() => {}));
+    }
+  };
+  proto.removeItem = function (k) {
+    removeItem.call(this, k);
+    if (this === ls && KEY(k) && !restoring) send((s) => Promise.all([s.remove(k), s.remove(ST(k))]).catch(() => {}));
+  };
+
+  // boot: put back newer copies, seed the store with saves made before it existed
+  (async () => {
+    const s = store(); if (!s || !(await s.ready)) return;
+    const keys = new Set();
+    for (let i = 0; i < ls.length; i++) { const k = ls.key(i); if (KEY(k)) keys.add(k); }
+    if (s.keys) { for (const k of await s.keys()) if (KEY(k) && !k.endsWith('__t')) keys.add(k); }
+    else { for (const k of ['gt_save_v2', 'gt_sound_v1', 'gt_gpu_tip', 'gt_engine_pick', 'gt_gfx_v1', 'gt_theme_v1']) keys.add(k); }   // the cloud store can't list keys
+    let changed = false;
+    for (const k of keys) {
+      const nv = await s.get(k), nt = +((await s.get(ST(k))) || 0), lv = ls.getItem(k), lt = +(ls.getItem(TS(k)) || 0);
+      if (nv != null && (lv == null || nt > lt)) { restoring = true; try { setItem.call(ls, k, nv); setItem.call(ls, TS(k), String(nt)); changed = true; } finally { restoring = false; } }
+      else if (lv != null && (nv == null || lt > nt)) { const t = String(lt || Date.now()); s.set(k, lv); s.set(ST(k), t); }
+    }
+    // reload once so every game module reads the restored save (guarded so it can never loop)
+    if (changed) { let n = 0; try { n = +(sessionStorage.getItem('gt_dur_reload') || 0); sessionStorage.setItem('gt_dur_reload', String(n + 1)); } catch (e) { n = 9; } if (n < 1) location.reload(); }
+  })().catch(() => {});
+
+  // native pause = hidden: make sure the game saved and paused (it listens to visibilitychange / pagehide)
+  const flush = () => { try { dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })); } catch (e) { /* old WebView */ } };
+  if (native && C.Plugins && C.Plugins.App && C.Plugins.App.addListener) C.Plugins.App.addListener('pause', flush).catch?.(() => {});
+  document.addEventListener('pause', flush, false);   // Cordova-style event (Capacitor fires it too)
+})();

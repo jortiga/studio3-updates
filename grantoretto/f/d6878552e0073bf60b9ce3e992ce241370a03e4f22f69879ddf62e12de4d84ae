@@ -1,0 +1,604 @@
+// Story cutscenes (STORY.md; text only, no voice): full-screen manga panels with a Ken Burns drift, slash-wipe
+// transitions, a speaker plate + small portrait, typewriter text, tap to advance, SKIP. Script = story.json.
+// Painted panels (art/story/<id>.webp, tools/make_story.py) are used when listed in art/story/panels.json; every beat
+// also has a fallback composed from existing art (area painting / the player's car + character busts), so the story
+// works with zero new panels.
+//
+// Hooks (kept tiny in the other files):
+//   scene_extras.raceStart  tutorial -> prologue (G.intro holds the staging clock); career -> area-enter (first race in
+//                           an area, if the card was never opened) + boss intro, then the VS intro
+//   ui.js openCard          area-enter the first time an open area's card opens (also right after the unlock)
+//   ui.show (wrapped here)  leaving the result screen: after-tutorial, boss-beaten (before the map unlock), finale
+// Each scene plays once per save (save.story.seen); the menu's STORY button replays the seen ones.
+// Flags: ?story=<id> preview (&storybeat=N jumps, &storyhold freezes the typewriter/drift), ?nostory disables.
+import * as C from './cast.js';
+import * as O from './overlay.js';
+import * as M from './meta.js';
+import { AREAS } from './map.js';
+/* the game's name: the phone app build (build_www.py) sets GT_BUILD.name = 'Gran Toretto'; web and CrazyGames keep Drag Nights Race */
+const GNAME = ((typeof window !== 'undefined' && window.GT_BUILD && window.GT_BUILD.name) || 'Drag Nights Race').toUpperCase();
+
+const Q = new URLSearchParams(location.search);
+const OFF = Q.has('nostory') || Q.has('t') || (Q.has('auto') && Q.get('auto') !== '0');
+const PREVIEW = Q.get('story') === 'auto' ? null : Q.get('story');
+const HOLD = Q.has('storyhold');
+/* User (2026-11-13, CrazyGames review): the story never interrupts the game. No scene auto-plays (prologue, after-tutorial,
+   area enter, boss intro, boss beaten, finale); the code stays behind this flag (window.GT_STORY = true or ?story=auto turns
+   the old triggers back on). The STORY book in the menu stays as an optional replay of the chapters the player reached. */
+/* User (2026-11-14): the phone app (Play / iOS store builds, GT_BUILD.target 'app') plays the story again; CrazyGames and
+   the web stay story-free. */
+const AUTO_STORY = Q.get('story') === 'auto' || (typeof window !== 'undefined' && (window.GT_STORY === true ||
+  !!(window.GT_BUILD && (window.GT_BUILD.native || ['app', 'ios', 'android'].includes(window.GT_BUILD.target)))));   /* gt-platform.js turns 'app' into 'ios' / 'android' on a device (the 1.1 TestFlight build played no story) */
+const CH = { D: 1, C: 2, B: 3, A: 4, S: 5 };
+const chOf = (t) => CH[t];
+const beatenId = (t) => (t === 'S' ? 'finale' : `ch${CH[t]}_beaten`);
+const $ = (id) => document.getElementById(id);
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+let data = null, panels = {}, ctx = null, playing = null, idleW = [];   /* idleW: waiters for the scene on screen to end (main.js startRace) */
+export const ready = Promise.all([
+  fetch('story.json').then((r) => r.json()).then((j) => { data = j; }).catch(() => null),
+  fetch('art/story/panels.json').then((r) => (r.ok || r.status === 0 ? r.json() : {})).then((j) => { panels = j || {}; }).catch(() => null),
+]);
+
+// ---------------------------------------------------------------- save flags
+const save = () => ctx && ctx.save;
+function persist() { try { localStorage.setItem(M.SAVE_KEY, JSON.stringify(save())); } catch { /* */ } }
+export const seen = (id) => !!(save() && save().story && save().story.seen[id]);
+function mark(id) { const s = save(); if (!s || PREVIEW) return; s.story.seen[id] = 1; persist(); }
+// v1 of the story flags: an older save gets everything it already passed marked as seen (no flood of old scenes)
+function migrate(s) {
+  if (s.story && s.story.seen) return;
+  s.story = { v: 1, seen: {} };
+  const old = s.tutorialDone || s.races > 0;
+  if (old) { s.story.seen.prologue = 1; s.story.seen.after_tut = 1; }
+  for (const t of M.TIERS) {
+    const p = (s.career && s.career[t]) || 0;
+    if (p > 0) s.story.seen[`ch${CH[t]}_enter`] = 1;
+    if (p >= M.RUNGS) { s.story.seen[`ch${CH[t]}_boss`] = 1; s.story.seen[beatenId(t)] = 1; }
+  }
+  if (old) persist();
+}
+
+/** Book: a scene is unlocked once seen, or once the career got there (scenes no longer auto-play, see AUTO_STORY). */
+export function unlocked(id) {
+  if (seen(id)) return true;
+  const s = save(); if (!s) return false;
+  const c = s.career || {};
+  if (id === 'prologue' || id === 'after_tut') return !!(s.tutorialDone || s.races > 0);
+  if (id === 'finale') return (c.S || 0) >= M.RUNGS;
+  const m = /^ch(\d)_(enter|boss|beaten)$/.exec(id); if (!m) return false;
+  const t = M.TIERS[+m[1] - 1], p = c[t] || 0;
+  if (m[2] === 'enter') return M.tierOpen(s, t) && !!(s.tutorialDone || s.races > 0);
+  if (m[2] === 'boss') return p >= M.RUNGS - 1;
+  return p >= M.RUNGS;
+}
+/** Should this scene auto-play now? (exists, unseen, story enabled, not previewing another) */
+export const want = (id) => AUTO_STORY && !OFF && !PREVIEW && !!data && !!data.scenes[id] && !seen(id) && !playing;
+/** Play once per save; resolves when done (immediately when not wanted). */
+export function once(id) { if (!want(id)) return Promise.resolve(false); mark(id); return play(id).then(() => true); }
+
+// ---------------------------------------------------------------- triggers
+export function init(c) {
+  ctx = c;
+  migrate(c.save);
+  window.GT_story = { ready, play, stop, once, want, seen, area, busy: () => !!playing, idle: () => playing ? new Promise((r) => idleW.push(r)) : Promise.resolve(),
+    leaveResult: () => { const id = c.G.state === 'result' ? afterResult() : null; return id && want(id) ? once(id) : Promise.resolve(false); },   /* main.js NEXT RACE: the leaving-the-result scene first, then the next race */
+    menu: openMenu, get data() { return data; }, get panels() { return panels; } };
+  const hook = () => {
+    const ui = window.__g && window.__g.ui;
+    if (!ui) { setTimeout(hook, 50); return; }
+    // leaving the result screen (CONTINUE / CAREER / menu / upgrade): after-tutorial, boss beaten, finale
+    const show = ui.show;
+    ui.show = (name, o) => {
+      const id = c.G.state === 'result' ? afterResult() : null;
+      if (id && want(id)) { once(id).then(() => show(name, o)); return; }
+      show(name, o);
+    };
+    const b = $('storyBtn');
+    if (b) ui.tap(b, openMenu);
+  };
+  hook();
+  if (PREVIEW) ready.then(() => wait(900)).then(() => {
+    const G = c.G, racing = G.state === 'stage';
+    if (racing) G.intro = true;
+    play(PREVIEW, { beat: +Q.get('storybeat') || 0 }).then(() => { if (racing) G.intro = false; });
+  });
+}
+function afterResult() {
+  const o = ctx.G.lastOpts || {};
+  if (o.mode === 'tutorial') return 'after_tut';
+  if (o.mode === 'career' && o.rung === M.RUNGS - 1 && save().career[o.tier] >= M.RUNGS) return beatenId(o.tier);
+  return null;
+}
+/** Area card opened on the map (ui.js openCard): the area's intro, the first time, once the area is open. */
+export function area(t) {
+  if (!CH[t] || !M.tierOpen(save(), t)) return Promise.resolve(false);
+  return once(`ch${chOf(t)}_enter`);
+}
+/** Before a career race (scene_extras.raceStart, while G.intro holds the staging): area intro if never seen, boss intro. */
+export async function beforeRace(ri) {
+  if (!ri || !CH[ri.tier]) return;
+  await area(ri.tier);
+  if (ri.isBoss) { const id = `ch${chOf(ri.tier)}_boss`, was = seen(id); await once(id); return !was && seen(id); }   // true = the boss scene just played
+  return false;
+}
+/** The tutorial race start: the prologue (first run). */
+export const prologue = () => once('prologue');
+
+// ---------------------------------------------------------------- player
+const FACE_LEFT = { kaito: 1, misaki: 1, goro: 1, shin: 1, empress: 1, rei: 1, mika: 0, driver: 0 }; // bust looks left
+const ART = (id) => C.ART[id] || '';
+const nameOf = (id) => C.charName(id).replace(/'.*'/, '').replace(/\s*\(.*\)\s*/, '').trim();
+function img(src) {
+  return new Promise((res) => {
+    if (!src) { res(null); return; }
+    const im = new Image(); let done = false;
+    const end = (ok) => { if (done) return; done = true; res(ok ? im : null); };
+    im.onload = () => (im.decode ? im.decode().catch(() => null) : Promise.resolve()).then(() => end(true));
+    im.onerror = () => end(false);
+    setTimeout(() => end(im.complete && im.naturalWidth > 0), 2500);
+    im.src = src;
+  });
+}
+const carSrc = () => { const k = save() && save().car; try { const u = window.GT_snapCar && window.GT_snapCar(k, 'player'); if (u) return u; } catch { /* */ } return `sprites/thumb_${k}.webp`; };
+// what a beat shows: the painted panel if it exists, else its fallback
+function look(b) {
+  if (b.panel && panels[b.panel]) return { kind: 'panel', src: `art/story/${b.panel}.webp`, focus: b.focus || [0.5, 0.45], busts: b.bustOver ? [b.bust, b.bust2] : [], fx: b.fx };
+  const bg = b.bg || 'live';
+  if (bg === 'live') return { kind: 'live', src: null, focus: [0.5, 0.5], busts: [b.bust, b.bust2], fx: b.fx };
+  const t = bg.startsWith('area_') ? bg.slice(5).toUpperCase() : null;
+  const src = bg === 'world' ? 'art/world.webp' : t && AREAS[t] ? AREAS[t].thumb : `art/${bg}.webp`;
+  return { kind: 'fb', src, focus: b.fbFocus || [0.5, 0.5], busts: [b.bust, b.bust2], fx: b.fx };
+}
+/* User (2026-11-14): a beat that reused the picture used to restart the Ken Burns drift from its start pose with a new
+   pan, so the image slid back and forth. Now a new framing (focus/pan) of the same picture is a camera CUT (new panel,
+   slash wipe); only a beat with the exact same framing keeps the running drift (caption/plate swap only). */
+const sameView = (a, b, pa, pb) => a && b && a.kind === b.kind && a.src === b.src && String(a.busts) === String(b.busts) && a.fx === b.fx
+  && String(a.focus) === String(b.focus) && String(pa || '') === String(pb || '');
+
+let root = null;
+function build() {
+  root = document.createElement('div');
+  root.id = 'story';
+  root.className = 'st hidden';
+  root.innerHTML = `<div class="stStage" id="stStage"></div><div class="stBox" id="stBox"><div class="stWho" id="stWho"><i class="stFace" id="stFace"></i><b id="stName"></b><em id="stTag"></em></div>
+    <p class="stTxt" id="stTxt"></p><span class="stNext" id="stNext"></span></div>
+    <button class="btn stSkip" id="stSkip" aria-label="Skip"><span>SKIP</span><svg class="i" viewBox="0 0 24 24"><path d="M5 5.5 12 12l-7 6.5M12 5.5 19 12l-7 6.5"/></svg></button>
+    <div class="stTitle" id="stTitle"></div>`;
+  document.body.appendChild(root);
+  return root;
+}
+
+// Ken Burns: the image is sized to cover the stage, then scaled/translated (transform only) so the focus point stays
+// in frame; drifts from (focus, z0) to (focus + d, z1) over the beat.
+function kbTransform(el, im, box, fx, fy, z) {
+  const iw = im.naturalWidth || im.width, ih = im.naturalHeight || im.height, bw = box.clientWidth, bh = box.clientHeight;
+  const s = Math.max(bw / iw, bh / ih), w = iw * s * z, h = ih * s * z;
+  el.style.width = iw * s + 'px'; el.style.height = ih * s + 'px';
+  const tx = Math.min(0, Math.max(bw - w, bw / 2 - fx * w)), ty = Math.min(0, Math.max(bh - h, bh * 0.45 - fy * h));
+  return `translate(${tx.toFixed(1)}px, ${ty.toFixed(1)}px) scale(${z})`;
+}
+function drift(p) {
+  const { el, im, box, v, pan, hold } = p;
+  if (!im) return;
+  const [dx, dy, z0, z1] = pan || [0.03, 0, 1.03, 1.1];
+  const [fx, fy] = v.focus;
+  const a = kbTransform(el, im, box, fx, fy, z0), b = kbTransform(el, im, box, fx + dx, fy + dy, z1);
+  if (p.anim) p.anim.cancel();
+  if (hold) { el.style.transform = kbTransform(el, im, box, fx + dx / 2, fy + dy / 2, (z0 + z1) / 2); return; }
+  p.anim = el.animate([{ transform: a }, { transform: b }], { duration: 9000, easing: 'ease-out', fill: 'forwards' });
+}
+
+async function makePanel(v, b, stage) {
+  const p = document.createElement('div');
+  p.className = `stPanel k_${v.kind}` + (v.fx ? ' fx_' + v.fx : '');
+  // 'live' = the 3D scene behind (race staging: the player's car on the line) under a dim veil; on the meta screens
+  // (result/map behind) it becomes a dark garage with the player's car snapshot instead
+  const see = v.kind === 'live' && ctx && ctx.G.state === 'stage';
+  root.classList.toggle('see', see);
+  const im = see ? null : v.kind === 'live' ? await img(carSrc()) : await img(v.src);
+  let html = '';
+  if (see) p.classList.add('see');
+  else if (v.kind === 'live') html += `<div class="stGarage"></div>${im ? `<div class="stCar" style="background-image:url(${im.src})"></div>` : ''}`;
+  else if (im) html += `<div class="stImg" style="background-image:url(${im.src})"></div>`;
+  else html += '<div class="stGarage"></div>';
+  html += '<div class="stFx"></div>';
+  const [r, l] = v.busts || [];
+  if (l) html += `<div class="stBust l c_${l}${FACE_LEFT[l] ? ' flip' : ''}" style="background-image:url(${ART(l)})"></div>`;
+  if (r) html += `<div class="stBust r c_${r}${FACE_LEFT[r] === 0 ? ' flip' : ''}" style="background-image:url(${ART(r)})"></div>`;
+  if (b.cap) html += `<div class="stCap"><span>${b.cap}</span></div>`;
+  p.innerHTML = html;
+  stage.appendChild(p);
+  const P = { root: p, el: p.querySelector('.stImg'), im: v.kind === 'live' ? null : im, box: stage, v, pan: b.pan, hold: !!b._hold };
+  return P;
+}
+
+function plate(who, tag) {
+  const box = $('stBox');
+  box.className = 'stBox' + (who ? ' c_' + who : ' narr');
+  $('stName').textContent = who ? nameOf(who) : '';
+  $('stTag').textContent = tag || '';
+  const f = $('stFace');
+  f.style.backgroundImage = who ? `url(${ART(who)})` : 'none';
+  f.className = 'stFace c_' + who + (FACE_LEFT[who] === 0 && who !== 'mika' ? ' flip' : '');
+}
+
+/** Play a scene; resolves when it ends or is skipped. opts.beat = start beat (preview). */
+export async function play(id, opts = {}) {
+  await ready;
+  const sc = data && data.scenes[id];
+  if (!sc || playing) return;
+  const el = root || build();
+  playing = id;
+  for (const b of sc.beats) { const v = look(b); if (v.src) img(v.src); } // warm every panel of the scene up front
+  const a = C.audio();
+  const sfx = (n, vol) => { try { a && a.play && a.play(n, { volume: vol }); } catch { /* */ } };
+  // take over the screen: other overlay slots pause (speech, toast), the rest hide under body.storyOn
+  O.clear('speech'); O.clear('toast'); C.hideSub();
+  document.body.classList.add('storyOn');
+  const stage = $('stStage');
+  stage.innerHTML = '';
+  el.classList.remove('hidden', 'out'); void el.offsetWidth; el.classList.add('in');
+  $('stTitle').textContent = sc.title || '';
+  $('stTitle').classList.remove('go'); void el.offsetWidth; $('stTitle').classList.add('go');
+  sfx('whoosh', 0.45);
+
+  let skip = false, tapR = null, cur = null, prevView = null, prevPan = null, typing = null, closed = false, skipR = null;
+  const tapWait = () => new Promise((r) => { tapR = r; });
+  /* user (2026-11-14): a tap while a panel was still wiping in started the next cut on top of it, so the picture snapped.
+     While a cut or the first panel is still animating in, a tap only finishes the typing; the beat advances after it */
+  let animUntil = 0;
+  const tap = () => { if (typing) { typing(); return; } if (performance.now() < animUntil) return; const r = tapR; tapR = null; if (r) { sfx('ui_click', 0.35); r(); } };
+  /* SKIP is instant (CrazyGames review): the overlay closes and input returns on the same frame, even while a panel
+     image is still loading; the beat loop notices skip and exits quietly */
+  const close = () => {
+    if (closed) return; closed = true;
+    removeEventListener('keydown', onKey, true); removeEventListener('keyup', onKey, true); removeEventListener('resize', onResize);
+    el.removeEventListener('pointerdown', onDown); el.removeEventListener('pointerup', stop); el.removeEventListener('click', onClick);
+    el.classList.add('hidden'); el.classList.remove('in', 'out');
+    stage.innerHTML = '';
+    document.body.classList.remove('storyOn');
+    playing = null; stopFn = null;
+    const w = idleW; idleW = []; setTimeout(() => w.forEach((r) => r()), 0);
+  };
+  const skipped = new Promise((r) => { skipR = r; });
+  const doSkip = () => { skip = true; if (typing) typing(); const r = tapR; tapR = null; if (r) r(); close(); if (skipR) skipR(); };
+  stopFn = doSkip;
+  const hold = HOLD || !!opts.hold;
+  const stop = (e) => { e.stopPropagation(); };
+  const onDown = (e) => { e.stopPropagation(); e.preventDefault(); };
+  const onClick = (e) => { e.stopPropagation(); if (e.target.closest('#stSkip')) { doSkip(); return; } tap(); };
+  const onKey = (e) => {
+    e.stopImmediatePropagation(); e.preventDefault();
+    if (e.type !== 'keydown' || e.repeat) return;
+    /* Esc is left to the browser (it leaves fullscreen on CrazyGames): S skips */
+    if (e.code === 'KeyS') doSkip(); else if (/Space|Enter|ArrowRight|NumpadEnter/.test(e.code)) tap();
+  };
+  el.addEventListener('pointerdown', onDown); el.addEventListener('pointerup', stop); el.addEventListener('click', onClick);
+  addEventListener('keydown', onKey, true); addEventListener('keyup', onKey, true);
+  const onResize = () => { if (cur) drift(cur); };
+  addEventListener('resize', onResize);
+
+  const type = (text) => new Promise((res) => {
+    const t = $('stTxt'); t.textContent = '';
+    $('stNext').classList.remove('on');
+    let i = 0, iv = 0;
+    const end = () => { clearInterval(iv); typing = null; t.textContent = text; $('stNext').classList.add('on'); res(); };
+    if (hold) { end(); return; }
+    typing = end;
+    iv = setInterval(() => { i += 1; t.textContent = text.slice(0, i); if (i >= text.length) end(); }, 26);
+  });
+
+  const beats = sc.beats;
+  const run = (async () => {
+  for (let bi = Math.min(opts.beat || 0, beats.length - 1); bi < beats.length && !skip; bi++) {
+    const b = { ...beats[bi], _hold: hold }, v = look(b);
+    if (!sameView(v, prevView, b.pan, prevPan)) {
+      prevPan = b.pan;
+      const old = cur;
+      cur = await makePanel(v, b, stage);
+      if (skip) break;
+      drift(cur);
+      const pr = cur.root;
+      if (old && !hold) { // manga slash wipe: the new panel cuts in on a diagonal, a white slash rides the edge
+        pr.classList.add('cut'); sfx('whoosh', 0.35); animUntil = performance.now() + 560;
+        setTimeout(() => { pr.classList.remove('cut'); old.root.remove(); }, 520);
+      } else if (old) old.root.remove();
+      else { pr.classList.add('first'); animUntil = performance.now() + 520; }
+      prevView = v;
+    } else { // same picture, same framing: the drift keeps running, only the caption swaps
+      const cap = cur.root.querySelector('.stCap'); if (cap) cap.remove();
+      if (b.cap) cur.root.insertAdjacentHTML('beforeend', `<div class="stCap"><span>${b.cap}</span></div>`);
+    }
+    const lines = b.lines.slice();
+    if (b.end) lines.push(['', b.end, 'END']);
+    for (const [who, text, tag] of lines) {
+      if (skip) break;
+      plate(who, tag);
+      $('stBox').classList.toggle('end', tag === 'END');
+      if (who && cur) cur.root.querySelectorAll('.stBust').forEach((x) => x.classList.toggle('talk', x.classList.contains('c_' + who)));
+      await type(text);
+      if (hold) { await tapWait(); skip = true; break; } // screenshots: stay on the first line until stop()
+      await tapWait();
+    }
+  }
+  if (closed) return;
+  el.classList.add('out');
+  await wait(320);
+  close();
+  })();
+  await Promise.race([run, skipped]);
+}
+let stopFn = null;
+/** End the playing scene (tests / previews). */
+export const stop = () => stopFn && stopFn();
+export const isPlaying = () => !!playing;
+
+
+// ---------------------------------------------------------------- STORY book (replay seen scenes)
+// The menu's STORY button opens a manga volume (no scrolling anywhere): a cover, then one spread per chapter: left page
+// = chapter title page (big lettering, speed-line burst, one-line synopsis, boss portrait), right page = the chapter's
+// scenes as ink-bordered manga panels with angled gutters (one big splash panel = the chapter's best art) and a speech
+// bubble with the scene's first line. Portrait shows one page per chapter (title block over the panels). Turn pages
+// by swipe, the edge taps / arrows, or the keyboard; a 3D page flip (transform only). Locked chapters are a sealed page
+// (no locked art). Tapping an unlocked panel replays the scene, then the book reopens on the same page.
+// GT_story.menu(n) opens on page n (screenshots).
+const BOOK = {   // per chapter: cast portrait, splash scene index (best art), synopsis, what unlocks it
+  intro: { who: 'rei', sp: 0, syn: 'One month before the bank takes Kurogane Garage. Then a rookie walks in with cash.', need: 'FINISH THE TUTORIAL TO UNLOCK' },
+  D: { who: 'kaito', boss: 1, sp: 2, syn: "Kaito owns the alley. Beat his crew and he can't ignore you.", need: 'FINISH THE TUTORIAL TO UNLOCK' },
+  C: { who: 'misaki', boss: 1, sp: 0, syn: "Fog on the docks, and a silver coupe that knows Rei's tricks.", prev: 'kaito' },
+  B: { who: 'goro', boss: 1, sp: 2, syn: "Festival lanterns, one straight line, and Goro's respect.", prev: 'misaki' },
+  A: { who: 'shin', boss: 1, sp: 0, syn: 'Up on the expressway, Shin has already done the math.', prev: 'goro' },
+  S: { who: 'empress', boss: 1, sp: 0, syn: 'Midnight on Crown Summit. The Empress is waiting.', prev: 'shin' },
+  F: { who: 'empress', sp: 0, syn: 'The crown, the gloves, and the night Rei never talks about.', prev: 'empress' },
+};
+// panel layouts (polygons in % of the panel area; gutters ~3%, deliberately uneven). Key = count _ splash index.
+const LAY = {
+  '3_0': [[0, 0, 100, 0, 100, 54, 0, 61], [0, 64.5, 51, 60, 46, 100, 0, 100], [54, 59.7, 100, 57.5, 100, 100, 49, 100]],
+  '3_2': [[0, 0, 47, 0, 51, 40, 0, 44], [50, 0, 100, 0, 100, 37, 54, 39.7], [0, 47.5, 100, 40, 100, 100, 0, 100]],
+  '2_0': [[0, 0, 100, 0, 100, 58, 0, 64], [0, 67.5, 100, 61.5, 100, 100, 0, 100]],
+  '1_0': [[0, 0, 100, 0, 100, 100, 0, 100]],
+};
+const LOCK_SVG = '<svg class="bkLock" viewBox="0 0 24 24"><path d="M7 10.5V8a5 5 0 0 1 10 0v2.5"/><rect x="5" y="10.5" width="14" height="10" rx="1.5"/><path d="M12 14.5v2.5"/></svg>';
+const ARR = (d) => `<svg class="i" viewBox="0 0 24 24"><path d="${d > 0 ? 'M9 5l7 7-7 7' : 'M15 5l-7 7 7 7'}"/></svg>`;
+let bk = null, bkAt = 0;
+const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const NAME = (id) => nameOf(id).toUpperCase();
+function chapters() {   // the book's chapters: story.json's, with the finale split off CH.5 as its own spread
+  const out = [];
+  for (const ch of data.chapters) {
+    const sc = ch.scenes.filter((id) => id !== 'finale');
+    const m = /^CH\.(\d+)\s+(.*)$/.exec(ch.name);
+    out.push({ id: ch.id, no: m ? `CHAPTER ${m[1]}` : '', name: m ? m[2] : ch.name, scenes: sc });
+    if (sc.length < ch.scenes.length) out.push({ id: 'F', no: '', name: 'FINALE', scenes: ['finale'] });
+  }
+  return out;
+}
+function thumbOf(sc) { const b = sc.beats[0], v = look(b); return v.src || (b.bust ? ART(b.bust) : ''); }
+function artOf(sc) {   // the scene's best picture: its first painted panel, else the first beat's fallback
+  for (const b of sc.beats) if (b.panel && panels[b.panel]) return `art/story/${b.panel}.webp`;
+  return thumbOf(sc);
+}
+function lineOf(sc) {   // first spoken line (else the first narration), cut to one short line for the bubble
+  let who = '', text = '';
+  for (const b of sc.beats) {
+    const l = b.lines.find((x) => x[0]);
+    if (l) { who = l[0]; text = l[1]; break; }
+    if (!text && b.lines[0]) text = b.lines[0][1];
+  }
+  if (text.length > 46) { text = text.slice(0, 44); text = text.slice(0, text.lastIndexOf(' ')).replace(/[,.;:]$/, '') + '…'; }
+  return { who, text };
+}
+const chOpen = (ch) => ch.scenes.some(unlocked);
+function chNeed(ch) { const m = BOOK[ch.id] || {}; return m.need || (m.prev ? `BEAT ${NAME(m.prev)} TO UNLOCK` : 'KEEP RACING TO UNLOCK'); }
+function sceneNeed(ch, id) {
+  const m = BOOK[ch.id] || {};
+  if (id === 'after_tut') return 'FINISH THE TUTORIAL';
+  if (/_boss$/.test(id)) return `RACE ${NAME(m.who)} TO UNLOCK`;
+  if (/_beaten$|^finale$/.test(id)) return `BEAT ${NAME(m.who)} TO UNLOCK`;
+  return chNeed(ch);
+}
+
+// ---- page markup (plain strings: the flip faces re-render the same pages)
+function coverHTML() {
+  return `<div class="bkCover"><i class="bkCoverArt" style="background-image:url(art/story/pro_rain.webp)"></i><i class="bkTone"></i>
+    <span class="bkVol">VOL.1</span><div class="bkLogo"><b>${GNAME}</b><em>THE STORY</em></div><span class="bkTapHint">TAP TO OPEN</span></div>`;
+}
+function titleHTML(ch, ci) {
+  const m = BOOK[ch.id] || {};
+  if (!chOpen(ch)) return `<div class="tp sealed"><span class="tpNo">${ch.no || '&nbsp;'}</span><b class="tpName">${ch.name}</b>${LOCK_SVG}<span class="tpNeed">${chNeed(ch)}</span></div>`;
+  return `<div class="tp"><i class="tpBurst"></i><span class="tpNo">${ch.no || GNAME}</span><b class="tpName">${ch.name}</b>
+    <p class="tpSyn">${esc(m.syn || '')}</p><div class="tpBoss${ci % 2 ? ' alt' : ''}"><i style="background-image:url(${ART(m.who)})"></i><span>${m.boss ? 'BOSS · ' : ''}${esc(NAME(m.who))}</span></div></div>`;
+}
+function panelsHTML(ch, ci) {
+  const open = chOpen(ch), n = ch.scenes.length, m = BOOK[ch.id] || {};
+  let sp = m.sp || 0;
+  if (!open || !unlocked(ch.scenes[sp]) || !LAY[`${n}_${sp}`]) sp = 0;
+  const lay = LAY[`${n}_${sp}`] || LAY['1_0'], flip = ci % 2 === 1;
+  // mirrored on every other chapter for variety, then re-sorted into left-to-right, top-to-bottom reading order
+  const shapes = lay.map((pts) => (flip ? pts.map((v, j) => (j % 2 ? v : 100 - v)) : pts))
+    .map((pts, k) => ({ pts, big: k === sp, y: Math.round(Math.min(...pts.filter((_, j) => j % 2)) / 10), x: Math.min(...pts.filter((_, j) => j % 2 === 0)) }))
+    .sort((a, b) => a.y - b.y || a.x - b.x);
+  return `<div class="mg${open ? '' : ' sealed'}">` + ch.scenes.map((id, k) => {
+    const pts = (shapes[k] || shapes[0]).pts;
+    const xs = pts.filter((_, j) => j % 2 === 0), ys = pts.filter((_, j) => j % 2 === 1);
+    const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+    const poly = 'polygon(' + xs.map((x, j) => `${(((x - x0) / (x1 - x0)) * 100).toFixed(2)}% ${(((ys[j] - y0) / (y1 - y0)) * 100).toFixed(2)}%`).join(',') + ')';
+    const box = `left:${x0}%;top:${y0}%;width:${x1 - x0}%;height:${y1 - y0}%`;
+    const sc = data.scenes[id], ok = open && unlocked(id);
+    const big = shapes[k] && shapes[k].big && n > 1 ? ' big' : '';
+    if (!ok) return `<div class="mgP lock${big}" style="${box}"><i class="mgInk" style="clip-path:${poly}"></i><i class="mgArt" style="clip-path:${poly}"></i>`
+      + `<span class="mgLock">${LOCK_SVG}${open ? `<em>${sceneNeed(ch, id)}</em>` : ''}</span></div>`;
+    const l = lineOf(sc), side = (k + (flip ? 1 : 0)) % 2 ? ' r' : '';
+    return `<div class="mgP${big}" role="button" tabindex="0" aria-label="Replay ${esc(sc.title)}" data-id="${id}" style="${box}"><i class="mgInk" style="clip-path:${poly}"></i>`
+      + `<i class="mgArt" style="clip-path:${poly};background-image:url(${artOf(sc)})"></i><i class="mgDot" style="clip-path:${poly}"></i>`
+      + `<span class="mgBub${l.who ? '' : ' nar'}${side}"><span>${esc(l.text)}</span></span><span class="mgPlay"><svg viewBox="0 0 24 24"><path d="M8 5.5v13l11-6.5z"/></svg></span></div>`;
+  }).join('') + '</div>';
+}
+// a leaf = what one book position shows: landscape = left + right page, portrait = one page
+function leafHTML(i, port) {
+  if (i === 0) return port ? `<div class="pg S cover">${coverHTML()}</div>` : `<div class="pg L none"></div><div class="pg R cover">${coverHTML()}</div>`;
+  const ch = bk.chs[i - 1], seal = chOpen(ch) ? '' : ' dark';
+  if (port) return `<div class="pg S${seal}">${titleHTML(ch, i)}${panelsHTML(ch, i)}<span class="pgN r">${i + 1}</span></div>`;
+  return `<div class="pg L${seal}">${titleHTML(ch, i)}<span class="pgN">${2 * i}</span></div><div class="pg R${seal}">${panelsHTML(ch, i)}<span class="pgN r">${2 * i + 1}</span></div>`;
+}
+
+function fitBook() {
+  const st = bk.el.querySelector('.bkStage'), port = innerHeight > innerWidth;
+  bk.el.classList.toggle('port', port);
+  const sw = st.clientWidth, sh = st.clientHeight;
+  let w, h;
+  if (port) { w = Math.min(sw, sh / 1.3); h = Math.min(sh, w * 1.8); }
+  else { h = sh; const pw = Math.min(sw / 2, h * 0.8); if (pw < h * 0.62) h = pw / 0.62; w = pw * 2; }
+  bk.book.style.width = Math.floor(w) + 'px'; bk.book.style.height = Math.floor(h) + 'px';
+  bk.port = port;
+}
+function renderLeaf(i) {
+  const lf = document.createElement('div');
+  lf.className = 'leaf';
+  lf.innerHTML = leafHTML(i, bk.port);
+  return lf;
+}
+function showAt(i) {
+  bkAt = i;
+  bk.book.innerHTML = '';
+  bk.leaf = renderLeaf(i);
+  bk.book.appendChild(bk.leaf);
+  bk.book.classList.toggle('atCover', i === 0 && !bk.port);   /* the closed book (cover = right page only) sits centred */
+  foot(); preload(i);
+}
+/* fetch + decode the art of the pages either side of i, so a turn never shows a panel's empty ink box (the "photo
+   container") while its picture is still loading on the phone */
+const preloaded = new Set();
+function preload(i) {
+  for (const k of [i - 1, i + 1]) {
+    if (k < 0 || k > bk.chs.length) continue;
+    for (const m of leafHTML(k, bk.port).matchAll(/url\(([^)]+)\)/g)) {
+      const src = m[1].replace(/^['"]|['"]$/g, '');
+      if (!src || preloaded.has(src)) continue;
+      preloaded.add(src);
+      const im = new Image(); im.src = src; if (im.decode) im.decode().catch(() => { /* missing art: the dark fallback shows */ });
+    }
+  }
+}
+function foot() {
+  const n = bk.chs.length + 1;
+  bk.el.querySelector('.bkNum').textContent = `${bkAt + 1} / ${n}`;
+  bk.el.querySelector('.bkDots').innerHTML = Array.from({ length: n }, (_, k) => `<i class="${k === bkAt ? 'on' : ''}"></i>`).join('');
+  bk.el.querySelector('.bkPrev').classList.toggle('off', bkAt === 0);
+  bk.el.querySelector('.bkNext').classList.toggle('off', bkAt === n - 1);
+}
+// page flip: a two-faced sheet rotates around the spine (landscape) or the left edge (portrait); the pages it uncovers
+// are already rendered underneath. transform + opacity only.
+function turn(dir) {
+  const j = bkAt + dir;
+  if (!bk || bk.busy || j < 0 || j > bk.chs.length) return;
+  const a = C.audio(); try { a && a.play && a.play('whoosh', { volume: 0.22 }); } catch { /* */ }
+  const old = bk.leaf, nu = renderLeaf(j), port = bk.port;
+  bk.busy = true;
+  const face = (pg, b) => `<div class="face${b ? ' b' : ''}">${pg ? pg.outerHTML : ''}<i class="shade"></i></div>`;
+  const fl = document.createElement('div');
+  let from = 0, to, hide = [];
+  if (port) {
+    const paper = document.createElement('div'); paper.className = 'pg S back';
+    if (dir > 0) { bk.book.insertBefore(nu, old); fl.innerHTML = face(old.firstElementChild) + face(paper, 1); to = -180; old.style.visibility = 'hidden'; }
+    else { bk.book.appendChild(nu); fl.innerHTML = face(nu.firstElementChild) + face(paper, 1); from = -180; to = 0; nu.style.visibility = 'hidden'; hide = [nu]; }
+    fl.className = 'flip whole';
+  } else {
+    bk.book.insertBefore(nu, old);
+    const oL = old.querySelector('.pg.L'), oR = old.querySelector('.pg.R'), nL = nu.querySelector('.pg.L'), nR = nu.querySelector('.pg.R');
+    if (dir > 0) { fl.innerHTML = face(oR) + face(nL, 1); to = -180; fl.className = 'flip right'; oR.style.visibility = 'hidden'; hide = [nL]; }
+    else { fl.innerHTML = face(oL) + face(nR, 1); to = 180; fl.className = 'flip left'; oL.style.visibility = 'hidden'; hide = [nR]; }
+  }
+  hide.forEach((p) => { p.style.visibility = 'hidden'; });
+  fl.querySelectorAll('.face .pg').forEach((p) => { p.style.visibility = ''; });
+  bk.book.appendChild(fl);
+  const D = 380, E = 'cubic-bezier(.45,.05,.3,1)';
+  const an = fl.animate([{ transform: `rotateY(${from}deg)` }, { transform: `rotateY(${(from + to) / 2}deg) translateZ(6px)` }, { transform: `rotateY(${to}deg)` }], { duration: D, easing: E, fill: 'forwards' });
+  for (const s of fl.querySelectorAll('.shade')) s.animate([{ opacity: 0 }, { opacity: 1 }, { opacity: 0 }], { duration: D, easing: E });
+  /* user 2026-11-22: mid-flip the turning page's photo boxes showed through, and the text flickered. backface-visibility
+     on .face alone is not enough on phone WebKit / Android Chrome: descendants that get their own compositing layer
+     (clip-path art, blend-mode dots, the old per-bubble opacity fades) are drawn without the face's culling. So each face
+     is switched off outright at the 90 deg moment (same duration + easing as the turn, so offset 0.5 = edge-on): the
+     side that faces the reader first is hidden from 0.5 on, the other side only shows from 0.5. The per-overlay opacity
+     fades (bubbles, play / lock badges, page numbers) are gone: fading text in and out under a 3D transform was the flicker. */
+  const firstUp = from === 0, VIS = (on) => ({ visibility: on ? 'visible' : 'hidden' });
+  const swap = (a) => [VIS(a), { ...VIS(a), offset: 0.5 }, { ...VIS(!a), offset: 0.5 }, VIS(!a)];
+  fl.querySelector('.face:not(.b)').animate(swap(firstUp), { duration: D, easing: E, fill: 'forwards' });
+  fl.querySelector('.face.b').animate(swap(!firstUp), { duration: D, easing: E, fill: 'forwards' });
+  an.onfinish = () => {
+    old.remove(); fl.remove();
+    nu.style.visibility = ''; nu.style.zIndex = '';
+    nu.querySelectorAll('.pg').forEach((p) => { p.style.visibility = ''; });
+    bk.leaf = nu; bk.busy = false;
+  };
+  bkAt = j; foot(); preload(j);
+  bk.book.classList.toggle('atCover', j === 0 && !bk.port);   /* user: after a flip the open spread stayed shifted left by the cover offset: clear it (and set it when flipping back to the cover) */
+}
+function closeBook() {
+  if (!bk || !bk.open) return;
+  bk.el.className = 'hidden';
+  removeEventListener('keydown', bk.onKey, true); removeEventListener('resize', bk.onResize);
+  bk.open = false;
+}
+async function openMenu(at) {
+  await ready;
+  if (!data || playing) return;
+  let m = $('storyMenu');
+  if (!m) { m = document.createElement('div'); m.id = 'storyMenu'; document.body.appendChild(m); }
+  if (bk && bk.open) closeBook();
+  if (typeof at === 'number') bkAt = at;
+  const chs = chapters();
+  bkAt = Math.max(0, Math.min(bkAt, chs.length));
+  m.className = 'bk';
+  m.innerHTML = `<div class="bkTop"><span class="bkLbl">STORY</span></div>
+    <div class="bkStage"><div class="bkBook"></div></div>
+    <button class="bkBtn bkX" data-act="close" aria-label="Close"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+    <button class="bkBtn bkPrev" data-act="prev" aria-label="Previous page">${ARR(-1)}</button>
+    <button class="bkBtn bkNext" data-act="next" aria-label="Next page">${ARR(1)}</button>
+    <div class="bkFoot"><span class="bkDots"></span><span class="bkNum"></span></div>`;
+  bk = { el: m, book: m.querySelector('.bkBook'), chs, busy: false, open: true };
+  fitBook(); showAt(bkAt);
+  let sx = 0, sy = 0, swiped = false, down = false;
+  m.onpointerdown = (e) => { e.stopPropagation(); down = true; sx = e.clientX; sy = e.clientY; swiped = false; };
+  m.onpointerup = (e) => {
+    e.stopPropagation();
+    if (!down) return;
+    down = false;
+    const dx = e.clientX - sx, dy = e.clientY - sy;
+    if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy) * 1.2) { swiped = true; turn(dx < 0 ? 1 : -1); }
+  };
+  m.onclick = (e) => {
+    e.stopPropagation();
+    if (swiped) { swiped = false; return; }
+    const act = e.target.closest('[data-act]');
+    if (act) {
+      const k = act.dataset.act;
+      if (k === 'close') { try { C.audio().play('ui_click'); } catch { /* */ } closeBook(); } else turn(k === 'next' ? 1 : -1);
+      return;
+    }
+    if (bk.busy) return;
+    const p = e.target.closest('.mgP[data-id]');
+    if (p) {
+      try { C.audio().play('ui_confirm'); } catch { /* */ }
+      const page = bkAt;
+      closeBook();
+      play(p.dataset.id).then(() => openMenu(page));
+      return;
+    }
+    const r = bk.book.getBoundingClientRect();
+    if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) return;
+    if (bkAt === 0) { turn(1); return; }
+    const fx = (e.clientX - r.left) / r.width;
+    if (fx < 0.2) turn(-1); else if (fx > 0.8) turn(1);
+  };
+  bk.onKey = (e) => {
+    if (e.code !== 'ArrowRight' && e.code !== 'ArrowLeft' && e.code !== 'Escape') return;
+    e.stopImmediatePropagation(); e.preventDefault();
+    if (e.type !== 'keydown' || e.repeat) return;
+    if (e.code === 'Escape') closeBook(); else turn(e.code === 'ArrowRight' ? 1 : -1);
+  };
+  bk.onResize = () => requestAnimationFrame(() => { if (!bk.open) return; fitBook(); if (!bk.busy) showAt(bkAt); });
+  addEventListener('keydown', bk.onKey, true); addEventListener('resize', bk.onResize);
+}

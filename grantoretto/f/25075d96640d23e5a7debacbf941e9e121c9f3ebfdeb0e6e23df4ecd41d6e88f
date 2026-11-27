@@ -1,0 +1,378 @@
+// Depth + light for the race scene: shared fog/lamp uniforms, solid (lit) materials for real geometry, road shader with
+// light pools and wet streak reflections, sprite normal maps, GPU rain, and a cheap quarter-res bloom + heat haze.
+import * as THREE from './vendor/three.module.min.js';
+
+// ---------- shared uniforms (one object, referenced by every material) ----------
+export const NL = 8; // lamps fed to shaders
+export const SH = {
+  uFogA: { value: new THREE.Color(0x4a2370) }, // haze near the ground
+  uFogB: { value: new THREE.Color(0x150c33) }, // haze up high
+  uFogD: { value: 0.011 }, uFogMax: { value: 0.62 },
+  uLamp: { value: Array.from({ length: NL }, () => new THREE.Vector4(0, -100, 0, 0)) }, // xyz + intensity
+  uLampCol: { value: new THREE.Color(1.0, 0.8, 0.55) },
+  uTime: { value: 0 },
+  // ambient life (city stands): uCheer 0..1 crowd excitement, uLife 0 = off (LOW) / 1 / 2 (HIGH: more flashes),
+  // uBig = big camera flash (world x, unused, unused, intensity) that also lights the barrier
+  uCheer: { value: 0.3 }, uLife: { value: 1 }, uChase: { value: 1 }, uBig: { value: new THREE.Vector4(0, 0, 0, 0) },
+};
+export const FOG_GLSL = `uniform vec3 uFogA, uFogB; uniform float uFogD, uFogMax;
+float fogF(vec3 wp){ return (1.0 - exp(-distance(wp, cameraPosition) * uFogD)) * uFogMax; }
+vec3 fogCol(vec3 wp){ return mix(uFogA, uFogB, clamp(wp.y / 24.0, 0.0, 1.0)); }`;
+export const LAMP_GLSL = `uniform vec4 uLamp[${NL}]; uniform vec3 uLampCol;`;
+
+// ---------- solid geometry (barrier, poles, boards, cones) ----------
+// Every scene material is 'transparent' so three sorts them all by renderOrder in one list (depthTest is off).
+const SOLID_VS = `attribute float emi; uniform vec4 uvx; varying vec3 vWp, vN; varying vec2 vUv; varying float vE;
+void main(){ vUv = uv * uvx.zw + uvx.xy; vE = emi; vec4 wp = modelMatrix * vec4(position, 1.0); vWp = wp.xyz;
+  vN = normalize(mat3(modelMatrix) * normal); gl_Position = projectionMatrix * viewMatrix * wp; }`;
+const SOLID_FS = `${FOG_GLSL}
+${LAMP_GLSL}
+uniform sampler2D map; uniform vec3 tint, emiCol; uniform float opacity, selfLit, refl, lampK;
+varying vec3 vWp, vN; varying vec2 vUv; varying float vE;
+void main(){
+  vec4 t = texture2D(map, vUv);
+  vec3 N = normalize(vN); if (!gl_FrontFacing) N = -N;
+  vec3 lit = vec3(0.3 + 0.22 * N.y + 0.12 * N.z + selfLit);
+  for (int i = 0; i < ${NL}; i++) {
+    vec3 L = uLamp[i].xyz - vWp; float d2 = dot(L, L);
+    lit += uLampCol * (lampK * uLamp[i].w * max(dot(N, L * inversesqrt(d2)), 0.0) * 26.0 / (d2 + 8.0));
+  }
+  vec3 col = t.rgb * tint * lit;
+  col = mix(col, emiCol, vE);
+  float f = fogF(vWp);
+  col = mix(col, fogCol(vWp), f);
+  float a = t.a * opacity;
+  if (refl > 0.0) { a *= refl * (1.0 - smoothstep(0.0, 0.9, -vWp.y)); col *= 1.0 - f; }
+  gl_FragColor = vec4(col, a);
+}`;
+export function solidMat(tex, { tint = 0xffffff, opacity = 1, selfLit = 0, uvx = [0, 0, 1, 1], emi = 0xfff0c8, transparent = false, refl = 0, side = THREE.FrontSide, lampK = 1 } = {}) {
+  return new THREE.ShaderMaterial({
+    uniforms: { ...SH, map: { value: tex }, tint: { value: new THREE.Color(tint) }, opacity: { value: opacity }, selfLit: { value: selfLit }, lampK: { value: lampK },
+      uvx: { value: new THREE.Vector4(...uvx) }, emiCol: { value: new THREE.Color(emi).multiplyScalar(1.6) }, refl: { value: refl } },
+    vertexShader: SOLID_VS, fragmentShader: SOLID_FS, transparent: true, depthTest: false, depthWrite: false, side,
+    blending: refl > 0 ? THREE.AdditiveBlending : THREE.NormalBlending,
+  });
+}
+
+// Barrier wall: box whose front face shows a band of the painted near layer (world-tiled), lit top edge.
+const WALL_FS = `${FOG_GLSL}
+${LAMP_GLSL}
+uniform sampler2D map; uniform float tileW, h, v0, v1, refl, uTime, uLife, uCheer, uChase; uniform vec4 uBig;
+varying vec3 vWp, vN; varying vec2 vUv; varying float vE;
+void main(){
+  vec3 N = normalize(vN);
+  float u = vWp.x / tileW;
+  vec3 col; float a = 1.0;
+  float ay = abs(vWp.y);
+  float glow = 0.0;
+  if (N.z > 0.5) { vec4 t = texture2D(map, vec2(u, v0 + clamp(ay / h, 0.0, 1.0) * (v1 - v0))); col = t.rgb;
+    // LED chevrons: the painted pink arrows light up in sequence toward the finish (hue-keyed, no new art)
+    // world-x + time only (no screen/camera terms); soft hue key so mip-blurred edges don't pop in and out; faded out
+    // at speed (unreadable at 200 km/h, and the edge blur / chroma pulse would smear it); capped so bloom can't flare
+    float pink = smoothstep(0.45, 0.85, col.r) * (1.0 - smoothstep(0.2, 0.5, col.g)) * smoothstep(0.2, 0.5, col.b);
+    if (pink > 0.0 && uLife > 0.0 && uChase > 0.0) {
+      float g = fract(u * 5.69);
+      float ph = fract(g - uTime * (1.1 + uCheer * 1.2));
+      float lit = (1.0 - smoothstep(0.0, 0.22, ph)) * smoothstep(-0.02, 0.0, ph) * uChase;
+      col *= mix(1.0, mix(mix(1.0, 0.75, uChase), 1.35, lit), pink);
+      glow = pink * lit * 0.22;
+    }
+  }
+  else if (N.y > 0.5 || N.y < -0.5) { col = texture2D(map, vec2(u, v1 - 0.006)).rgb * 1.25 + vec3(0.05, 0.04, 0.09); }
+  else col = vec3(0.06, 0.05, 0.1);
+  vec3 lit = vec3(0.62 + 0.3 * abs(N.y));
+  for (int i = 0; i < ${NL}; i++) {
+    vec3 L = uLamp[i].xyz - vWp; float d2 = dot(L, L);
+    lit += uLampCol * (uLamp[i].w * max(dot(N, L * inversesqrt(d2)), 0.0) * 30.0 / (d2 + 8.0));
+  }
+  // big camera flash in the stands: a quick white wash on the barrier around its x
+  lit += vec3(1.0, 0.96, 0.92) * uBig.w * exp(-pow((vWp.x - uBig.x) / 7.0, 2.0)) * (0.5 + 0.5 * max(N.z, 0.0));
+  col *= lit;
+  col = min(col + vec3(1.0, 0.25, 0.6) * glow, vec3(1.15));
+  float f = fogF(vWp);
+  col = mix(col, fogCol(vWp), f);
+  if (refl > 0.0) { a = refl * (1.0 - smoothstep(0.0, h * 0.9, -vWp.y)); col *= 1.0 - f; }
+  gl_FragColor = vec4(col, a);
+}`;
+export function wallMat(tex, { tileW, h, v0, v1, refl = 0 }) {
+  return new THREE.ShaderMaterial({
+    uniforms: { ...SH, map: { value: tex }, tileW: { value: tileW }, h: { value: h }, v0: { value: v0 }, v1: { value: v1 }, refl: { value: refl }, uvx: { value: new THREE.Vector4(0, 0, 1, 1) } },
+    vertexShader: SOLID_VS, fragmentShader: WALL_FS, transparent: true, depthTest: false, depthWrite: false,
+    blending: refl > 0 ? THREE.AdditiveBlending : THREE.NormalBlending,
+  });
+}
+
+// Merge simple geometries (non-indexed) with a per-part emissive flag.
+export function mergeParts(parts) { // [{ geo, matrix, emi }]
+  const pos = [], nor = [], uv = [], emi = [];
+  for (const p of parts) {
+    const g = p.geo.index ? p.geo.toNonIndexed() : p.geo.clone();
+    if (p.matrix) g.applyMatrix4(p.matrix);
+    const P = g.attributes.position.array, Nn = g.attributes.normal.array, U = g.attributes.uv.array;
+    for (let i = 0; i < P.length; i++) { pos.push(P[i]); nor.push(Nn[i]); }
+    for (let i = 0; i < U.length; i++) uv.push(U[i]);
+    for (let i = 0; i < P.length / 3; i++) emi.push(p.emi || 0);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setAttribute('emi', new THREE.Float32BufferAttribute(emi, 1));
+  return g;
+}
+const M4 = () => new THREE.Matrix4();
+// Street light: pole (cylinder), arm reaching over the road toward -z, lamp head (emissive underside).
+export function streetLightGeo(h = 7.2, arm = 1.6) {
+  return mergeParts([
+    { geo: new THREE.CylinderGeometry(0.07, 0.11, h, 10, 1, true), matrix: M4().makeTranslation(0, h / 2, 0) },
+    { geo: new THREE.CylinderGeometry(0.2, 0.24, 0.5, 10), matrix: M4().makeTranslation(0, 0.25, 0) },
+    { geo: new THREE.BoxGeometry(0.08, 0.08, arm), matrix: M4().makeTranslation(0, h - 0.1, -arm / 2) },
+    { geo: new THREE.BoxGeometry(0.34, 0.12, 0.62), matrix: M4().makeTranslation(0, h - 0.08, -arm) },
+    { geo: new THREE.BoxGeometry(0.28, 0.03, 0.54), matrix: M4().makeTranslation(0, h - 0.155, -arm), emi: 1 },
+  ]);
+}
+// Board box: front face shows its atlas cell, every other face samples a dark texel.
+export function boardGeo(darkUV = [0.1, 0.5]) {
+  const g = new THREE.BoxGeometry(1, 1, 0.1).toNonIndexed();
+  const uv = g.attributes.uv.array, n = g.attributes.normal.array;
+  for (let i = 0; i < uv.length / 2; i++) if (n[i * 3 + 2] < 0.5) { uv[i * 2] = darkUV[0]; uv[i * 2 + 1] = darkUV[1]; }
+  return g;
+}
+
+// ---------- road ----------
+export const NR = 12; // reflection streaks (lamps + car lights)
+const ROAD_VS = `uniform vec4 uvx; varying vec2 vUv; varying vec3 vWp;
+void main(){ vUv = uv * uvx.zw + uvx.xy; vec4 wp = modelMatrix * vec4(position, 1.0); vWp = wp.xyz; gl_Position = projectionMatrix * viewMatrix * wp; }`;
+const ROAD_FS = `${FOG_GLSL}
+${LAMP_GLSL}
+uniform sampler2D map, nz; uniform vec3 tint; uniform vec2 uRes; uniform float uAspect, wetK;
+uniform vec4 uRS[${NR}]; uniform vec3 uRC[${NR}];
+varying vec2 vUv; varying vec3 vWp;
+void main(){
+  vec3 c = texture2D(map, vUv).rgb * tint;
+  float wet = smoothstep(0.42, 0.72, texture2D(nz, vWp.xz * vec2(0.021, 0.07)).r);
+  vec3 pool = vec3(0.0);
+  for (int i = 0; i < ${NL}; i++) { vec2 d = vWp.xz - uLamp[i].xz; pool += uLampCol * (uLamp[i].w * exp(-dot(d, d) * 0.05)); }
+  c = c * (0.7 + pool * 1.5) + pool * (0.05 + wet * 0.16);
+  vec2 ndc = gl_FragCoord.xy / uRes * 2.0 - 1.0;
+  vec3 r = vec3(0.0);
+  for (int i = 0; i < ${NR}; i++) {
+    vec4 s = uRS[i]; vec2 d = ndc - s.xy; d.x *= uAspect;
+    float vy = d.y < 0.0 ? 6.0 : 30.0;
+    r += uRC[i] * (s.z * exp(-d.x * d.x / (s.w * s.w)) * exp(-d.y * d.y * vy));
+  }
+  c += r * (0.3 + wet * 0.9) * wetK;
+  float f = fogF(vWp);
+  gl_FragColor = vec4(mix(c, fogCol(vWp), f), 1.0);
+}`;
+export function roadMat(tex, nzTex, tint) {
+  return new THREE.ShaderMaterial({
+    uniforms: { ...SH, map: { value: tex }, nz: { value: nzTex }, tint: { value: new THREE.Color(tint) }, uvx: { value: new THREE.Vector4(0, 0, 1, 1) },
+      uRes: { value: new THREE.Vector2(1, 1) }, uAspect: { value: 1 }, wetK: { value: 1 },
+      uRS: { value: Array.from({ length: NR }, () => new THREE.Vector4(0, -9, 0, 0.03)) }, uRC: { value: Array.from({ length: NR }, () => new THREE.Color(0, 0, 0)) } },
+    vertexShader: ROAD_VS, fragmentShader: ROAD_FS, transparent: true, depthTest: false, depthWrite: false,
+  });
+}
+
+// Tiling low-frequency value noise (puddle mask), baked once.
+export function noiseTex(S = 128) {
+  const c = document.createElement('canvas'); c.width = c.height = S;
+  const g = c.getContext('2d'), id = g.createImageData(S, S), d = id.data;
+  let sd = 77; const r = () => ((sd = (sd * 16807) % 2147483647) / 2147483647);
+  const oct = (n) => { const a = []; for (let i = 0; i < n * n; i++) a.push(r()); return a; };
+  const O = [[4, 0.55, oct(4)], [8, 0.3, oct(8)], [16, 0.15, oct(16)]];
+  const sm = (t) => t * t * (3 - 2 * t);
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+    let v = 0;
+    for (const [n, w, a] of O) {
+      const fx = x / S * n, fy = y / S * n, ix = Math.floor(fx), iy = Math.floor(fy), tx = sm(fx - ix), ty = sm(fy - iy);
+      const q = (i, j) => a[((j % n + n) % n) * n + ((i % n + n) % n)];
+      v += w * ((q(ix, iy) * (1 - tx) + q(ix + 1, iy) * tx) * (1 - ty) + (q(ix, iy + 1) * (1 - tx) + q(ix + 1, iy + 1) * tx) * ty);
+    }
+    const k = (y * S + x) * 4; d[k] = d[k + 1] = d[k + 2] = v * 255; d[k + 3] = 255;
+  }
+  g.putImageData(id, 0, 0);
+  return c;
+}
+
+// ---------- sprite normal maps (height from alpha distance + a little luminance bevel) ----------
+function boxBlur(src, w, h, r, out) {
+  const tmp = new Float32Array(w * h), n = 2 * r + 1;
+  for (let y = 0; y < h; y++) {
+    let s = 0; const o = y * w;
+    for (let x = -r; x <= r; x++) s += src[o + Math.min(w - 1, Math.max(0, x))];
+    for (let x = 0; x < w; x++) { tmp[o + x] = s / n; s += src[o + Math.min(w - 1, x + r + 1)] - src[o + Math.max(0, x - r)]; }
+  }
+  for (let x = 0; x < w; x++) {
+    let s = 0;
+    for (let y = -r; y <= r; y++) s += tmp[Math.min(h - 1, Math.max(0, y)) * w + x];
+    for (let y = 0; y < h; y++) { out[y * w + x] = s / n; s += tmp[Math.min(h - 1, y + r + 1) * w + x] - tmp[Math.max(0, y - r) * w + x]; }
+  }
+  return out;
+}
+export function normalMap(img, { radius = 0, detail = 1.2 } = {}) {
+  const w = img.width, h = img.height;
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const g = c.getContext('2d', { willReadFrequently: true }); g.drawImage(img, 0, 0);
+  const id = g.getImageData(0, 0, w, h), d = id.data, N = w * h;
+  const A = new Float32Array(N), L = new Float32Array(N);
+  for (let i = 0; i < N; i++) { A[i] = d[i * 4 + 3] / 255; L[i] = (d[i * 4] * 0.3 + d[i * 4 + 1] * 0.59 + d[i * 4 + 2] * 0.11) / 255 * A[i]; }
+  const r = radius || Math.max(3, Math.round(h * 0.07));
+  const H = new Float32Array(N); boxBlur(A, w, h, r, H); boxBlur(H, w, h, r, H);
+  const Ls = new Float32Array(N); boxBlur(L, w, h, 1, Ls);
+  const k = r * 1.5;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = y * w + x;
+    const xl = x > 0 ? i - 1 : i, xr = x < w - 1 ? i + 1 : i, yu = y > 0 ? i - w : i, yd = y < h - 1 ? i + w : i;
+    let nx = -(H[xr] - H[xl]) * 0.5 * k - (Ls[xr] - Ls[xl]) * 0.5 * detail;
+    let ny = -(H[yu] - H[yd]) * 0.5 * k - (Ls[yu] - Ls[yd]) * 0.5 * detail; // up = -canvas y
+    const l = Math.hypot(nx, ny, 1);
+    d[i * 4] = (nx / l * 0.5 + 0.5) * 255; d[i * 4 + 1] = (ny / l * 0.5 + 0.5) * 255; d[i * 4 + 2] = (1 / l * 0.5 + 0.5) * 255; d[i * 4 + 3] = 255;
+  }
+  g.putImageData(id, 0, 0);
+  return c;
+}
+
+// ---------- canvas helpers for light shapes ----------
+const cv = (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; };
+// soft blob + darker contact core (under-car shadow)
+export function shadowTex() {
+  const c = cv(256, 64), g = c.getContext('2d');
+  g.save(); g.scale(1, 0.25); let gr = g.createRadialGradient(128, 128, 10, 128, 128, 128);
+  gr.addColorStop(0, 'rgba(0,0,0,0.75)'); gr.addColorStop(0.6, 'rgba(0,0,0,0.45)'); gr.addColorStop(1, 'rgba(0,0,0,0)'); g.fillStyle = gr; g.fillRect(0, 0, 256, 256); g.restore();
+  gr = g.createLinearGradient(0, 22, 0, 46); gr.addColorStop(0, 'rgba(0,0,0,0)'); gr.addColorStop(0.5, 'rgba(0,0,0,0.6)'); gr.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = gr; g.fillRect(26, 22, 204, 24);
+  return c;
+}
+// headlight fan: bright at the left edge, spreading and fading to the right
+export function beamTex() {
+  const W = 256, H = 128, c = cv(W, H), g = c.getContext('2d');
+  const id = g.createImageData(W, H), d = id.data;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const u = x / W, v = (y / H - 0.5) * 2;
+    const spread = 0.12 + u * 0.88, k = Math.max(0, 1 - Math.abs(v) / spread);
+    const a = Math.pow(k, 1.6) * Math.pow(1 - u, 1.3) * Math.min(1, u * 14);
+    const i = (y * W + x) * 4; d[i] = d[i + 1] = d[i + 2] = 255; d[i + 3] = a * 255;
+  }
+  g.putImageData(id, 0, 0);
+  return c;
+}
+// cone stripes (top of canvas = tip)
+export function coneStripeTex() {
+  const c = cv(16, 64), g = c.getContext('2d');
+  g.fillStyle = '#ff6a10'; g.fillRect(0, 0, 16, 64);
+  g.fillStyle = '#f4f4f4'; g.fillRect(0, 18, 16, 8); g.fillRect(0, 36, 16, 8);
+  g.fillStyle = '#2a1a14'; g.fillRect(0, 58, 16, 6);
+  return c;
+}
+
+// ---------- rain: GPU-animated line streaks in a box around the camera ----------
+const RAIN_VS = `attribute vec4 seed; uniform float uTime, uCamX, uVx, uFall, uLen, uW, uH; uniform vec2 uZ; varying float vA; varying vec3 vWp;
+void main(){
+  float x0 = uCamX - uW * 0.5;
+  float x = x0 + mod(seed.x * uW - x0, uW);
+  float sp = uFall * (0.85 + 0.3 * fract(seed.x * 37.0));
+  float y = uH - mod(seed.y * uH + uTime * sp, uH);
+  vec3 p = vec3(x, y, mix(uZ.x, uZ.y, seed.z));
+  p -= vec3(-uVx - 1.5, -sp, 0.0) * uLen * seed.w;
+  vWp = p; vA = (1.0 - seed.w * 0.8) * smoothstep(0.0, 0.6, y);
+  gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
+}`;
+const RAIN_FS = `${FOG_GLSL}
+uniform vec3 uCol; uniform float uOp; varying float vA; varying vec3 vWp;
+void main(){ gl_FragColor = vec4(uCol * vA * uOp * (1.0 - fogF(vWp)), 1.0); }`;
+export function makeRain(n, z0, z1, order, op) {
+  const seed = new Float32Array(n * 8), pos = new Float32Array(n * 6);
+  for (let i = 0; i < n; i++) { const a = Math.random(), b = Math.random(), z = Math.random(); seed.set([a, b, z, 0, a, b, z, 1], i * 8); }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3)); g.setAttribute('seed', new THREE.BufferAttribute(seed, 4));
+  const m = new THREE.ShaderMaterial({
+    uniforms: { ...SH, uCamX: { value: 0 }, uVx: { value: 0 }, uFall: { value: 13 }, uLen: { value: 0.03 }, uW: { value: 46 }, uH: { value: 13 },
+      uZ: { value: new THREE.Vector2(z0, z1) }, uCol: { value: new THREE.Color(0.75, 0.82, 1.0) }, uOp: { value: op } },
+    vertexShader: RAIN_VS, fragmentShader: RAIN_FS, transparent: true, depthTest: false, depthWrite: false, blending: THREE.AdditiveBlending,
+  });
+  const l = new THREE.LineSegments(g, m); l.frustumCulled = false; l.renderOrder = order;
+  return l;
+}
+
+// ---------- post: quarter-res bloom (1 or 2 levels) + heat haze ----------
+const QVS = 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }';
+const BRIGHT_FS = `uniform sampler2D tex; uniform vec2 texel; uniform float thr; varying vec2 vUv;
+vec3 b(vec2 o){ vec3 c = texture2D(tex, vUv + o * texel).rgb; float l = max(c.r, max(c.g, c.b)); float k = 0.25;
+  float s = clamp(l - thr + k, 0.0, 2.0 * k); s = s * s / (4.0 * k); return c * max(s, l - thr) / max(l, 1e-4); }
+void main(){ gl_FragColor = vec4((b(vec2(-1.0, -1.0)) + b(vec2(1.0, -1.0)) + b(vec2(-1.0, 1.0)) + b(vec2(1.0, 1.0))) * 0.25, 1.0); }`;
+const BLUR_FS = `uniform sampler2D tex; uniform vec2 dir; varying vec2 vUv;
+void main(){ vec3 c = texture2D(tex, vUv).rgb * 0.2270270;
+  c += (texture2D(tex, vUv + dir * 1.3846154).rgb + texture2D(tex, vUv - dir * 1.3846154).rgb) * 0.3162162;
+  c += (texture2D(tex, vUv + dir * 3.2307692).rgb + texture2D(tex, vUv - dir * 3.2307692).rgb) * 0.0702703;
+  gl_FragColor = vec4(c, 1.0); }`;
+// composite: scene + bloom, heat haze behind the exhaust, and an edge-only radial blur + chromatic split (speed and
+// shift-reward pulse). uRad = car centre (uv), blur amount, chroma amount; the centre ellipse around the car stays sharp.
+const COMP_FS = `uniform sampler2D tS, tB1, tB2; uniform float k1, k2, uTime, uAsp; uniform vec4 uHaze, uRad; varying vec2 vUv;
+void main(){
+  vec2 uv = vUv;
+  if (uHaze.w > 0.0) {
+    vec2 d = (uv - uHaze.xy) * vec2(uAsp, 1.0) / vec2(uHaze.z, uHaze.z * 0.32);
+    float m = uHaze.w * exp(-dot(d, d));
+    uv += m * vec2(sin(uv.y * 90.0 + uTime * 23.0), cos(uv.x * 70.0 - uTime * 17.0)) * 0.0016;
+  }
+  vec3 c;
+  vec2 rd = uv - uRad.xy;
+  vec2 q = rd * vec2(uAsp, 1.0) / (uAsp < 1.0 ? vec2(0.9 * uAsp, 0.5) : vec2(1.15, 0.72));
+  float m = smoothstep(0.7, 1.4, length(q));
+  if (m * (uRad.z + uRad.w) > 0.002) {
+    // 3 taps: radial blur along rd, red pulled out / blue pulled in (chromatic split) by weighting the outer/inner taps
+    vec2 st = rd * uRad.z * m * 0.016;
+    vec2 ca = rd * uRad.w * m * 0.012;
+    vec3 A = texture2D(tS, uv + ca).rgb, B = texture2D(tS, uv - st * 1.5).rgb, C = texture2D(tS, uv - st * 3.0 - ca).rgb;
+    c = vec3(A.r * 0.5 + B.r * 0.3 + C.r * 0.2, (A.g + B.g + C.g) * 0.3333, A.b * 0.2 + B.b * 0.3 + C.b * 0.5);
+  } else c = texture2D(tS, uv).rgb;
+  c += texture2D(tB1, uv).rgb * k1 + texture2D(tB2, uv).rgb * k2;
+  gl_FragColor = vec4(c, 1.0);
+}`;
+export class PostFX {
+  constructor(renderer, { msaa = false } = {}) {
+    this.r = renderer; this.level = 2; this.msaa = msaa;
+    const o = { depthBuffer: false, stencilBuffer: false, type: THREE.UnsignedByteType };
+    this.rtS = new THREE.WebGLRenderTarget(4, 4, { ...o, depthBuffer: true, samples: msaa ? 4 : 0 }); // depth: the 2.5D cars depth-test
+    this.q1 = new THREE.WebGLRenderTarget(4, 4, o); this.q2 = new THREE.WebGLRenderTarget(4, 4, o);
+    this.e1 = new THREE.WebGLRenderTarget(4, 4, o); this.e2 = new THREE.WebGLRenderTarget(4, 4, o);
+    const mk = (fs, u) => new THREE.ShaderMaterial({ uniforms: u, vertexShader: QVS, fragmentShader: fs, depthTest: false, depthWrite: false, blending: THREE.NoBlending });
+    this.mBright = mk(BRIGHT_FS, { tex: { value: null }, texel: { value: new THREE.Vector2() }, thr: { value: 0.62 } });
+    this.mBlur = mk(BLUR_FS, { tex: { value: null }, dir: { value: new THREE.Vector2() } });
+    this.mComp = mk(COMP_FS, { tS: { value: null }, tB1: { value: null }, tB2: { value: null }, k1: { value: 0.9 }, k2: { value: 0.75 }, uTime: SH.uTime, uAsp: { value: 1 },
+      uHaze: { value: new THREE.Vector4(0, 0, 0.1, 0) }, uRad: { value: new THREE.Vector4(0.5, 0.5, 0, 0) } });
+    this.quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.mBright); this.quad.frustumCulled = false;
+    this.qs = new THREE.Scene(); this.qs.add(this.quad); this.qc = new THREE.Camera();
+    this.w = this.h = 4; this.sceneCalls = 0;
+  }
+  setSize(w, h) {
+    this.w = w; this.h = h;
+    this.rtS.setSize(w, h);
+    const qw = Math.max(4, Math.round(w / 4)), qh = Math.max(4, Math.round(h / 4));
+    this.q1.setSize(qw, qh); this.q2.setSize(qw, qh);
+    this.e1.setSize(Math.max(2, qw >> 1), Math.max(2, qh >> 1)); this.e2.setSize(Math.max(2, qw >> 1), Math.max(2, qh >> 1));
+    this.mComp.uniforms.uAsp.value = w / h;
+  }
+  pass(mat, target) { this.quad.material = mat; this.r.setRenderTarget(target); this.r.render(this.qs, this.qc); }
+  render(scene, cam, ov, ovCam) {
+    const r = this.r;
+    if (this.level <= 0) {
+      r.setRenderTarget(null); r.clear(); r.render(scene, cam); this.sceneCalls = r.info.render.calls; r.render(ov, ovCam); return;
+    }
+    r.setRenderTarget(this.rtS); r.clear(); r.render(scene, cam); this.sceneCalls = r.info.render.calls;
+    const B = this.mBright.uniforms, U = this.mBlur.uniforms, C = this.mComp.uniforms;
+    B.tex.value = this.rtS.texture; B.texel.value.set(1 / this.w, 1 / this.h); this.pass(this.mBright, this.q1);
+    const qw = this.q1.width, qh = this.q1.height;
+    U.tex.value = this.q1.texture; U.dir.value.set(1 / qw, 0); this.pass(this.mBlur, this.q2);
+    U.tex.value = this.q2.texture; U.dir.value.set(0, 1 / qh); this.pass(this.mBlur, this.q1);
+    if (this.level >= 2) {
+      U.tex.value = this.q1.texture; U.dir.value.set(2 / qw, 0); this.pass(this.mBlur, this.e1);
+      U.tex.value = this.e1.texture; U.dir.value.set(0, 1.6 / this.e1.height); this.pass(this.mBlur, this.e2);
+    }
+    C.tS.value = this.rtS.texture; C.tB1.value = this.q1.texture; C.tB2.value = this.level >= 2 ? this.e2.texture : this.q1.texture;
+    C.k2.value = this.level >= 2 ? 0.8 : 0;
+    this.pass(this.mComp, null);
+    r.render(ov, ovCam);
+  }
+}

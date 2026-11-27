@@ -1,0 +1,157 @@
+// Cutscenes as DOM overlays (transform/opacity animations only): VS intro (+ boss variant), driver cut-ins, the
+// win/lose manga scene and Rei's corner in the garage. Painted art comes from game/art (tools/make_art.py).
+import * as C from './cast.js';
+import * as M from './meta.js';   /* race-type badge on the VS screen */
+
+const $ = (id) => document.getElementById(id);
+const Q = new URLSearchParams(location.search);
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+let J = null; // juice (2D particles), set by init
+export function init(juice) { J = juice; }
+const center = (el) => { if (!el) return [innerWidth / 2, innerHeight / 2]; /* a VS screen swapped out by a quick restart */ const r = el.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; };
+
+// Jagged lightning polyline between two points (viewBox 0..100).
+function bolt(x0, y0, x1, y1, n = 9, amp = 3.2) {
+  const pts = [];
+  for (let i = 0; i <= n; i++) {
+    const t = i / n, j = i === 0 || i === n ? 0 : (Math.random() - 0.5) * 2 * amp;
+    const nx = -(y1 - y0), ny = x1 - x0, l = Math.hypot(nx, ny);
+    pts.push(`${(x0 + (x1 - x0) * t + nx / l * j).toFixed(1)},${(y0 + (y1 - y0) * t + ny / l * j).toFixed(1)}`);
+  }
+  return pts.join(' ');
+}
+
+// ---------------------------------------------------------------- VS intro
+// o: { you: {car, name, et}, rival: {id, name, car, crew, sub, et, paint}, boss, retry, line: {id, key} }
+let vsDone = null;
+// car picture for the VS intro / photo finish: the live 3D car (current paint, finish, rims) via main.js snapCar,
+// falling back to the static thumbnail
+const carImg = (k, who) => { try { const u = window.GT_snapCar && window.GT_snapCar(k, who); if (u) return u; } catch { /* */ } return `sprites/thumb_${k}.webp`; };
+export function vsIntro(o) {
+  const el = $('vs');
+  const portrait = document.body.classList.contains('portrait');
+  const pts = portrait ? [0, 57, 100, 45] : [57, 0, 43, 100];
+  const rv = o.rival, you = o.you;
+  const faster = you.et < rv.et;
+  el.className = 'vs' + (o.boss ? ' boss' : '') + (portrait ? ' pt' : ' ls');
+  el.innerHTML = `
+    <div class="vsHalf R"><div class="vsLines"></div><div class="vsCar" style="background-image:url(${carImg(rv.car, 'rival')})"></div>
+      <div class="vsPort c_${rv.id}" style="background-image:url(${C.ART[rv.id] || ''})"></div>
+      <div class="vsInfo"><i>${rv.crew}</i><b>${rv.name}</b><small>${rv.carName}</small><em>PREDICTED <span>${rv.et.toFixed(2)}s</span></em></div></div>
+    <div class="vsHalf L"><div class="vsCar" style="background-image:url(${carImg(you.car, 'player')})"></div>
+      <div class="vsPort c_driver" style="background-image:url(${C.ART.driver})"></div>
+      <div class="vsInfo"><i>${you.tag}</i><b>YOU</b><small>${you.carName}</small><em class="${faster ? 'good' : 'bad'}">PREDICTED <span>${you.et.toFixed(2)}s</span></em></div></div>
+    <svg class="vsBolt" viewBox="0 0 100 100" preserveAspectRatio="none">
+      <polyline class="g" points="${bolt(...pts)}"/><polyline points="${bolt(...pts, 11, 2)}"/></svg>
+    <div class="vsVs"></div>
+    ${o.type ? `<div class="vsType rt_${o.type}">${(M.TYPE_INFO[o.type] || M.TYPE_INFO.drag).icon}<b>${(M.TYPE_INFO[o.type] || M.TYPE_INFO.drag).name}</b><i>${(M.TYPE_INFO[o.type] || M.TYPE_INFO.drag).sub}</i>${o.place ? `<u>${o.place}</u>` : ''}</div>` : ''}
+    ${o.boss ? `<div class="vsWarn"><span>${'BOSS RACE &#9650; '.repeat(8)}</span></div><div class="vsStamp">BOSS</div>` : ''}
+    <div class="vsTap">TAP TO SKIP</div>`;
+  el.classList.remove('hidden');
+  void el.offsetWidth; el.classList.add('go');
+  C.audio() && C.audio().play && C.audio().play('whoosh', { volume: 0.6 });
+  const t0 = performance.now();
+  return new Promise((resolve) => {
+    let ended = false, voiceDur = 0;
+    const finish = () => {
+      if (ended) return; ended = true;
+      el.classList.add('out');
+      C.hideSub();
+      if (o.onOut) o.onOut();   /* same moment as the fade: the race-type chip leaves with the VS screen */
+      setTimeout(() => { el.classList.add('hidden'); el.classList.remove('go', 'out'); el.innerHTML = ''; resolve(); }, 330);
+    };
+    vsDone = finish;
+    // beats: bolt + VS slam, voice, stamp
+    setTimeout(() => { if (ended) return; const a = C.audio(); a && a.play && a.play(o.boss ? 'nitro_start' : 'shift_perfect', { volume: 0.7 });
+      el.classList.add('shake'); if (J) { const [x, y] = center(el.querySelector('.vsVs')); J.ring(x, y, { col: '#ffffff', r1: 160, width: 2 }); } }, 430);
+    if (o.boss) setTimeout(() => { if (ended) return; const a = C.audio(); a && a.play && a.play('backfire', { volume: 0.9 }); if (J) { const [x, y] = center(el.querySelector('.vsStamp')); J.ring(x, y, { col: '#ff3355', r1: 120, width: 2 }); } }, 1050);
+    setTimeout(() => { if (ended) return; if (o.line) voiceDur = C.say(o.line.id, o.line.key, { where: 'vsSub', name: rv.name.replace(/'.*'/, '').trim(), now: true }); }, o.boss ? 750 : 600);
+    const minT = o.retry ? 1600 : 2200;   /* user (2026-11-13): ~2-3 s, ends by itself; a tap / key skips at once */
+    const tick = () => {
+      if (ended) return;
+      if (Q.has('vshold')) return;
+      const t = (performance.now() - t0) / 1000;
+      const need = Math.max(minT / 1000, (o.boss ? 0.75 : 0.6) + voiceDur + 0.35);
+      if (t >= Math.min(need, 3.0)) finish(); else setTimeout(tick, 100);
+    };
+    setTimeout(tick, minT);
+    el.onclick = (e) => { e.stopPropagation(); if (performance.now() - t0 > 250) finish(); };
+    const onKey = (e) => { if (ended) { removeEventListener('keydown', onKey, true); return; } if (performance.now() - t0 > 250 && !e.repeat) { e.stopImmediatePropagation(); e.preventDefault(); removeEventListener('keydown', onKey, true); finish(); } };
+    addEventListener('keydown', onKey, true);   /* any key skips (and is not passed on to the game) */
+  });
+}
+export const skipVs = () => vsDone && vsDone();
+
+// ---------------------------------------------------------------- driver cut-in (~0.55 s manga panel)
+let cutT = 0;
+export function cutin(kind) {
+  const el = $('cutin');
+  if (!el) return;
+  el.className = ''; void el.offsetWidth;
+  el.className = 'go ' + kind;
+  el.style.backgroundImage = `url(art/${kind === 'eyes' ? 'cut_eyes' : 'cut_shift'}.webp)`;
+  if (Q.has('cuthold')) { el.style.animation = 'none'; el.style.visibility = 'visible'; return; } // screenshots
+  clearTimeout(cutT); cutT = setTimeout(() => { el.className = ''; }, 650);
+}
+
+// ---------------------------------------------------------------- win / lose manga scene
+// o: { won, margin, p1, p2, pCar, rCar, rival: {id, name}, boss, onDone }
+export function resultScene(o) {
+  const el = $('resScene');
+  const m = o.margin || 0;
+  // car offset in the photo: the loser sits back by the margin (scaled, clamped so a big gap still reads)
+  const gap = Math.min(20, 4 + m * 30); // kept small so the trailing car stays inside the frame
+  const lead = o.won ? 'p' : 'r';
+  const charId = o.won ? 'mika' : o.rival.id;
+  const art = o.won ? 'art/mika_win.webp' : C.ART[charId];
+  el.className = 'rsc ' + (o.won ? 'win' : 'lose') + (o.boss ? ' boss' : '');
+  // finish frame: both cars in their real colours (thumb_<car>.webp), the finish line on the right; the label + margin sit
+  // in their own row under the frame (never over a car). "PHOTO FINISH" only for a margin under 0.05 s.
+  const tag = !o.p2 ? 'FINISH' : m < 0.05 ? 'PHOTO FINISH' : 'FINISH';
+  el.innerHTML = `
+    <div class="rsBox"><div class="rsPhoto"><div class="rsLane"></div><div class="rsLine"></div>
+      <div class="rsCar r" style="background-image:url(${carImg(o.rCar, 'rival')});--off:${lead === 'r' ? 0 : -gap}%"></div>
+      <div class="rsCar p" style="background-image:url(${carImg(o.pCar, 'player')});--off:${lead === 'p' ? 0 : -gap}%"></div></div>
+      <div class="rsInfo"><span class="rsTag">${tag}</span><b class="rsMargin">${o.p2 ? (o.won ? '+' : '-') + m.toFixed(3) + 's' : 'NO CONTEST'}</b></div></div>
+    <div class="rsWord">${o.won ? (o.boss ? 'BOSS DOWN!' : 'VICTORY!') : 'DEFEAT'}</div>
+    <div class="rsChar c_${charId}" style="background-image:url(${art})"></div>`;
+  el.classList.remove('hidden');
+  void el.offsetWidth; el.classList.add('go');
+  if (o.won && J) {
+    J.confetti(innerWidth > 700 ? 40 : 28);
+    const W = innerWidth, H = innerHeight;
+    [[0.3, 0.2, 0.2], [0.72, 0.16, 0.7]].forEach(([x, y, d]) => J.firework(W * x, H * y, { delay: d }));
+  }
+  // the win/lose line plays in its own slot BEFORE the reward panel: the panel waits for the line (tap skips)
+  let done = false, lineEnd = 1.9;
+  const finish = () => { if (done) return; done = true; C.hideSub(); el.classList.add('dock'); o.onDone && o.onDone(); };
+  setTimeout(() => {
+    if (done) return;
+    const rname = o.rival.name ? o.rival.name.replace(/'.*'/, '').trim() : null;
+    const d = o.won ? C.say('mika', 'win', { where: 'rsSub', now: true })
+      : C.say(charId, C.hasLine(charId, 'they_win') ? 'they_win' : 'taunt1', { where: 'rsSub', name: rname, now: true });
+    lineEnd = Math.min(6, Math.max(1.9, 0.5 + d + 0.5));
+    if (!Q.has('rshold')) setTimeout(finish, (lineEnd - 0.5) * 1000);
+  }, 500);
+  el.onclick = (e) => { e.stopPropagation(); finish(); };
+}
+export function hideResultScene() { const el = $('resScene'); if (el) { el.className = 'hidden'; el.innerHTML = ''; } C.hideSub(); }
+
+// ---------------------------------------------------------------- Rei (garage / upgrade corner)
+let reiOn = false, reiGreeted = false, reiT = 0;
+export function rei(show) {
+  const el = $('rei');
+  if (!el) return;
+  reiOn = show;
+  el.classList.toggle('hidden', !show);
+  if (show && !reiGreeted) { reiGreeted = true; setTimeout(() => reiOn && reiSay(Math.random() < 0.5 ? 'greet' : 'greet2'), 650); }
+  if (!show) C.hideSub();
+}
+export function reiSay(key) {
+  const el = $('rei');
+  if (!el || !reiOn) return 0;
+  el.classList.remove('talk'); void el.offsetWidth; el.classList.add('talk');
+  const d = C.say('rei', key, { where: 'reiSub' });
+  clearTimeout(reiT); reiT = setTimeout(() => el.classList.remove('talk'), (d + 0.3) * 1000);
+  return d;
+}

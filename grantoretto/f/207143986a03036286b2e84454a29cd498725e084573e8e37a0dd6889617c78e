@@ -1,0 +1,3 @@
+Engine Sim by Yigit Salih Emecen, https://github.com/YigitSalihEmecen/Engine_Sim (MIT, see LICENSE).
+Vendored unmodified from commit c3ff61031050f1fc280a864f4bb445f30aeaa0a3: src/*.js except gate.js (UI only).
+Used by ../../audio.js as the procedural engine sound.

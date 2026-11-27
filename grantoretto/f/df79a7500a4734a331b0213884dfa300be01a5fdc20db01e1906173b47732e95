@@ -1,0 +1,1925 @@
+// Drag Nights Race audio: sample-based engine (RPM-crossfaded constant-RPM loops), one-shots, loops, music,
+// announcer lines and the voiced cast. Files + loop points + the measured RPM of each engine loop come from
+// audio/manifest.json (made by tools/make_audio.py); the cast's lines and subtitles from cast.json.
+// Nothing here throws: a missing file is logged once and skipped.
+//
+//   import Audio from './audio.js';
+//   Audio.init();                                   // on the first tap/click (safe to call again)
+//   Audio.setEngine('player', {rpm, maxRpm, throttle, load});   // every frame; also 'rival'
+//   Audio.setRaceState({rpm, maxRpm, boost, speed, throttle});  // every frame in a race: turbo + gear whine
+//   Audio.play('shift'); Audio.startLoop('rain'); Audio.music('race'); Audio.setVolume({music: 0.5});
+//   Audio.say('three');                             // announcer (ducks music/engines, rate-limited by priority)
+//   const secs = Audio.voice('rei', 'greet');       // cast line (one at a time; returns its duration)
+//   Audio.setOption({countdownLang: 'en'|'jp', countdownVoice: 'announcer'|'mika', announcer: true|false});
+//
+// Menu music is fetched first (a small intro clip + the full loop) and starts on the very first tap anywhere.
+
+const BASE = new URL('./audio/', import.meta.url);
+const CAST_URL = new URL('./cast.json', import.meta.url);
+const T_RATE = 0.022;      // smoothing time constants (s) for setTargetAtTime
+const T_GAIN = 0.035;
+const T_FILT = 0.05;
+const MENU_INTRO = 'music_menu_intro.mp3';
+const MENU_FULL = 'music_menu.mp3';
+
+let ctx = null;
+let manifest = null;
+let manifestPromise = null;
+let cast = null;
+let master, comp, sfxBus, musicBus, engineBus, duckM, duckE, voiceBus, bedM;
+const buffers = new Map();      // file -> AudioBuffer
+const loading = new Map();      // file -> Promise<AudioBuffer|null>
+const prefetched = new Map();   // file -> Promise<ArrayBuffer|null> (bytes fetched before the context exists)
+const warned = new Set();
+const vol = { master: 1, sfx: 1, music: 0.8, voice: 1 };
+const mix = { samples: 1, synth: 0.35 };   // engine layer levels (tunable from the test page)
+const opt = { countdownLang: 'en', countdownVoice: 'announcer', announcer: true, autoMenu: true };
+const engines = new Map();
+const loops = new Map();
+let musicState = { name: null, src: null, gain: null, want: undefined };
+let noiseBuf = null;
+let watchdog = null;
+let raceLast = 0;
+const history = [];             // {t, kind, name, played} for tests / subtitles
+let speech = null;              // {src, g, pri, end, kind}
+let lastSay = { t: -1e9, pri: 0 };
+let duckUntil = 0;
+
+function warnOnce(key, ...msg) {
+  if (warned.has(key)) return;
+  warned.add(key);
+  console.warn('[audio]', ...msg);
+}
+
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+function ramp(param, value, tau) {
+  try { param.setTargetAtTime(value, ctx.currentTime, tau); } catch { param.value = value; }
+}
+
+// ------------------------------------------------------------------------------------------------
+// Loading. Menu music bytes are requested the moment this module is imported (no context needed),
+// everything else after them so they get the bandwidth first.
+// ------------------------------------------------------------------------------------------------
+function fetchBytes(file) {
+  if (!prefetched.has(file)) {
+    prefetched.set(file, fetch(new URL(file, BASE))
+      .then((r) => { if (!r.ok && r.status !== 0) throw new Error(`HTTP ${r.status}`); return r.arrayBuffer(); })   /* iOS app: media come back with status 0 */
+      .catch((e) => { warnOnce(file, `could not load ${file}:`, e.message || e); return null; }));
+  }
+  return prefetched.get(file);
+}
+const introBytes = fetchBytes(MENU_INTRO);
+fetchBytes(MENU_FULL);
+const manifestFetch = fetch(new URL('manifest.json', BASE), { cache: 'no-cache' })
+  .then((r) => { if (!r.ok && r.status !== 0) throw new Error(`HTTP ${r.status}`); return r.json(); })
+  .catch((e) => {
+    warnOnce('manifest', 'no audio/manifest.json, running with the synth engine only:', e.message || e);
+    return { engine: { cyl: 4, on: [], off: [] }, sfx: {}, loops: {}, music: {}, voice: {}, cast: {} };
+  });
+const castFetch = fetch(CAST_URL, { cache: 'no-cache' }).then((r) => (r.ok || r.status === 0 ? r.json() : null)).catch(() => null)
+  .then((c) => { cast = c; return c; });
+
+function decode(ab) {
+  return new Promise((resolve, reject) => {
+    const p = ctx.decodeAudioData(ab, resolve, reject);   // callback form for old Safari
+    if (p && p.then) p.then(resolve, reject);
+  });
+}
+
+function load(file) {
+  if (!file) return Promise.resolve(null);
+  if (buffers.has(file)) return Promise.resolve(buffers.get(file));
+  if (loading.has(file)) return loading.get(file);
+  const p = fetchBytes(file)
+    .then((ab) => (ab ? decode(ab) : null))
+    .then((buf) => { if (buf) buffers.set(file, buf); return buf; })
+    .catch((e) => { warnOnce(file, `could not decode ${file}:`, e.message || e); return null; });
+  loading.set(file, p);
+  return p;
+}
+
+function loadManifest() {
+  if (manifestPromise) return manifestPromise;
+  manifestPromise = manifestFetch.then((m) => {
+    manifest = m;
+    // menu first, then the engine (what the race needs), then one-shots, loops, voices. Race music on demand.
+    const first = Promise.all([load(MENU_INTRO), load(MENU_FULL)]).catch(() => null);
+    first.then(() => {
+      engines.forEach((v) => { if (v.sim || v.baked) return; const pend = v.pending || {}; v.pending = null; v.cls = null; v.setProfile(pend); });
+      if (engMode === 'classic') ensureClass(classOf({}));      /* the default class; others load when a race needs them (baked: only if a car falls back) */
+      else if (engMode === 'baked') loadBaked();
+      for (const e of Object.values(m.engines || {})) Object.values(e.sfx || {}).forEach((n) => { const s = m.sfx?.[n]; if (s) load(s.file); });
+      Object.values(m.sfx || {}).forEach((s) => load(s.file));
+      Object.values(m.loops || {}).forEach((s) => load(s.file));
+      for (const lang of ['en', 'jp']) Object.values(m.voice?.[lang] || {}).forEach((s) => load(s.file));
+      Object.values(m.cast || {}).forEach((c) => Object.values(c).forEach((s) => load(s.file)));
+      /* user (2026-11-14): everything loads up front, nothing on demand (first plays hitched): every music track. Baked
+         engines: every set's bytes are prefetched (loadBaked), but only the sets the engines use are decoded (KEEP_ALL_BAKED) */
+      Object.values(m.music || {}).forEach((s) => s && s.file && load(s.file));
+    });
+    return m;
+  });
+  return manifestPromise;
+}
+
+// ------------------------------------------------------------------------------------------------
+// Context + buses
+// ------------------------------------------------------------------------------------------------
+function makeContext() {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) { warnOnce('noac', 'Web Audio is not available'); return null; }
+  let c = null;
+  // 44.1 kHz = the files' rate, so loop points land on exact samples (falls back if refused)
+  let coarse = false; try { coarse = matchMedia('(pointer: coarse)').matches; } catch { /* ignore */ }
+  try { c = new AC({ sampleRate: 44100, latencyHint: coarse ? 'playback' : 'interactive' }); } catch { /* older browsers */ }
+  if (!c) { try { c = new AC(); } catch (e) { warnOnce('acfail', 'AudioContext failed', e); return null; } }
+  return c;
+}
+
+function buildGraph() {
+  master = ctx.createGain();
+  comp = ctx.createDynamicsCompressor();       // gentle bus limiter so stacked sounds don't clip
+  comp.threshold.value = -10; comp.knee.value = 8; comp.ratio.value = 6;
+  comp.attack.value = 0.004; comp.release.value = 0.18;
+  master.connect(comp).connect(ctx.destination);
+  sfxBus = ctx.createGain(); sfxBus.connect(master);
+  duckM = ctx.createGain(); duckM.connect(master);
+  bedM = ctx.createGain(); bedM.connect(duckM);           // music under the engines while they run
+  musicBus = ctx.createGain(); musicBus.connect(bedM);
+  duckE = ctx.createGain(); duckE.connect(sfxBus);
+  engineBus = ctx.createGain(); engineBus.gain.value = 3.73; /* user: engines +15%, then +80% twice (2026-11-14, baked engine) = 1.15 x 1.8 x 1.8 */ engineBus.connect(duckE);
+  voiceBus = ctx.createGain(); voiceBus.connect(master);
+  master.gain.value = vol.master; sfxBus.gain.value = vol.sfx; musicBus.gain.value = vol.music;
+  voiceBus.gain.value = vol.voice * vol.sfx;
+  // white noise for the synth layer
+  noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate);
+  const d = noiseBuf.getChannelData(0);
+  for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+}
+
+function unlock() {
+  if (!ctx) return;
+  if (ctx.state !== 'running') ctx.resume().catch(() => {});
+  // iOS: playing one silent buffer inside the gesture fully unlocks output
+  try {
+    const s = ctx.createBufferSource();
+    s.buffer = ctx.createBuffer(1, 1, ctx.sampleRate);
+    s.connect(ctx.destination); s.start(0);
+  } catch { /* ignore */ }
+}
+
+// First gesture anywhere on the page: create the context and start the menu music right away.
+const GESTURES = ['pointerdown', 'touchstart', 'mousedown', 'keydown'];
+function firstGesture() {
+  GESTURES.forEach((ev) => document.removeEventListener(ev, firstGesture, true));
+  Audio.init();
+  if (opt.autoMenu && musicState.want === undefined) Audio.music('menu');
+}
+if (typeof document !== 'undefined') GESTURES.forEach((ev) => document.addEventListener(ev, firstGesture, { capture: true, passive: true }));
+
+function makePanner(pan) {
+  if (ctx.createStereoPanner) { const p = ctx.createStereoPanner(); p.pan.value = pan; return p; }
+  return ctx.createGain();   // no panning on very old Safari
+}
+
+// ------------------------------------------------------------------------------------------------
+// Engine classes + exhaust
+// ------------------------------------------------------------------------------------------------
+// Synth glue per class: osc1 at the firing frequency (rpm/60 * pulses per rev), osc2 at a sub-order
+// (d2 x firing) for the class's character: boxer/V8 lope, rotary buzz, smooth six.
+const SYN = {
+  i4t: { o1: 'sawtooth', o2: 'square', d2: 0.5, g2: 0.22, lp: 1 },
+  i6t: { o1: 'sawtooth', o2: 'sine', d2: 0.5, g2: 0.3, lp: 1.3 },
+  rotary: { o1: 'square', o2: 'sawtooth', d2: 1, g2: 0.3, lp: 1.7 },
+  boxer4t: { o1: 'sawtooth', o2: 'square', d2: 0.5, g2: 0.55, lp: 0.9 },
+  v6mid: { o1: 'sawtooth', o2: 'square', d2: 0.5, g2: 0.3, lp: 1.25 },
+  v8: { o1: 'sawtooth', o2: 'square', d2: 0.25, g2: 0.5, lp: 0.8 },
+};
+const PPR = { i4t: 2, i6t: 3, rotary: 2, boxer4t: 2, v6mid: 3, v8: 4 };
+// Exhaust/muffler as DSP: low shelf (body), peaking "exhaust note" per class, saturation, brightness cap,
+// level, and pops on lift-off (sport: sometimes; straight pipe: crackle + decel burble).
+const EXH = {
+  stock: { shelf: -4, note: 2, q: 0.9, drive: 0, level: 0.8, bright: 0.5, pops: 0 },
+  sport: { shelf: 3, note: 4, q: 1.2, drive: 1.6, level: 1.0, bright: 0.85, pops: 1 },
+  straight: { shelf: 5, note: 7, q: 1.6, drive: 3.6, level: 1.18, bright: 1.0, pops: 2 },
+  antilag: { shelf: 5, note: 7, q: 1.6, drive: 3.8, level: 1.2, bright: 1.0, pops: 3 },    // rally anti-lag: big bangs
+  popcorn: { shelf: 4, note: 6, q: 1.4, drive: 3.0, level: 1.12, bright: 0.95, pops: 4 },  // crackle tune: many small pops
+};
+// Engine-swap sound kits -> the closest sample class (CLASSIC backend)
+const SWAP_CLASS = { v8cross: 'v8', v8flat: 'v8', i6: 'i6t', rotary2: 'rotary', flat6: 'boxer4t', v10: 'v6mid', v12: 'v6mid' };
+/* CLASSIC fallback for cars the manifest does not list (same family as their LIVE engine, SIM_CAR) */
+const CLASSIC_CAR = { car_neon: 'boxer4t', car_drift: 'i6t', car_hyper: 'v6mid' };
+const EXHAUSTS = Object.keys(EXH);   // stock, sport, straight, antilag, popcorn
+const classReady = new Map();   // cls -> Promise (all its loops decoded)
+const classLoaded = new Set();  // classes whose loops are all decoded
+const pendingProfiles = {};
+let wakeKick = false;
+const lastProfiles = {};   /* each engine's profile, so a voice rebuilt after stopEngine (pause on focus loss) keeps its car's sound */
+const ENGINE_SFX = { backfire: 'pop', limiter: 'limiter', rev_blip: 'rev' };   // cls -> Promise (all its loops decoded)
+const curveCache = new Map();
+function driveCurve(k) {
+  if (!k) return null;
+  if (curveCache.has(k)) return curveCache.get(k);
+  const n = 2048, c = new Float32Array(n), norm = Math.tanh(k);
+  for (let i = 0; i < n; i++) { const x = i / (n - 1) * 2 - 1; c[i] = Math.tanh(k * x) / norm; }
+  curveCache.set(k, c);
+  return c;
+}
+function classOf(o = {}) {
+  const engs = manifest?.engines || {};
+  if (o.engine && engs[o.engine]) return o.engine;
+  if (o.car && manifest?.car_engine?.[o.car] && engs[manifest.car_engine[o.car]]) return manifest.car_engine[o.car];
+  if (o.car && engs[CLASSIC_CAR[o.car]]) return CLASSIC_CAR[o.car];   /* cars missing from manifest.car_engine keep their own engine */
+  return engs[manifest?.default_engine] ? manifest.default_engine : Object.keys(engs)[0] || null;
+}
+function ensureClass(cls) {
+  if (!cls || !manifest?.engines?.[cls]) return Promise.resolve(false);
+  if (!classReady.has(cls)) {
+    const e = manifest.engines[cls];
+    const files = [...e.on, ...e.off].map((x) => x.file);
+    classReady.set(cls, Promise.all(files.map(load)).then(() => { classLoaded.add(cls); return true; }));
+  }
+  return classReady.get(cls);
+}
+// Only keep the loops of the classes the engines currently use (+ the default): at most ~2 in memory.
+function releaseUnusedClasses() {
+  const keep = new Set([manifest?.default_engine]);
+  engines.forEach((v) => keep.add(v.cls));
+  for (const [cls, e] of Object.entries(manifest?.engines || {})) {
+    if (keep.has(cls) || !classReady.has(cls)) continue;
+    classReady.delete(cls); classLoaded.delete(cls);
+    for (const x of [...e.on, ...e.off]) { buffers.delete(x.file); loading.delete(x.file); prefetched.delete(x.file); }
+  }
+}
+
+
+const GAME_IDLE = { car_hero: 950, car_silver: 900, car_yellow: 1000, car_neon: 950, car_red: 900, car_cyan: 1000, car_black: 850, car_cop: 850 };
+
+class EngineVoice {
+  constructor(id) {
+    this.id = id;
+    this.player = id === 'player';
+    this.base = this.player ? 1 : 0.42;
+    this.lpMax = this.player ? 14000 : 3600;      // the rival is "in the other lane": duller, quieter
+    this.out = ctx.createGain(); this.out.gain.value = 0;
+    this.cut = ctx.createGain();                  // rev-limiter chop
+    this.lp = ctx.createBiquadFilter(); this.lp.type = 'lowpass'; this.lp.frequency.value = 3000; this.lp.Q.value = 0.5;
+    this.pan = makePanner(this.player ? 0 : 0.28);
+    this.sum = ctx.createGain();
+    // exhaust chain: shelf -> note -> drive -> makeup
+    this.shelf = ctx.createBiquadFilter(); this.shelf.type = 'lowshelf'; this.shelf.frequency.value = 220;
+    this.note = ctx.createBiquadFilter(); this.note.type = 'peaking';
+    this.shaper = ctx.createWaveShaper(); this.shaper.oversample = '2x';
+    this.makeup = ctx.createGain();
+    this.sum.connect(this.shelf).connect(this.note).connect(this.shaper).connect(this.makeup)
+      .connect(this.lp).connect(this.cut).connect(this.out).connect(this.pan).connect(engineBus);
+    this.onBus = ctx.createGain(); this.onBus.connect(this.sum);
+    this.offBus = ctx.createGain(); this.offBus.gain.value = 0; this.offBus.connect(this.sum);
+    this.layersOn = []; this.layersOff = [];
+    this.buildSynth();
+    this.last = 0; this.silent = true; this.nextCut = 0; this.prevThr = 0; this.nextPop = 0;
+    this.state = { rpm: 900, maxRpm: 8000, throttle: 0, load: 0 };
+    this.cls = null; this.exhaust = null;
+    this.setProfile({});
+  }
+
+  buildSynth() {
+    this.synthBus = ctx.createGain(); this.synthBus.gain.value = 0; this.synthBus.connect(this.sum);
+    this.synthLp = ctx.createBiquadFilter(); this.synthLp.type = 'lowpass'; this.synthLp.Q.value = 1.2;
+    this.synthLp.connect(this.synthBus);
+    this.osc1 = ctx.createOscillator(); this.osc2 = ctx.createOscillator();
+    this.g1 = ctx.createGain(); this.g1.gain.value = 0.5; this.g2 = ctx.createGain(); this.g2.gain.value = 0.22;
+    this.osc1.connect(this.g1).connect(this.synthLp); this.osc2.connect(this.g2).connect(this.synthLp);
+    this.noise = ctx.createBufferSource(); this.noise.buffer = noiseBuf; this.noise.loop = true;
+    this.noiseBp = ctx.createBiquadFilter(); this.noiseBp.type = 'bandpass'; this.noiseBp.Q.value = 0.9;
+    this.noiseGain = ctx.createGain(); this.noiseGain.gain.value = 0;
+    this.noise.connect(this.noiseBp).connect(this.noiseGain).connect(this.sum);
+    const t = ctx.currentTime;
+    this.osc1.start(t); this.osc2.start(t); this.noise.start(t, Math.random());
+  }
+
+  /** {engine, car, exhaust} -> switch class (lazy-loads its loops) and/or exhaust DSP. */
+  setProfile(o = {}) {
+    if (o.car) this.car = o.car;
+    if (o.sound) this.sound = { ...(this.sound || {}), ...o.sound };
+    const sw = this.sound && SWAP_CLASS[this.sound.swap];
+    if (sw && !o.engine && (o.car || o.sound)) o = { ...o, engine: sw };   // cosmetic engine swap
+    if (!manifest) { this.pending = { ...(this.pending || {}), ...o }; }
+    const cls = manifest ? classOf(o.engine || o.car ? o : { engine: this.cls }) : (this.cls || 'i4t');
+    if (cls && cls !== this.cls) {
+      this.dropLayers();
+      this.cls = cls;
+      const syn = SYN[cls] || SYN.i4t;
+      this.osc1.type = syn.o1; this.osc2.type = syn.o2; this.g2.gain.value = syn.g2;
+      this.syn = syn; this.ppr = manifest?.engines?.[cls]?.ppr || PPR[cls] || 2;
+      if (manifest) { ensureClass(cls).then(() => { if (this.cls === cls) this.attachSamples(); }); releaseUnusedClasses(); }
+      this.applyExhaust(this.exhaust || 'sport');
+    }
+    if (o.exhaust && EXH[o.exhaust] && o.exhaust !== this.exhaust) this.applyExhaust(o.exhaust);
+    else if (!this.exhaust) this.applyExhaust('sport');
+  }
+
+  applyExhaust(name) {
+    const x = EXH[name] || EXH.sport;
+    this.exhaust = name; this.ex = x;
+    const noteHz = manifest?.engines?.[this.cls]?.note || 800;
+    ramp(this.shelf.gain, x.shelf, 0.05);
+    this.note.frequency.value = noteHz; this.note.Q.value = x.q; ramp(this.note.gain, x.note, 0.05);
+    this.shaper.curve = driveCurve(x.drive);
+    ramp(this.makeup.gain, x.level * (x.drive ? 0.85 : 1), 0.05);
+  }
+
+  dropLayers() {
+    const t = ctx.currentTime;
+    [...this.layersOn, ...this.layersOff].forEach((l) => { try { ramp(l.g.gain, 0, 0.03); l.src.stop(t + 0.2); } catch { /* ignore */ } });
+    this.layersOn = []; this.layersOff = []; this.weights = null;
+  }
+
+  attachSamples() {
+    if (this.layersOn.length || this.dead || !manifest) return;
+    const e = manifest.engines?.[this.cls];
+    if (!e) return;
+    const mk = (list, bus) => list.map((x) => {
+      const buf = buffers.get(x.file);
+      if (!buf) return null;
+      const src = ctx.createBufferSource();
+      src.buffer = buf; src.loop = true;
+      src.loopStart = x.loopStart; src.loopEnd = x.loopEnd;
+      src.playbackRate.value = clamp(this.state.rpm / x.rpm, 0.25, 4);
+      const g = ctx.createGain(); g.gain.value = 0;
+      const lv = ctx.createGain(); lv.gain.value = x.gain || 1;   // per-layer level (engine-sim suggestedVolumeDb)
+      src.connect(g).connect(lv).connect(bus);
+      // random phase so player and rival never comb against each other
+      src.start(ctx.currentTime, x.loopStart + Math.random() * (x.loopEnd - x.loopStart));
+      return { e: x, src, g, rpm: x.rpm };
+    }).filter(Boolean).sort((a, b) => a.rpm - b.rpm);
+    this.layersOn = mk(e.on, this.onBus);
+    this.layersOff = mk(e.off, this.offBus);
+  }
+
+  pop(vol, rate = 1) {
+    const name = manifest?.engines?.[this.cls]?.sfx?.pop || 'backfire';
+    Audio.play(name, { volume: vol * (this.player ? 1 : 0.4), rate: rate * (0.9 + Math.random() * 0.35), pan: this.player ? 0 : 0.28, raw: true });
+    (this.pops || (this.pops = [])).push({ time: ctx.currentTime, amp: clamp(vol, 0, 1) });   // for exhaust flames
+    if (this.pops.length > 32) this.pops.shift();
+  }
+
+  update(p) {
+    const s = this.state;
+    if (p.rpm != null && isFinite(p.rpm)) s.rpm = clamp(p.rpm, 300, 20000);
+    if (p.maxRpm != null && isFinite(p.maxRpm)) s.maxRpm = Math.max(1000, p.maxRpm);
+    if (p.throttle != null && isFinite(p.throttle)) s.throttle = clamp(p.throttle, 0, 1);
+    if (p.load != null && isFinite(p.load)) s.load = clamp(p.load, 0, 1);
+    else s.load = s.throttle;
+    const t = ctx.currentTime;
+    this.last = performance.now();
+    const { maxRpm, throttle, load } = s;
+    let rpm = s.rpm;
+    const rn = clamp(rpm / maxRpm, 0, 1.1);
+    const x = this.ex || EXH.sport;
+    const ed = manifest?.engines?.[this.cls];
+    if (ed && ed.esx) {
+      // the export's rev range differs from the game car's: map idle..redline onto idle..redline
+      const gIdle = GAME_IDLE[this.car] || 900;
+      const f = (rpm - gIdle) / Math.max(500, maxRpm - gIdle);
+      rpm = clamp(ed.idleRpm + f * (ed.redlineRpm - ed.idleRpm), ed.idleRpm * 0.85, ed.redlineRpm * 1.03);
+    }
+    const RMIN = 0.75, RMAX = 1.25;   // never bend a loop more than +-25 % (above that it sounds chipmunked)
+
+    // --- on-throttle sample layers: equal-power crossfade between the two neighbours (log RPM) ---
+    const L = this.layersOn;
+    if (L.length) {
+      let i = 0;
+      while (i < L.length - 1 && L[i + 1].rpm <= rpm) i++;
+      const w = new Array(L.length).fill(0);
+      if (rpm <= L[0].rpm) w[0] = 1;
+      else if (i >= L.length - 1) w[L.length - 1] = 1;
+      else {
+        const f = clamp(Math.log(rpm / L[i].rpm) / Math.log(L[i + 1].rpm / L[i].rpm), 0, 1);
+        w[i] = Math.cos(f * Math.PI / 2); w[i + 1] = Math.sin(f * Math.PI / 2);
+      }
+      L.forEach((l, k) => {
+        ramp(l.g.gain, w[k] * (l.e.gain || 1), T_GAIN);
+        const outside = rpm < L[0].rpm || rpm > L[L.length - 1].rpm;
+        if (w[k] > 0.001 || l.g.gain.value > 0.001) ramp(l.src.playbackRate, outside ? clamp(rpm / l.rpm, RMIN, RMAX) : clamp(rpm / l.rpm, 0.4, 2.5), T_RATE);
+      });
+      this.weights = w;
+    }
+    // --- off-throttle: overrun burble near its own RPM, the on layers go dull and quieter ---
+    const offAmt = 1 - throttle;
+    const OL = this.layersOff;
+    if (OL.length >= 3) {          // a full offload set (esx): neighbour crossfade, onload/offload by throttle
+      let i = 0;
+      while (i < OL.length - 1 && OL[i + 1].rpm <= rpm) i++;
+      OL.forEach((l, k) => {
+        let w = 0;
+        if (rpm <= OL[0].rpm) w = k === 0 ? 1 : 0;
+        else if (i >= OL.length - 1) w = k === OL.length - 1 ? 1 : 0;
+        else if (k === i || k === i + 1) {
+          const f = clamp(Math.log(rpm / OL[i].rpm) / Math.log(OL[i + 1].rpm / OL[i].rpm), 0, 1);
+          w = k === i ? Math.cos(f * Math.PI / 2) : Math.sin(f * Math.PI / 2);
+        }
+        ramp(l.g.gain, w * (l.e.gain || 1), T_GAIN);
+        const outside = rpm < OL[0].rpm || rpm > OL[OL.length - 1].rpm;
+        if (w > 0.001 || l.g.gain.value > 0.001) ramp(l.src.playbackRate, outside ? clamp(rpm / l.rpm, RMIN, RMAX) : clamp(rpm / l.rpm, 0.4, 2.5), T_RATE);
+      });
+      const a = Math.sqrt(clamp(throttle, 0, 1));
+      ramp(this.onBus.gain, mix.samples * a, T_GAIN);
+      ramp(this.offBus.gain, mix.samples * Math.sqrt(offAmt), T_GAIN);
+    } else {
+      OL.forEach((l) => {
+        const oct = Math.abs(Math.log2(rpm / l.rpm));
+        const near = Math.max(0, 1 - oct / Math.log2(RMAX));       // silent once it would need > +-25 %
+        ramp(l.g.gain, near * near, T_GAIN);
+        ramp(l.src.playbackRate, clamp(rpm / l.rpm, RMIN, RMAX), T_RATE);
+      });
+      ramp(this.onBus.gain, mix.samples * (0.5 + 0.5 * throttle), T_GAIN);
+      ramp(this.offBus.gain, mix.samples * 0.9 * offAmt, T_GAIN);
+    }
+
+    // --- synth glue: exact firing frequency for this engine class ---
+    const syn = this.syn || SYN.i4t;
+    const fire = rpm / 60 * (this.ppr || 2);
+    ramp(this.osc1.frequency, fire, T_RATE);
+    ramp(this.osc2.frequency, fire * syn.d2, T_RATE);
+    ramp(this.synthLp.frequency, clamp(fire * (2.5 + 3 * throttle) * syn.lp, 80, 7000), T_FILT);
+    ramp(this.synthBus.gain, mix.synth * (manifest?.engines?.[this.cls]?.synth ?? 1) * 0.09 * (0.4 + 0.6 * throttle), T_GAIN);
+    ramp(this.noiseBp.frequency, 500 + 2600 * rn, T_FILT);
+    ramp(this.noiseGain.gain, mix.synth * (manifest?.engines?.[this.cls]?.synth ?? 1) * 0.05 * throttle * (0.3 + 0.7 * rn), T_GAIN);
+
+    // --- tone + level from throttle / load / exhaust ---
+    const cutoff = clamp((900 + 13000 * (0.25 + 0.5 * throttle + 0.25 * load) ** 1.6) * (0.65 + 0.35 * rn) * (0.4 + 0.6 * x.bright),
+      500, this.lpMax * (0.45 + 0.55 * x.bright));
+    ramp(this.lp.frequency, cutoff, T_FILT);
+    const level = this.base * (0.5 + 0.32 * throttle + 0.18 * load) * (0.72 + 0.28 * rn);
+    ramp(this.out.gain, level, this.silent ? 0.08 : T_GAIN);
+    this.silent = false;
+
+    // --- pops: lift-off crackle (sport sometimes, straight pipe always) and decel burble (straight) ---
+    if (x.pops && manifest) {
+      if (this.prevThr > 0.6 && throttle < 0.3 && rpm > 2500) {
+        // lift / shift: sport = a soft burble now and then, straight = a few pops, anti-lag = big bangs + flutter,
+        // popcorn = a burst of small crackles
+        const n = x.pops === 3 ? 3 + Math.floor(Math.random() * 3) : x.pops === 4 ? 5 + Math.floor(Math.random() * 4)
+          : x.pops === 2 ? 2 + Math.floor(Math.random() * 3) : (Math.random() < 0.15 ? 1 : 0);
+        const v0 = x.pops === 3 ? 0.6 : x.pops === 4 ? 0.22 : x.pops === 2 ? 0.35 : 0.18;
+        const gap = x.pops === 4 ? 35 : 60;
+        for (let k = 0; k < n; k++) setTimeout(() => this.pop(v0 + Math.random() * v0, x.pops === 3 ? 0.85 : x.pops === 4 ? 1.25 : 1), 40 + k * (gap + Math.random() * gap * 1.5));
+        /* NO_TURBO: no blow-off here either */
+      } else if (x.pops >= 2 && throttle < 0.15 && rpm > 2200 && t > this.nextPop) {
+        const pc = x.pops === 4;
+        this.nextPop = t + (pc ? 0.05 + Math.random() * 0.12 : 0.12 + Math.random() * 0.35);
+        if (Math.random() < (pc ? 0.8 : 0.55)) this.pop(pc ? 0.1 + Math.random() * 0.15 : 0.12 + Math.random() * 0.2, pc ? 1.3 : 1);
+      }
+    }
+    this.prevThr = throttle;
+
+    // --- rev limiter: rhythmic fuel cut while pinned at maxRpm ---
+    if (rpm >= maxRpm * 0.985 && throttle > 0.3) {
+      if (t >= this.nextCut) {
+        const off = 0.032 + Math.random() * 0.012;
+        this.cut.gain.cancelScheduledValues(t);
+        this.cut.gain.setTargetAtTime(0.12, t, 0.005);
+        this.cut.gain.setTargetAtTime(1, t + off, 0.007);
+        this.nextCut = t + off + 0.05 + Math.random() * 0.02;
+        if (x.pops === 2 && Math.random() < 0.25) this.pop(0.2);
+      }
+    } else if (this.nextCut) {
+      this.cut.gain.cancelScheduledValues(t);
+      ramp(this.cut.gain, 1, 0.01);
+      this.nextCut = 0;
+    }
+  }
+
+  fadeOut(tau = 0.12) {
+    ramp(this.out.gain, 0, tau);
+    this.silent = true;
+  }
+
+  destroy() {
+    this.dead = true;
+    this.fadeOut(0.06);
+    const t = ctx.currentTime + 0.5;
+    const stop = (n) => { try { n.stop(t); } catch { /* already stopped */ } };
+    [...this.layersOn, ...this.layersOff].forEach((l) => stop(l.src));
+    stop(this.osc1); stop(this.osc2); stop(this.noise);
+    setTimeout(() => { try { this.pan.disconnect(); } catch { /* ignore */ } }, 700);
+  }
+}
+
+// ------------------------------------------------------------------------------------------------
+// Engine Sim (procedural, vendor/engine-sim, MIT) slaved to OUR physics.
+// Its own drivetrain still runs (turbo spool, exhaust heat, pops, the shift state machine), but every
+// frame its crank speed is set to our rpm before it steps and the published params are overwritten with
+// our rpm after, so the pitch is exactly ours. Our shift sounds (play('shift'...)) trigger its shift
+// so the ignition cut, lash and blow-off land on our shifts. ?eng=samples falls back to the loops.
+// ------------------------------------------------------------------------------------------------
+const SIM_CLASS = {   // our engine class -> Engine Sim engine / chassis / turbo
+  i4t: { engine: 'i4', vehicle: 'sports', turbo: false },
+  i6t: { engine: 'i6', vehicle: 'sports', turbo: false },
+  rotary: { engine: 'rotary2', vehicle: 'sports', turbo: false },
+  boxer4t: { engine: 'boxer4', vehicle: 'sports', turbo: false },
+  v6mid: { engine: 'v6tt', vehicle: 'supercar', turbo: false },
+  v8: { engine: 'v8cross', vehicle: 'muscle', turbo: false },
+  v12t: { engine: 'v12', vehicle: 'supercar', turbo: false },   // Seiryu HX-16 (streak hypercar)
+};
+const SIM_CAR = { car_hero: 'i4t', car_silver: 'i6t', car_yellow: 'rotary', car_neon: 'boxer4t', car_red: 'boxer4t', car_cyan: 'v6mid', car_black: 'v8', car_drift: 'i6t', car_hyper: 'v12t', car_cop: 'v8' };
+const SIM_EXH = {   // exhaust choice -> active-valve aggression + tone + pop depth (null = Engine Sim's default)
+  demo: { aggression: 0, tone: { rumble: 1, brightness: 1, punch: 1 }, pop: null, vol: 1, mix: false },
+  stock: { aggression: 0, tone: { rumble: 0.9, brightness: 0.85, punch: 0.95 }, pop: 0, vol: 0.85 },
+  sport: { aggression: 0.3, tone: { rumble: 1, brightness: 1, punch: 1 }, pop: 0.45, vol: 1.0 },
+  straight: { aggression: 0.7, tone: { rumble: 1.15, brightness: 1.15, punch: 1.1 }, pop: 1.2, vol: 1.1 },
+  // rally anti-lag: its turbo anti-lag on + a hot pipe; big bangs on every lift and shift, crackle on decel
+  antilag: { aggression: 0.85, tone: { rumble: 1.15, brightness: 1.15, punch: 1.25 }, pop: 2, vol: 1.12, antiLag: true, heat: 1, charge: 2.2, crackle: 0.25 },
+  // crackle tune ('popcorn'): lots of small pops on overrun
+  popcorn: { aggression: 0.6, tone: { rumble: 1.05, brightness: 1.1, punch: 1.05 }, pop: 1.5, vol: 1.05, heat: 0.9, charge: 0.8, crackle: 0.9 },
+};
+// Cosmetic engine-swap sound kits (Engine Sim engine ids); 'default' = the car's own engine.
+const SWAPS = ['default', 'v8cross', 'v8flat', 'i6', 'rotary2', 'flat6', 'v10', 'v12'];
+// The engine the user picked per car in the ENGINE LAB (audio_test.html): {car_id: {engine, vehicle, turbo}}.
+// The hero defaults to the demo site's cross-plane V8 on the sports chassis (the sound the user fell for).
+const SIM_PICK_DEFAULT = { car_hero: { engine: 'v8cross', vehicle: 'sports', turbo: false } };
+const NO_TURBO = true;   // user: the turbo sound is bad -> never use Engine Sim's turbo or the turbo loop
+function simPick(car) {
+  let picks = {};
+  try { picks = JSON.parse(localStorage.getItem('gt_engine_pick') || '{}') || {}; } catch { /* ignore */ }
+  return picks[car] || SIM_PICK_DEFAULT[car] || null;
+}
+const RADS = Math.PI / 30;
+let SimMod = null;          // the imported module (lazy, after the first gesture)
+let simLoading = null;
+// Engine backends: 'baked' = the LIVE Engine Sim recorded offline into constant-RPM loops (tools/bake_engine.mjs,
+// audio/baked/), 'classic' = ElevenLabs loops, 'live' = Engine Sim itself (procedural, AudioWorklet).
+/* user 2026-11-14 ("I don't want to use live anywhere"): BAKED everywhere (desktop, web, CrazyGames, phones; player and
+   every rival). Fallback: baked -> classic. The Engine Sim module and its worklet are never fetched in normal play;
+   ?eng=live is a dev-only A/B flag (never with window.GT_BUILD, so store/portal builds cannot select it). */
+const DEV_AUDIO = () => { try { return !window.GT_BUILD; } catch { return false; } };
+const BACKENDS = ['baked', 'classic'];   /* the switch on test pages; 'live' only via ?eng=live / setEngineBackend in dev */
+const normBackend = (b) => {
+  if (b === 'samples') return 'classic';
+  if (b === 'live' || b === 'sim') return DEV_AUDIO() ? 'live' : 'baked';
+  return BACKENDS.includes(b) ? b : 'baked';
+};
+const DEFAULT_ENG = 'baked';
+let engMode = DEFAULT_ENG;
+let liveFailed = false;
+let liveFailReason = '';
+try {
+  const q = new URLSearchParams(location.search).get('eng');
+  if (q) engMode = normBackend(q);   /* test override only: never persisted, so a dev ?eng=live does not stick */
+} catch { /* private mode */ }
+function loadSim() {
+  if (engMode !== 'live' || liveFailed) return Promise.resolve(null);
+  if (!simLoading) {
+    simLoading = import('./vendor/engine-sim/engine-sim.js')
+      .then((m) => { SimMod = m; return m; })
+      .catch((e) => { warnOnce('simload', 'Engine Sim failed to load, using sample engine:', e); liveFailed = true; liveFailReason = 'Engine Sim did not load (' + (e && e.message || e) + ')'; return null; });
+  }
+  return simLoading;
+}
+
+class SimVoice {
+  constructor(id) {
+    this.id = id;
+    this.player = id === 'player';
+    this.sim = true;
+    this.out = ctx.createGain(); this.out.gain.value = 0;
+    this.pan = makePanner(this.player ? 0 : 0.3);
+    this.out.connect(this.pan).connect(engineBus);
+    this.layersOn = []; this.layersOff = []; this.weights = null;
+    this.cls = null; this.exhaust = 'sport'; this.engine = null;
+    this.state = { rpm: 900, maxRpm: 8000, throttle: 0, load: 0 };
+    this.lastT = 0; this.last = 0; this.silent = true; this.prevRpm = 900; this.redline = 0;
+    this.pops = [];
+    this.setProfile({});
+  }
+
+  setProfile(o = {}) {
+    const cls = o.engine && SIM_CLASS[o.engine] ? o.engine : o.car && SIM_CAR[o.car] ? SIM_CAR[o.car]
+      : (this.cls || 'i4t');
+    if (o.exhaust && SIM_EXH[o.exhaust]) this.exhaust = o.exhaust;
+    if (o.car) this.car = o.car;
+    if (o.sim) this.simOverride = { ...o.sim };
+    else if (o.engine || o.car) this.simOverride = null;
+    if (o.sound) this.sound = { ...(this.sound || {}), ...o.sound };
+    let cfg = this.simOverride || (!o.engine && this.car && simPick(this.car)) || SIM_CLASS[cls];
+    const snd = this.sound || {};
+    // sound kits (cosmetic): engine swap. NO_TURBO: never a turbo (anti-lag keeps its bangs, no flutter)
+    if (snd.swap && snd.swap !== 'default' && SWAPS.includes(snd.swap)) cfg = { ...cfg, engine: snd.swap };
+    cfg = { ...cfg, turbo: false };   // NO_TURBO: user said the turbo sound is bad -- never enable it (turbo kit ignored)
+    const key = JSON.stringify([cfg.engine, cfg.vehicle, !!cfg.turbo]);
+    if (key !== this.cfgKey || (!this.engine && !this.buildT)) {
+      this.cls = cls; this.cfg = cfg; this.cfgKey = key;
+      clearTimeout(this.buildT);          // debounce: car/backend changes in quick succession build once
+      this.buildT = setTimeout(() => { this.buildT = 0; if (!this.dead) this.build(); }, this.engine ? 180 : 0);
+    } else this.applyExhaust();
+  }
+
+  build() {
+    const cls = this.cls, cfg = this.cfg || SIM_CLASS[cls], key = this.cfgKey;
+    this.ready = false; this.inGear = false;
+    if (this.engine) { try { this.engine.dispose(); } catch { /* gone */ } this.engine = null; }
+    loadSim().then((m) => {
+      if (!m || this.dead || this.cfgKey !== key) return;
+      const E = m.EngineSim || m.default;
+      // combustion AudioWorklet everywhere (the sound the user picked); Engine Sim itself falls back to its
+      // PeriodicWave source if the worklet cannot load. setOption({liveWavetables: true}) forces the cheap source.
+      const eng = new E(ctx, { engine: cfg.engine, vehicle: cfg.vehicle, turbo: cfg.turbo, destination: this.out,
+        wavetables: !!opt.liveWavetables });
+      this.popDefault = eng._popDepth;
+      eng.setAutoShift(false);
+      if (!this.player) eng.setInputs({ distance: 0.4 });
+      this.engine = eng;
+      this.redline = 0; this.eRed = 0; this.prevTarget = 0;
+      this.applyExhaust();
+      return eng.start().then(() => {
+        if (this.engine !== eng) return;
+        this.ready = true;
+        if (eng.combustion) eng.combustion.onprocessorerror = () => liveFail('combustion worklet error');
+        else warnOnce('livewt', '[audio] LIVE engine is on the wavetable source (combustion worklet unavailable)');
+      });
+    }).catch((e) => { warnOnce('simstart', 'Engine Sim start failed', e); liveFail('start failed'); });
+  }
+
+  applyExhaust() {
+    const e = this.engine; if (!e) return;
+    const x = SIM_EXH[this.exhaust] || SIM_EXH.sport;
+    e.setInputs({ aggression: x.aggression, strain: 0 });
+    if (x.mix === false) { if (SimMod && SimMod.DEFAULT_MIX) e.setMix({ ...SimMod.DEFAULT_MIX, turbo: 0 }); }   // demo mix, no turbo
+    else e.setMix({ turbo: 0, transmission: 0.55 });   // gear whine back (turbo stays off)   // user: no gearbox whine at all   // its whistle/whine stay textures under the engine
+    e.setTone(x.tone);
+    e.setPopDepth(x.pop == null ? (this.popDefault ?? 1) : x.pop);
+    this.exVol = x.vol;
+  }
+
+  /** our shift -> its shift state machine (ignition cut, lash clunk, blow-off) */
+  /** launch: clutch in, first gear (before that it revs in neutral) */
+  launch() {
+    const e = this.engine; if (!e || !this.ready) return;
+    try { e.physics.selectGear(1); this.inGear = true; } catch { /* ignore */ }
+  }
+
+  shift() {
+    const e = this.engine; if (!e || !this.ready) return;
+    this.inGear = true;
+    const xs = SIM_EXH[this.exhaust] || {};
+    if (xs.charge) {   // our shifts keep the pedal down, so the shift's fuel cut is the 'lift': load the pipe for bangs
+      const ph = e.physics;
+      ph.popCharge = Math.min(3.4, (ph.popCharge || 0) + xs.charge); ph.dfcoEdge = 1; ph.egt = Math.max(ph.egt || 0, xs.heat);
+    }
+    try { if (!e.shiftUp()) { e.physics.selectGear(1); e.shiftUp(); } } catch { /* ignore */ }
+  }
+
+  update(p) {
+    const s = this.state;
+    if (p.rpm != null && isFinite(p.rpm)) s.rpm = clamp(p.rpm, 300, 20000);
+    if (p.maxRpm != null && isFinite(p.maxRpm)) s.maxRpm = Math.max(1000, p.maxRpm);
+    if (p.throttle != null && isFinite(p.throttle)) s.throttle = clamp(p.throttle, 0, 1);
+    s.load = p.load != null && isFinite(p.load) ? clamp(p.load, 0, 1) : s.throttle;
+    const now = performance.now();
+    const dt = this.lastT ? clamp((now - this.lastT) / 1000, 0.001, 0.1) : 1 / 60;
+    this.lastT = now; this.last = now;
+    ramp(this.out.gain, (this.player ? 1 : 0.38) * (this.exVol || 1), this.silent ? 0.08 : 0.05);
+    this.silent = false;
+    const e = this.engine;
+    if (!e || !this.ready) return;
+    const ph = e.physics;
+    // --- our rpm -> its rpm. Its resonators and firing are designed for its own rev range: if our car revs
+    // higher (hero 8200 vs a V8's 7000) map idle..redline onto its idle..redline instead of over-revving it.
+    const eIdle = e.profile.idleRpm || 800, eRed = this.eRed || (this.eRed = e.profile.redlineRpm || 7000);
+    const gIdle = GAME_IDLE[this.car] || 900;
+    const mapped = s.maxRpm > eRed * 1.03;
+    const target = mapped ? eIdle + (s.rpm - gIdle) * (eRed - eIdle) / Math.max(500, s.maxRpm - gIdle) : s.rpm;
+    const top = mapped ? eRed : s.maxRpm;
+    if (!mapped && Math.abs(this.redline - s.maxRpm) > 50) {   // same range: its limiter sits on ours
+      this.redline = s.maxRpm;
+      try { e.setParam('engine.redlineRpm', s.maxRpm + 60); } catch { /* ignore */ }
+    }
+    ph.throttle = s.throttle;
+    if (!this.inGear && ph.gear !== 0 && !ph.shifting) { try { ph.selectGear(0); } catch { /* ignore */ } }
+    let rpm;
+    if (!this.inGear) {
+      // staging / free revs (neutral): its own flywheel and idle control do the revving and the fall; we only
+      // steer it gently toward our tach so they stay together (forcing every frame made the fall ratchet)
+      const own = ph.we / RADS;
+      rpm = own + (target - own) * clamp(dt * 3, 0, 0.35);
+      ph.we = rpm * RADS;
+    } else {
+      rpm = target;
+      ph.we = rpm * RADS;
+      if (!ph.shifting && ph.gear > 0) {
+        ph.wg = ph.we;
+        const tr = ph.totalRatio;
+        if (tr > 0) { ph.ww = ph.we / tr; ph.wo = ph.ww * ph.fd; }
+      }
+    }
+    // exhaust tunes: on a lift put heat and unburnt fuel in its pipe so ITS pop model fires (flames stay in sync)
+    const xs = SIM_EXH[this.exhaust] || SIM_EXH.sport;
+    if (xs.charge && this.inGear) {
+      if (this.prevThrIn > 0.6 && s.throttle < 0.3) { ph.popCharge = Math.min(3.4, (ph.popCharge || 0) + xs.charge); ph.dfcoEdge = 1; ph.egt = Math.max(ph.egt || 0, xs.heat); }
+      else if (s.throttle < 0.1 && s.rpm > 2400) { ph.popCharge = Math.min(3.4, (ph.popCharge || 0) + xs.crackle * dt * 3); ph.egt = Math.max(ph.egt || 0, xs.heat * 0.9); }
+    }
+    this.prevThrIn = s.throttle;
+    // limiter only while pinned at the top with the pedal down -- never on a falling rev
+    const rising = target >= this.prevTarget - 1;
+    if (target >= top * 0.985 && s.throttle > 0.5 && rising && !(ph.limiterCut > 0)) ph.limiterCut = 0.05;
+    this.prevTarget = target;
+    const P = ph.step(dt, ctx.currentTime);
+    if (this.inGear) { P.rpm = rpm; ph.we = rpm * RADS; }
+    else rpm = P.rpm;                       // neutral: publish its own (free-revving) rpm
+    P.f0 = rpm / 120;
+    P.rpmNorm = clamp((rpm - eIdle) / Math.max(500, top - eIdle), 0, 1);
+    P.dRpm = (rpm - this.prevRpm) / dt;
+    P.limiter = target >= top * 0.985 && s.throttle > 0.5 ? 1 : 0;
+    if (s.throttle < 0.05) { P.evLash = 0; }  // no clunks on a lift
+    this.prevRpm = rpm; ph.prevRpm = rpm;
+    this.ownRpm = rpm;
+    e._evMisfire = 0;
+    e._writeParams(P, false);
+    e._lastParams = P;
+    const pops = e.takePops();
+    if (pops.length) { this.pops.push(...pops); if (this.pops.length > 32) this.pops.splice(0, this.pops.length - 32); }
+  }
+
+  fadeOut(tau = 0.12) { ramp(this.out.gain, 0, tau); this.silent = true; }
+
+  destroy() {
+    this.dead = true;
+    this.fadeOut(0.06);
+    const e = this.engine; this.engine = null;
+    setTimeout(() => { try { e && e.dispose(); } catch { /* ignore */ } try { this.pan.disconnect(); } catch { /* ignore */ } }, 400);
+  }
+}
+
+// ------------------------------------------------------------------------------------------------
+// BAKED engine: the LIVE Engine Sim recorded offline (tools/bake_engine.mjs), one set per Engine Sim engine + chassis
+// (twin cars share it). audio/baked/manifest.json (version 2):
+//   sets[name].on / .off   constant-rpm STEREO loops in gear (28 on / 14 off, idle..redline, whole engine cycles; its
+//                          stereo width and reverb are in them), sport pipe, pops held off. One loop per bus is audible.
+//   sets[name].free        off throttle in NEUTRAL (9, idle..75 %): staging lifts are fuelled, not an overrun cut
+//   lim[car]               the limiter bouncing at that car's top rpm: a loop, swapped in while pinned
+//   sets[name].cut         the live shift's ignition-cut gain envelope (5 ms steps)
+//   sets[name].ex[pipe]    eq: that pipe's measured tone vs the sport loops; lift.hi / lift.mid: lift-off bang/crackle
+//                          takes (with their pop times for the flames); shift: clunk + cut bang (+ the charge tunes'
+//                          bangs); crackle: the charge tunes' decel crackle (a loop)
+//   sets[name].whine       the gearbox whine alone, pitched per gear by k = teeth / ratio like the live layer
+// Our rpm is mapped onto its idle..redline exactly as SimVoice.update does, so pitch and timbre land where the live
+// engine puts them.
+/* MEMORY (KEEP_ALL_BAKED = false): decoded stereo is ~0.35 MB per second, a full set (51 loops x 2.7 s) ~49 MB, so only
+   what the engines play is decoded: the player's set in full, the rival's on every other loop (it is lowpassed and
+   quieter) plus each one's pipe one-shots, whine and limiter (~80 MB for both; the old mono bakes kept all 9 = ~61 MB). Everything else is released (releaseUnusedBaked). The
+   compressed bytes of ALL sets (~11 MB) are prefetched in the background once the audio manifest is in, so a new set
+   decodes from memory: main.js sets the rival's profile at race start (VS screen / staging, seconds before GO), the
+   garage sets the player's. Bytes are decoded from a copy, so a released set can be decoded again. */
+let bakedMan = null, bakedPromise = null;
+const bakedDec = new Map();   /* file -> Promise<AudioBuffer|null> while decoded (released files leave it) */
+function bakedFilesOf(m) {
+  const out = [];
+  for (const s of Object.values((m && m.sets) || {})) {
+    for (const x of [...(s.on || []), ...(s.off || []), ...(s.free || [])]) out.push(x.file);
+    if (s.whine) for (const k of ['on', 'off']) if (s.whine[k]) out.push(s.whine[k].file);
+    for (const e of Object.values(s.ex || {})) {
+      for (const b of Object.values(e.lift || {})) for (const x of b.shots || []) out.push(x.file);
+      for (const x of e.shift || []) out.push(x.file);
+      if (e.crackle) out.push(e.crackle.file);
+    }
+  }
+  for (const x of Object.values((m && m.lim) || {})) out.push(x.file);
+  return [...new Set(out)];
+}
+/* every set's bytes, 4 requests at a time, behind whatever an engine asked for first */
+function prefetchBaked(files) {
+  const q = files.filter((f) => !prefetched.has(f));
+  const next = () => { const f = q.shift(); if (f) fetchBytes(f).then(next); };
+  for (let i = 0; i < 4; i++) next();
+}
+function loadBaked() {
+  if (!bakedPromise) {
+    bakedPromise = fetch(new URL('baked/manifest.json', BASE), { cache: 'no-cache' })
+      .then((r) => { if (!r.ok && r.status !== 0) throw new Error(`HTTP ${r.status}`); return r.json(); })
+      .then((m) => { if (!m || !(m.version >= 2)) throw new Error('old manifest'); return m; })
+      .catch((e) => { warnOnce('bakedman', 'no audio/baked/manifest.json, engines use the classic loops:', e.message || e); return null; })
+      .then((m) => { bakedMan = m; if (m) setTimeout(() => prefetchBaked(bakedFilesOf(m)), 0); return m; });
+  }
+  return bakedPromise;
+}
+function bakedLoad(file) {
+  if (!bakedDec.has(file)) {
+    const p = fetchBytes(file)
+      .then((ab) => (ab ? decode(ab.slice(0)) : null))
+      .then((b) => { if (b && bakedDec.get(file) === p) buffers.set(file, b); return b; })
+      .catch((e) => { warnOnce(file, `could not decode ${file}:`, e.message || e); return null; });
+    bakedDec.set(file, p);
+  }
+  return bakedDec.get(file);
+}
+const KEEP_ALL_BAKED = false;
+/* drop every decoded baked file no engine wants now (playing sources keep their buffer until they stop) */
+function releaseUnusedBaked() {
+  if (KEEP_ALL_BAKED) return;
+  const keep = new Set(); engines.forEach((v) => { if (v.files) v.files.forEach((f) => keep.add(f)); });
+  for (const f of [...bakedDec.keys()]) if (!keep.has(f)) { bakedDec.delete(f); buffers.delete(f); }
+}
+/* a car without a baked set (or a set that failed to load): this engine becomes the classic sample engine */
+function bakedMissing(v, why) {
+  warnOnce('bakedmiss:' + why, 'no baked engine for', why, '- using the classic loops');
+  setTimeout(() => {
+    if (engines.get(v.id) !== v) return;
+    const prof = { car: v.car, engine: v.car ? undefined : v.baseCls, exhaust: v.exhaust, sound: v.sound };
+    v.destroy();
+    const nv = new EngineVoice(v.id); engines.set(v.id, nv); nv.setProfile(prof);
+  }, 0);
+}
+const RIVAL_DIST = 0.4;   /* SimVoice puts the rival at Engine Sim distance 0.4: air lowpass + spreading loss + more room */
+// ONE loop per bus is audible; a switch is a short timed fade (T_XF), never a held blend. Two copies of correlated engine
+// audio at a slowly drifting offset comb-filter into a sweeping "jet" whoosh. The worst case: the rival on the SAME
+// recordings as the player (twin cars share a set: red/neon, silver/drift, cop/black) at almost the same rpm.
+// The rival then avoids the loop the player is on (ban), so both engines never play one file at once (also the limiter).
+const T_XF = 0.02;      /* loop switch / on-off switch fade (~60 ms to 95 %) */
+const XF_HYST = 0.12;   /* switch to the next loop 12 % of a loop step past the midpoint: no flapping on a steady rpm */
+/* the rival's air lowpass. The bakes are flow noise above ~1.5 kHz (harmonics only 0-5 dB over it below 4000 rpm): at the
+   old 6.9 kHz cut, with its rumble masked by the player's engine, that pitched noise band WAS the rival, a rising jet whoosh */
+const RIVAL_LP = 2600;
+const twinSets = (a, b) => !!a && !!b && (a === b || (a.engine === b.engine && a.vehicle === b.vehicle));
+/* the pipe EQ (vs the sport loops) the bake fits per set and exhaust: tools/bake_engine.mjs EQ_F, same order */
+const BAKED_EQ = [['lowshelf', 150, 0.7], ['peaking', 350, 1.2], ['peaking', 1000, 1.0], ['peaking', 2800, 1.2], ['peaking', 5600, 1.2], ['highshelf', 10000, 0.7]];
+const NEUTRAL_FALL = 3;   /* 1 / s: SimVoice's neutral steering clamp(dt * 3) */
+const halfList = (L) => L.filter((_, k) => k % 2 === 0 || k === L.length - 1);   /* the rival's loops */
+/* the rival's extra room: Engine Sim distance 0.4 raises its reverb mix 0.14 -> 0.26 (Reverb.setExtra). The bakes carry
+   the 0.14; this shared send adds the difference (equal-power wet 0.40 vs 0.22, x1.4 = 0.25; dry 0.98 -> 0.92 in the
+   rival's level). Same room: 0.81 s noise IR, decay 4.9, highpass 110 Hz, damping 4.2 kHz. */
+let rivalRoomIn = null;
+function rivalRoom() {
+  if (rivalRoomIn) return rivalRoomIn;
+  const len = Math.floor(ctx.sampleRate * 0.81), ir = ctx.createBuffer(2, len, ctx.sampleRate);
+  for (let ch = 0; ch < 2; ch++) { const d = ir.getChannelData(ch); for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 4.9); }
+  const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 110;
+  const conv = ctx.createConvolver(); conv.normalize = true; conv.buffer = ir;
+  const damp = ctx.createBiquadFilter(); damp.type = 'lowpass'; damp.frequency.value = 4200; damp.Q.value = 0.7;
+  const wet = ctx.createGain(); wet.gain.value = 0.25;
+  hp.connect(conv).connect(damp).connect(wet).connect(engineBus);
+  rivalRoomIn = hp;
+  return hp;
+}
+
+class BakedVoice {
+  constructor(id) {
+    this.id = id;
+    this.player = id === 'player';
+    this.baked = true;
+    /* loops -> pipe EQ (vs sport) -> makeup -> cut (shift / limiter) -> sum; whine -> cut; one-shots + crackle -> ev -> sum */
+    this.out = ctx.createGain(); this.out.gain.value = 0;
+    this.eq = BAKED_EQ.map(([type, f, q]) => { const b = ctx.createBiquadFilter(); b.type = type; b.frequency.value = f; b.Q.value = q; return b; });
+    this.shelf = this.eq[0];   /* the chain's input */
+    this.makeup = ctx.createGain();
+    this.cut = ctx.createGain();
+    this.whineG = ctx.createGain();
+    this.ev = ctx.createGain();
+    this.sum = ctx.createGain();
+    this.air = ctx.createBiquadFilter(); this.air.type = 'lowpass'; this.air.Q.value = this.player ? 0.5 : 0.6;
+    this.air.frequency.value = this.player ? 20000 : RIVAL_LP;
+    this.pan = makePanner(this.player ? 0 : 0.3);
+    this.onBus = ctx.createGain(); this.offBus = ctx.createGain(); this.offBus.gain.value = 0; this.freeBus = ctx.createGain(); this.freeBus.gain.value = 0;
+    this.onBus.connect(this.shelf); this.offBus.connect(this.shelf); this.freeBus.connect(this.shelf);
+    this.eq.reduce((a, b) => a.connect(b)).connect(this.makeup).connect(this.cut).connect(this.sum);
+    this.whineG.connect(this.cut);
+    this.ev.connect(this.sum);
+    this.sum.connect(this.air).connect(this.out).connect(this.pan).connect(engineBus);
+    if (!this.player) this.out.connect(rivalRoom());
+    this.layersOn = []; this.layersOff = []; this.layersFree = []; this.weights = null;
+    this.cur = { on: -1, off: -1, free: -1 }; this.forced = { on: false, off: false, free: false }; this.useOn = false; this.rLast = 0;   /* audible loop per bus, which bus */
+    this.limL = null; this.crkL = null; this.whL = null; this.ex = null; this.limE = null; this.files = [];
+    this.state = { rpm: 900, maxRpm: 8000, throttle: 0, load: 0 };
+    this.cls = null; this.exhaust = 'sport'; this.set = null; this.setName = null; this.ready = false;
+    this.last = 0; this.lastT = 0; this.silent = true; this.nextCut = 0; this.prevThr = 0; this.pinned = false;
+    this.inGear = false; this.gear = 0; this.heat = 0; this.lastTake = {};
+    this.pops = [];
+    this.applyExhaust();
+  }
+
+  /** {car, engine, exhaust, sound} -> pick the car's baked set (an engine-swap kit picks a set with that engine). */
+  setProfile(o = {}) {
+    if (o.car) { this.car = o.car; this.inGear = false; this.gear = 0; }   /* a race starts in neutral (staging) */
+    if (o.engine && !o.car) this.baseCls = o.engine;
+    if (o.sound) this.sound = { ...(this.sound || {}), ...o.sound };
+    if (o.exhaust && SIM_EXH[o.exhaust]) this.exhaust = o.exhaust;
+    if (manifest) this.cls = classOf(this.car ? { car: this.car } : { engine: this.baseCls });
+    if (!this.car && !this.baseCls) return;      /* nothing to play yet */
+    loadBaked().then((m) => {
+      if (this.dead) return;
+      const name = this.pickSet(m);
+      if (!name) { bakedMissing(this, this.car || this.baseCls); return; }
+      const set = m.sets[name], ex = (set.ex && (set.ex[this.exhaust] || set.ex.sport)) || null;
+      const limCar = this.car && m.cars[this.car] === name ? this.car : Object.keys(m.lim || {}).find((c) => m.cars[c] === name);
+      const lim = (limCar && m.lim[limCar]) || null;
+      const sub = (L) => (this.player ? L || [] : halfList(L || []));
+      const on = sub(set.on), off = sub(set.off), free = sub(set.free);
+      const loops = [...on, ...off, ...free].map((x) => x.file), extra = [];
+      if (lim) extra.push(lim.file);
+      if (set.whine) for (const k of ['on', 'off']) if (set.whine[k]) extra.push(set.whine[k].file);
+      if (ex) {
+        for (const b of Object.values(ex.lift || {})) for (const x of b.shots || []) extra.push(x.file);
+        for (const x of ex.shift || []) extra.push(x.file);
+        if (ex.crackle) extra.push(ex.crackle.file);
+      }
+      const files = [...loops, ...extra], key = files.join('|');
+      if (name === this.setName && key === this.filesKey) { this.applyExhaust(); return; }
+      if (name !== this.setName) { this.dropLayers(); this.setName = name; this.set = set; }
+      this.dropExtras();
+      this.files = files; this.filesKey = key; this.ex = ex; this.limE = lim;
+      this.applyExhaust();
+      releaseUnusedBaked();   /* before decoding the new set: the old one's memory goes first */
+      const tag = this.tag = {};
+      Promise.all(loops.map(bakedLoad)).then((b) => {
+        if (this.dead || this.tag !== tag) return;
+        if (!b.every(Boolean)) { bakedMissing(this, name + ' (load failed)'); return; }
+        if (!this.layersOn.length) this.attachSamples(on, off, free);
+        return Promise.all(extra.map(bakedLoad)).then(() => { if (!this.dead && this.tag === tag) this.attachExtras(); });
+      });
+    });
+  }
+
+  pickSet(m) {
+    if (!m || !m.sets) return null;
+    const own = this.car && m.cars && m.cars[this.car];
+    const sw = this.sound && this.sound.swap;
+    if (sw && sw !== 'default') {   /* cosmetic engine swap: a set recorded with that Engine Sim engine (same chassis if there is one) */
+      const veh = own && m.sets[own] ? m.sets[own].vehicle : null;
+      const c = Object.keys(m.sets).filter((k) => m.sets[k].engine === sw);
+      const pick = c.find((k) => m.sets[k].vehicle === veh) || c[0];
+      if (pick) return pick;
+    }
+    if (own && m.sets[own]) return own;
+    if (!this.car && this.baseCls) {   /* only an engine class: the first car with that class */
+      const car = Object.keys(SIM_CAR).find((k) => SIM_CAR[k] === this.baseCls && m.cars[k] && m.sets[m.cars[k]]);
+      if (car) return m.cars[car];
+    }
+    return null;
+  }
+
+  /* the pipe: its measured EQ vs the sport loops + its level (SimVoice: out gain x vol); one-shots were baked with it */
+  applyExhaust(name) {
+    if (name && SIM_EXH[name]) this.exhaust = name;
+    const x = SIM_EXH[this.exhaust] || SIM_EXH.sport, eq = this.ex && this.ex.eq;
+    this.eq.forEach((b, i) => ramp(b.gain, (eq && eq.g && eq.g[i]) || 0, 0.05));
+    ramp(this.makeup.gain, x.vol * (eq ? Math.pow(10, eq.level / 20) : 1), 0.05);
+    ramp(this.ev.gain, x.vol, 0.05);
+  }
+
+  dropLayers() {
+    const t = ctx.currentTime;
+    [...this.layersOn, ...this.layersOff, ...this.layersFree].forEach((l) => { try { ramp(l.g.gain, 0, 0.03); l.src.stop(t + 0.2); } catch { /* ignore */ } });
+    this.layersOn = []; this.layersOff = []; this.layersFree = []; this.weights = null; this.ready = false;
+    this.cur = { on: -1, off: -1, free: -1 }; this.forced = { on: false, off: false, free: false };
+  }
+
+  dropExtras() {
+    const t = ctx.currentTime;
+    const ls = [this.limL, this.crkL, ...(this.whL ? [this.whL.on, this.whL.off] : [])].filter(Boolean);
+    ls.forEach((l) => { try { ramp(l.g.gain, 0, 0.03); l.src.stop(t + 0.2); } catch { /* ignore */ } });
+    this.limL = null; this.crkL = null; this.whL = null;
+  }
+
+  loopSrc(x, dest) {
+    const buf = x && buffers.get(x.file);
+    if (!buf) return null;
+    const src = ctx.createBufferSource();
+    src.buffer = buf; src.loop = true; src.loopStart = x.loopStart; src.loopEnd = x.loopEnd;
+    const g = ctx.createGain(); g.gain.value = 0;
+    src.connect(g).connect(dest);
+    src.start(ctx.currentTime, x.loopStart + Math.random() * (x.loopEnd - x.loopStart));   /* random phase: player and rival never comb */
+    return { e: x, src, g, rpm: x.erpm };
+  }
+
+  attachSamples(on = this.player ? this.set.on : halfList(this.set.on), off = this.player ? this.set.off : halfList(this.set.off), free = []) {
+    if (this.layersOn.length || this.dead || !this.set) return;
+    const mk = (list, bus) => list.map((x) => this.loopSrc(x, bus)).filter(Boolean).sort((a, b) => a.rpm - b.rpm);
+    this.layersOn = mk(on, this.onBus);
+    this.layersOff = mk(off, this.offBus);
+    this.layersFree = mk(free, this.freeBus);   /* off throttle in neutral (staging): fuelled, no overrun cut */
+    /* perf (Note 9, 2026-11-15: sound stutter): every loop of the set ran at once (player 51 + rival 26 resampling sources,
+       1-2 audible), the Web Audio thread sat at ~78 % of a core and underran. A loop is now only connected (= rendered)
+       while it is the picked one or still fading out; the rest are parked (disconnected, cost nothing) */
+    for (const l of [...this.layersOn, ...this.layersOff, ...this.layersFree]) { try { l.src.disconnect(); } catch { /* */ } l.live = false; }
+    this.ready = this.layersOn.length > 0;
+  }
+
+  attachExtras() {
+    if (this.dead || !this.set) return;
+    this.dropExtras();
+    this.limL = this.loopSrc(this.limE, this.shelf);   /* the limiter is the sport pipe too: same EQ as the loops */
+    this.crkL = this.ex && this.ex.crackle ? this.loopSrc(this.ex.crackle, this.ev) : null;
+    const w = this.set.whine;
+    this.whL = w ? { on: this.loopSrc(w.on, this.whineG), off: this.loopSrc(w.off, this.whineG) } : null;
+  }
+
+  /* a random take, never the same one twice in a row */
+  take(list, key) {
+    if (!list || !list.length) return null;
+    let k = Math.floor(Math.random() * list.length);
+    if (list.length > 1 && k === this.lastTake[key]) k = (k + 1) % list.length;
+    this.lastTake[key] = k;
+    return list[k];
+  }
+
+  /* a baked one-shot (lift-off / shift), with its pops for the exhaust flames */
+  shot(x, gain) {
+    const buf = x && buffers.get(x.file);
+    if (!buf) return;
+    const t = ctx.currentTime, src = ctx.createBufferSource(), g = ctx.createGain();
+    src.buffer = buf; g.gain.value = gain;
+    src.connect(g).connect(this.ev);
+    src.onended = () => { try { g.disconnect(); } catch { /* gone */ } };
+    src.start(t);
+    for (const [pt, amp] of x.pops || []) this.pops.push({ time: t + pt, amp: clamp(amp * gain, 0, 1) });
+    if (this.pops.length > 32) this.pops.splice(0, this.pops.length - 32);
+  }
+
+  /** our shift: the live shift's measured ignition cut + its clunk / cut bang one-shot */
+  shift() {
+    const t = ctx.currentTime, c = this.set && this.set.cut;
+    const nG = (this.set && this.set.whine && this.set.whine.k.length) || 6;
+    this.gear = this.inGear ? Math.min(nG, this.gear + 1) : 2;   /* SimVoice: shiftUp, or 1st then up from neutral */
+    this.inGear = true;
+    const dip = () => { this.cut.gain.cancelScheduledValues(t); this.cut.gain.setTargetAtTime(0.3, t, 0.006); this.cut.gain.setTargetAtTime(1, t + 0.07, 0.025); };
+    try {
+      if (c && c.g && c.g.length > 2) {
+        this.cut.gain.cancelScheduledValues(t);
+        this.cut.gain.setValueAtTime(this.cut.gain.value, t);
+        this.cut.gain.setValueCurveAtTime(Float32Array.from(c.g), t + 0.003, c.g.length * c.dt);
+      } else dip();
+    } catch { try { dip(); } catch { /* ignore */ } }
+    this.nextCut = 0;
+    this.shot(this.take(this.ex && this.ex.shift, 'shift'), 1);
+  }
+
+  /** launch: clutch in, first gear (staging before it is neutral: no lift-off bangs, no whine) */
+  launch() { this.inGear = true; this.gear = 1; }
+
+  /* lift-off: a baked bang/crackle take by rpm. Live: it lights only on a hot pipe (EGT > 0.42), more often and louder
+     with heat and revs; the takes were recorded at EGT b.egt and shots / tries of them banged */
+  lift(r, top) {
+    const L = this.ex && this.ex.lift, egt = this.heat;
+    if (!L || egt < 0.42) return;
+    const b = r >= 0.75 * top ? L.hi : r >= 0.42 * top ? L.mid : null;
+    if (!b || !b.shots || !b.shots.length) return;
+    const ref = b.egt || 0.75, p = (b.shots.length / (b.tries || b.shots.length)) * clamp((egt - 0.42) / Math.max(0.05, ref - 0.42), 0, 1);
+    if (Math.random() > p) return;
+    const g = clamp(Math.pow(r / b.erpm, 1.7), 0.35, 1.15) * clamp((egt - 0.35) / (ref - 0.35), 0.3, 1.2);
+    this.shot(this.take(b.shots, b === L.hi ? 'hi' : 'mid'), g);
+  }
+
+  /* fractional loop index of rpm r (0 .. n-1, log rpm between neighbours) */
+  static pos(L, r) {
+    const n = L.length;
+    if (n < 2 || r <= L[0].rpm) return 0;
+    if (r >= L[n - 1].rpm) return n - 1;
+    let i = 0;
+    while (i < n - 2 && L[i + 1].rpm <= r) i++;
+    return i + clamp(Math.log(r / L[i].rpm) / Math.log(L[i + 1].rpm / L[i].rpm), 0, 1);
+  }
+
+  /* the one loop to play at position x: keep cur inside its hysteresis band, else the nearest; never 'ban' (-1: none) */
+  static pick(n, x, cur, ban, forced) {
+    const tol = forced && ban >= 0 && Math.abs(x - ban) < 1 ? 1.15 : 0.5 + XF_HYST;   /* a forced neighbour holds while the ban is near */
+    if (cur >= 0 && cur < n && cur !== ban && Math.abs(x - cur) <= tol) return { k: cur, forced };
+    const near = clamp(Math.round(x), 0, n - 1);
+    let k = near;
+    if (k === ban) { k = x >= ban ? ban + 1 : ban - 1; if (k < 0) k = ban + 1; if (k >= n) k = ban - 1; if (k < 0 || k >= n) k = near; }
+    return { k, forced: k !== near };
+  }
+
+  /* rival on the player's (twin) recordings: the index of the loop the player plays now in list L (kind 'mine'), else -1 */
+  banIn(L, mine) {
+    if (this.player) return -1;
+    const p = engines.get('player');
+    if (!p || !p.baked || !p.ready || !twinSets(p.set, this.set)) return -1;
+    const key = p.useOn ? 'on' : p.offKey || 'off', PL = key === 'on' ? p.layersOn : key === 'free' ? p.layersFree : p.layersOff, pk = p.cur[key];
+    if (mine !== key || !PL[pk]) return -1;   /* only the same kind of recording can be the same file */
+    const rpm = PL[pk].rpm;
+    return L.findIndex((l) => Math.abs(l.rpm - rpm) < rpm * 0.02);
+  }
+
+  /* rival: the player is on the same limiter recording right now -> chop the loops instead */
+  limBanned() {
+    if (this.player) return false;
+    const p = engines.get('player');
+    return !!(p && p.baked && p.pinned && p.limL && this.limE && p.limL.e.file === this.limE.file);
+  }
+
+  update(p) {
+    const s = this.state;
+    if (p.rpm != null && isFinite(p.rpm)) s.rpm = clamp(p.rpm, 300, 20000);
+    if (p.maxRpm != null && isFinite(p.maxRpm)) s.maxRpm = Math.max(1000, p.maxRpm);
+    if (p.throttle != null && isFinite(p.throttle)) s.throttle = clamp(p.throttle, 0, 1);
+    s.load = p.load != null && isFinite(p.load) ? clamp(p.load, 0, 1) : s.throttle;
+    const t = ctx.currentTime, now = performance.now();
+    const dt = this.lastT ? clamp((now - this.lastT) / 1000, 0.001, 0.1) : 1 / 60;
+    this.last = now; this.lastT = now;
+    const thr = s.throttle;
+    /* the live engine's level: player 1, rival 0.38 x distance loss x the dry share of its bigger room (pipe level is in makeup) */
+    ramp(this.out.gain, this.player ? 1 : 0.38 / (1 + 2.6 * RIVAL_DIST) * 0.94, this.silent ? 0.08 : 0.05);
+    this.silent = false;
+    const set = this.set;
+    if (!set || !this.layersOn.length) return;
+    /* our rpm -> Engine Sim rpm (SimVoice.update): map idle..redline when our car revs past its redline */
+    const eIdle = set.eIdle, eRed = set.eRed, gIdle = GAME_IDLE[this.car] || set.gIdle || 900;
+    const mapped = s.maxRpm > eRed * 1.03;
+    let r = mapped ? eIdle + (s.rpm - gIdle) * (eRed - eIdle) / Math.max(500, s.maxRpm - gIdle) : s.rpm;
+    const top = mapped ? eRed : s.maxRpm;
+    /* staging (neutral): SimVoice lets its own flywheel rev and only steers it toward our tach by dt x 3 per frame, so a
+       blip falls back slower than the tach shows; follow that lag (rises nearly at once: its flywheel spins up fast) */
+    if (!this.inGear && this.rN) r = this.rN + (r - this.rN) * clamp(dt * (r > this.rN ? 14 : NEUTRAL_FALL), 0, 1);
+    this.rN = r;
+    const rn = clamp((r - eIdle) / Math.max(500, top - eIdle), 0, 1);
+    /* pipe heat = the live EGT model (physics.js _stepExhaustThermal): 5 s to heat, 26 s to cool; a cold pipe does not bang */
+    const ht = clamp(0.12 + 0.88 * Math.pow(thr, 0.6) * (0.35 + 0.65 * rn), 0, 1);
+    this.heat += (ht - this.heat) * clamp(dt / (ht > this.heat ? 5 : 26), 0, 1);
+    /* on OR off throttle, never both (the on/off loops of one rpm are near copies: a blend combs); hysteresis on the pedal */
+    if (this.useOn ? thr < 0.08 : thr > 0.15) this.useOn = !this.useOn;
+    /* pinned on the limiter: the limiter recording replaces the on-throttle loop */
+    const pinned = !!this.limL && this.useOn && thr > 0.5 && r >= top * 0.985 && !this.limBanned();
+    this.pinned = pinned;
+    const r0 = this.rLast || r;
+    this.offKey = !this.inGear && this.layersFree.length ? 'free' : 'off';   /* staging lifts are fuelled free revs */
+    for (const [L, bus, key, lvl] of [[this.layersOn, this.onBus, 'on', this.useOn && !pinned ? Math.sqrt(thr) : 0],
+      [this.layersOff, this.offBus, 'off', !this.useOn && this.offKey === 'off' ? 1 : 0], [this.layersFree, this.freeBus, 'free', !this.useOn && this.offKey === 'free' ? 1 : 0]]) {
+      if (!L.length) continue;
+      const prev = this.cur[key], pk = BakedVoice.pick(L.length, BakedVoice.pos(L, r), prev, this.banIn(L, key), this.forced[key]);
+      this.cur[key] = pk.k; this.forced[key] = pk.forced;
+      L.forEach((l, k) => {
+        const on = k === pk.k;
+        if (on && !l.live) { try { l.src.connect(l.g); } catch { /* */ } l.live = true; }
+        if (!l.live) return;   /* parked: silent and not rendered */
+        if (on && k !== prev) {   /* fading in: start at the pitch the outgoing loop plays now, so the switch is pitch-locked */
+          l.src.playbackRate.cancelScheduledValues(t);
+          l.src.playbackRate.setValueAtTime(clamp(r0 / l.rpm, 0.5, 2), t);
+        }
+        ramp(l.g.gain, on ? (l.e.gain || 1) : 0, prev < 0 ? T_GAIN : T_XF);
+        if (on || l.g.gain.value > 0.001) ramp(l.src.playbackRate, clamp(r / l.rpm, 0.5, 2), T_RATE);
+        else if (l.g.gain.value < 0.0005) { try { l.src.disconnect(); } catch { /* */ } l.live = false; }   /* faded out: park it */
+      });
+      if (L === this.layersOn) this.weights = L.map((_, k) => (k === pk.k ? 1 : 0));
+      ramp(bus.gain, lvl, T_XF);
+    }
+    if (this.limL) {
+      ramp(this.limL.g.gain, pinned ? Math.sqrt(thr) * (this.limL.e.gain || 1) : 0, T_XF);
+      ramp(this.limL.src.playbackRate, clamp(r / this.limL.rpm, 0.5, 2), T_RATE);
+    }
+    this.rLast = r;
+
+    /* lift-off (in gear: staging revs are in neutral, where the live engine does not bang either) */
+    if (this.inGear && this.prevThr > 0.6 && thr < 0.3) this.lift(r, top);
+    this.prevThr = thr;
+    /* the charge tunes keep crackling on a closed throttle above 2400 rpm (SimVoice feeds their pipe) */
+    if (this.crkL) ramp(this.crkL.g.gain, this.inGear && thr < 0.1 && s.rpm > 2400 ? clamp(r / this.crkL.rpm, 0.5, 1.3) : 0, 0.35);
+    /* gearbox whine: in gear only, pitched by gear like the live layer (mesh = shaft rpm x teeth) */
+    if (this.whL && set.whine) {
+      const W = set.whine, k = W.k, g = this.inGear ? clamp(this.gear || 1, 1, k.length) : 0;
+      const rate = g ? clamp((r / W.erpm) * (k[g - 1] / k[W.gear - 1]), 0.25, 4) : 1;
+      for (const [key, l] of [['on', this.whL.on], ['off', this.whL.off]]) {
+        if (!l) continue;
+        const want = g && (key === 'on') === this.useOn ? 1 : 0;
+        ramp(l.g.gain, want, 0.05);
+        if (want || l.g.gain.value > 0.001) ramp(l.src.playbackRate, rate, T_RATE);
+      }
+    }
+
+    /* no limiter recording (or the player is on it): rhythmic fuel cut on the loops while pinned */
+    if (!pinned && r >= top * 0.985 && thr > 0.5) {
+      if (t >= this.nextCut) {
+        const off = 0.032 + Math.random() * 0.012;
+        this.cut.gain.cancelScheduledValues(t);
+        this.cut.gain.setTargetAtTime(0.12, t, 0.005);
+        this.cut.gain.setTargetAtTime(1, t + off, 0.007);
+        this.nextCut = t + off + 0.05 + Math.random() * 0.02;
+      }
+    } else if (this.nextCut) {
+      this.cut.gain.cancelScheduledValues(t);
+      ramp(this.cut.gain, 1, 0.01);
+      this.nextCut = 0;
+    }
+  }
+
+  fadeOut(tau = 0.12) { ramp(this.out.gain, 0, tau); this.silent = true; }
+
+  destroy() {
+    this.dead = true;
+    this.fadeOut(0.06);
+    const t = ctx.currentTime + 0.5;
+    [...this.layersOn, ...this.layersOff, ...this.layersFree, this.limL, this.crkL, ...(this.whL ? [this.whL.on, this.whL.off] : [])]
+      .forEach((l) => { try { if (l) l.src.stop(t); } catch { /* already stopped */ } });
+    this.files = [];
+    setTimeout(() => { try { this.pan.disconnect(); } catch { /* ignore */ } try { this.out.disconnect(); } catch { /* ignore */ } releaseUnusedBaked(); }, 700);
+  }
+}
+
+// One Engine Sim costs ~30 % of a desktop core (two ~50 %): that is why normal play uses the BAKED loops everywhere.
+const COARSE = (() => { try { return matchMedia('(pointer: coarse)').matches; } catch { return false; } })();
+const ENG_LABEL = { live: 'LIVE', sim: 'SIM', classic: 'CLASSIC', baked: 'BAKED' };
+function updateEngineButtons() {
+  try {
+    document.querySelectorAll('[data-eng-switch]').forEach((b) => {
+      const s = b.querySelector('span') || b; s.textContent = 'ENGINE: ' + ENG_LABEL[engMode];
+    });
+  } catch { /* no DOM */ }
+}
+function bindEngineButtons() {
+  try {
+    document.querySelectorAll('[data-eng-switch]').forEach((b) => {
+      if (b._engBound) return;
+      b._engBound = true;
+      b.addEventListener('pointerdown', (e) => e.stopPropagation());
+      b.addEventListener('click', (e) => {
+        e.stopPropagation(); e.preventDefault();
+        Audio.init();
+        Audio.setEngineBackend(BACKENDS[(BACKENDS.indexOf(engMode) + 1) % BACKENDS.length]);
+        Audio.play('ui_click');
+        Audio.play('rev_blip', { volume: 0.7 });
+      });
+    });
+    updateEngineButtons();
+  } catch { /* no DOM */ }
+}
+if (typeof document !== 'undefined') {
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bindEngineButtons); else bindEngineButtons();
+}
+
+// Engine Sim broke (worklet error / start failure): drop to the next backend for the rest of the session.
+function liveFail(why) {
+  if (liveFailed) return;
+  liveFailed = true; liveFailReason = String(why || 'unknown');
+  warnOnce('livefail', '[audio] LIVE engine disabled:', why);
+  try {
+    for (const [id, v] of [...engines]) {
+      if (!v.sim) continue;
+      const prof = { car: v.car, engine: v.car ? undefined : v.cls, exhaust: v.exhaust };
+      v.destroy(); engines.delete(id);
+      const nv = makeVoice(id); engines.set(id, nv); nv.setProfile(prof);   /* live (dev only) -> baked -> classic */
+    }
+  } catch (e) { warnOnce('livefail2', 'fallback failed', e); }
+}
+
+function makeVoice(id) {
+  if (engMode === 'live' && !liveFailed) return new SimVoice(id);   /* dev-only A/B: the procedural engine */
+  if (engMode === 'baked') return new BakedVoice(id);   /* default everywhere; swaps itself for classic if its car has no set */
+  return new EngineVoice(id);   /* classic samples */
+}
+
+function startWatchdog() {
+  if (watchdog) return;
+  watchdog = setInterval(() => {
+    const t = performance.now();
+    engines.forEach((v) => { if (!v.silent && t - v.last > 450) v.fadeOut(0.15); });
+    let live = false;
+    engines.forEach((v) => { if (!v.silent) live = true; });
+    const inRace = live && musicState.name === 'race';   // menus idle the engine too: only duck under race music
+    if (ctx && bedM) ramp(bedM.gain, inRace ? 0.5 : 1, inRace ? 0.15 : 0.6);
+    loops.forEach((r, n) => {
+      if (LOOP_AUTOFADE.has(n) && r.g && r.lastSet && t - r.lastSet > 500 && r.vol > 0) { r.vol = 0; ramp(r.g.gain, 0, 0.3); }
+    });
+    if (raceLast && t - raceLast > 450) { raceLast = 0; ['turbo', 'gear_whine'].forEach((n) => Audio.setLoopVolume(n, 0)); }
+    if (ctx && duckUntil && ctx.currentTime > duckUntil) { duckUntil = 0; ramp(duckM.gain, 1, 0.12); ramp(duckE.gain, 1, 0.12); }
+  }, 100);
+}
+
+// ------------------------------------------------------------------------------------------------
+// Speech: announcer lines (say) and the cast (voice). One speaker at a time.
+// ------------------------------------------------------------------------------------------------
+const COUNT = new Set(['ready', 'three', 'two', 'one', 'go']);
+let lastReady = '';
+/** A start line for this race: ready, ready2..ready6 (whichever the voice has), never the same one twice in a row. */
+function pickReady(who) {
+  const have = ['ready', 'ready2', 'ready3', 'ready4', 'ready5', 'ready6'].filter((k) => manifest && manifest.cast?.[who]?.[k] && castLine(who, k));
+  const pool = have.length > 1 ? have.filter((k) => k !== lastReady) : have;
+  lastReady = pool.length ? pool[Math.floor(Math.random() * pool.length)] : 'ready';
+  return lastReady;
+}
+const PRI = { go: 100, three: 95, two: 95, one: 95, ready: 90, photo_finish: 82, win: 80, lose: 80, new_record: 78,
+  boss_race: 75, perfect_launch: 60, perfect_shift: 50, nitro: 40, upgrade_complete: 30, welcome: 20 };
+const ALIAS = { you_win: 'win', you_lose: 'lose', welcome_to_drag_nights_race: 'welcome', san: 'three', ni: 'two',
+  ichi: 'one', ikuzo: 'go', '3': 'three', '2': 'two', '1': 'one' };
+const lineKey = (s) => { const k = String(s).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, ''); return ALIAS[k] || k; };
+
+function duck(seconds, level = 0.6) {
+  const t = ctx.currentTime;
+  ramp(duckM.gain, level, 0.03); ramp(duckE.gain, level, 0.03);
+  duckUntil = Math.max(duckUntil, t + seconds + 0.1);
+}
+
+function speak(buf, gain, pri, kind, deep = false, rate = 1, tilt = 0) {
+  if (speech && ctx.currentTime < speech.end) { try { ramp(speech.g.gain, 0, 0.015); speech.src.stop(ctx.currentTime + 0.06); } catch { /* ignore */ } }
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  const r = clamp(Number(rate) || 1, 0.8, 1.25);
+  src.playbackRate.value = r;
+  const g = ctx.createGain(); g.gain.value = gain;
+  let node = src;
+  if (tilt) {   // per-speaker colour: a gentle high shelf (+/- dB) so shared voices differ a little more
+    const f = ctx.createBiquadFilter(); f.type = 'highshelf'; f.frequency.value = 2200; f.gain.value = clamp(tilt, -6, 6);
+    node = node.connect(f);
+  }
+  node.connect(g).connect(voiceBus);
+  src.start();
+  const dur = buf.duration / r;
+  speech = { src, g, pri, kind, end: ctx.currentTime + dur };
+  duck(dur, deep ? 0.32 : 0.6);   // countdown words punch through the revving engines
+  return dur;
+}
+
+// ---- nitro: heavy hit (sub thump + valve crack + whoosh), thick roar while burning, pop + hiss at the end ----
+let nitro = { on: false, t0: 0 };
+let previewState = null, previewSeq = 0;   // garage sound preview (owns the player engine while it runs)
+const GAME_REDLINE = { car_hero: 8200, car_silver: 7600, car_yellow: 8800, car_neon: 8600, car_red: 7400, car_cyan: 8400, car_black: 7200, car_cop: 7200 };
+const LOOP_HP = { wind: 650 };                 // Hz high-pass per loop
+const LOOP_TRIM = { wind: 0.45 };              // extra level trim on setLoopVolume
+const LOOP_AUTOFADE = new Set(['wind']);       // fade out when the game stops updating it (e.g. result screen)
+function nitroHit() {
+  const t = ctx.currentTime;
+  Audio.play('nitro_hit', { raw: true });
+  Audio.play('nitro_start', { raw: true, volume: 0.6 });
+  try {   // deep sub thump: 58 -> 32 Hz sine, 0.45 s
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = 'sine'; o.frequency.setValueAtTime(58, t); o.frequency.exponentialRampToValueAtTime(32, t + 0.35);
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.9, t + 0.012); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.45);
+    o.connect(g).connect(sfxBus); o.start(t); o.stop(t + 0.5);
+  } catch { /* ignore */ }
+  // make room: music and crowd dip for a moment (engines keep going)
+  ramp(duckM.gain, 0.45, 0.02); duckUntil = Math.max(duckUntil, t + 0.7);
+  const cr = loops.get('crowd');
+  if (cr && cr.g) { ramp(cr.g.gain, (cr.m.gain ?? 1) * cr.vol * 0.35, 0.02); setTimeout(() => { const c = loops.get('crowd'); if (c && c.g) ramp(c.g.gain, (c.m.gain ?? 1) * c.vol, 0.3); }, 700); }
+}
+function nitroOn(level = 1) {
+  if (nitro.on) return;
+  nitro = { on: true, t0: ctx.currentTime };
+  Audio.startLoop('nitro_roar', { volume: 0.55 * level });
+  setTimeout(() => {   // subtle pitch rise over the burn
+    for (const n of ['nitro_roar', 'nitro_loop']) {
+      const r = loops.get(n);
+      if (r && r.src) { const now = ctx.currentTime; r.src.playbackRate.cancelScheduledValues(now); r.src.playbackRate.setValueAtTime(r.src.playbackRate.value, now); r.src.playbackRate.linearRampToValueAtTime(1.08, now + 2.5); }
+    }
+  }, 60);
+  const v = engines.get('player');
+  try {
+    if (v && v.sim && v.engine) { const x = SIM_EXH[v.exhaust] || SIM_EXH.sport; v.engine.setInputs({ strain: 0.2, aggression: Math.min(1, x.aggression + 0.25) }); }
+    else if (v && v.makeup) { ramp(v.makeup.gain, (v.ex ? v.ex.level : 1) * 1.2, 0.1); ramp(v.shelf.gain, (v.ex ? v.ex.shelf : 0) + 3, 0.1); }
+  } catch { /* ignore */ }
+}
+function nitroOff() {
+  if (!nitro.on) return;
+  nitro.on = false;
+  Audio.stopLoop('nitro_roar', 0.25);
+  Audio.play('nitro_end', { raw: true });
+  const v = engines.get('player');
+  try {
+    if (v && v.sim && v.engine) { v.engine.setInputs({ strain: 0 }); v.applyExhaust(); }
+    else if (v && v.applyExhaust) v.applyExhaust(v.exhaust || 'sport');
+  } catch { /* ignore */ }
+}
+
+function castLine(charId, key) {
+  const c = cast && cast.characters && cast.characters[charId];
+  return c && c.lines && c.lines[key];
+}
+
+function estimate(text) { return text ? 0.45 + 0.065 * text.length : 0; }
+
+// ------------------------------------------------------------------------------------------------
+// Public API
+// ------------------------------------------------------------------------------------------------
+function entry(group, name, quiet) {
+  if (!manifest) return null;      // still loading
+  const m = manifest[group] && manifest[group][name];
+  if (!m && !quiet) warnOnce(`${group}:${name}`, `unknown or missing ${group} "${name}"`);
+  return m || null;
+}
+
+export const Audio = {
+  /** Create/resume the AudioContext (call from a user gesture) and start loading. Safe to call often. */
+  init() {
+    try {
+      if (!ctx) {
+        ctx = makeContext();
+        if (!ctx) return Promise.resolve(false);
+        buildGraph();
+        const gesture = () => unlock();
+        ['pointerdown', 'touchend', 'keydown', 'click'].forEach((ev) => window.addEventListener(ev, gesture, { passive: true }));
+        document.addEventListener('visibilitychange', () => {
+          if (!ctx) return;
+          if (document.hidden) { ctx.suspend().catch(() => {}); wakeKick = true; }
+          else { ctx.resume().catch(() => {}); setTimeout(() => { if (ctx.state !== 'running') ctx.resume().catch(() => {}); }, 300); }
+        });
+        /* MOBILE_PERFORMANCE.md "Silent after an app switch": the first tap after coming back restarts the output
+           (suspend + resume), because phones can report "running" while silent */
+        ['pointerdown', 'touchend', 'keydown'].forEach((ev) => window.addEventListener(ev, () => {
+          if (!wakeKick || !ctx || document.hidden) return; wakeKick = false;
+          ctx.suspend().then(() => ctx.resume()).catch(() => ctx.resume().catch(() => {}));
+        }, { capture: true, passive: true }));
+        startWatchdog();
+        loadManifest();
+        loadSim();
+        load(MENU_INTRO);          // decode the menu clip straight away (it is tiny)
+        if (musicState.want) this.music(musicState.want);   // asked for before the context existed
+      }
+      unlock();
+      return loadManifest().then(() => true);
+    } catch (e) {
+      warnOnce('init', 'init failed', e);
+      return Promise.resolve(false);
+    }
+  },
+
+  get ready() { return !!(ctx && manifest); },
+  get context() { return ctx; },
+  /** cast.json (characters, lines, subtitles) once loaded, else null. */
+  get cast() { return cast; },
+  get history() { return history; },
+
+  /** Every frame, id 'player' or 'rival'. {rpm, maxRpm, throttle 0..1, load 0..1} */
+  setEngine(id, p = {}) {
+    if (!ctx) return;
+    if (previewState && id === 'player') return;   // the garage preview drives the engine right now
+    try {
+      let v = engines.get(id);
+      if (!v) { v = makeVoice(id); engines.set(id, v); const pf = lastProfiles[id] || pendingProfiles[id]; if (pf) v.setProfile(pf); }
+      if (v.sim && (engMode !== 'live' || liveFailed)) {     // Engine Sim unavailable: fall back to the baked / sample engine
+        const pr = { car: v.car, engine: v.car ? undefined : v.cls, exhaust: v.exhaust }; v.destroy(); v = makeVoice(id); engines.set(id, v); v.setProfile(pr);
+      }
+      if (!v.sim && !v.baked && !v.layersOn.length && v.cls && classLoaded.has(v.cls)) v.attachSamples();
+      v.update(p);
+    } catch (e) { warnOnce(`eng:${id}`, 'setEngine failed', e); }
+  },
+
+  /** Silence and free an engine (it is rebuilt on the next setEngine). */
+  /** {backend, failed, reason, source}: LIVE silently falling back to CLASSIC shows here (pages show a red banner). */
+  get liveStatus() {
+    const v = engines.get('player');
+    let source = '';
+    if (v && v.sim) source = v.engine ? (v.engine.combustion ? 'worklet' : 'wavetable') : 'loading';
+    else if (v && v.baked) source = v.ready ? 'baked:' + v.setName : 'baked:loading';
+    else if (v) source = 'classic';
+    const noWorklet = !!(ctx && !ctx.audioWorklet);
+    return { backend: engMode, failed: liveFailed, reason: liveFailReason || (noWorklet ? 'no AudioWorklet in this browser' : ''), source };
+  },
+
+  /** The LIVE engine a car plays by default (lab pick or class table): {engine, vehicle, turbo}. */
+  liveDefault(car) {
+    const c = simPick(car) || SIM_CLASS[SIM_CAR[car]] || SIM_CLASS.i4t;
+    return { engine: c.engine, vehicle: c.vehicle, turbo: false };   // NO_TURBO
+  },
+
+  /** Garage: hear a sound profile ({car, exhaust, swap}) as a ~2.6 s rev: idle, blip up, settle, fade.
+   *  One at a time (a new call replaces the running one). Resolves when done. */
+  previewSound(profile = {}) {
+    if (!ctx) this.init();
+    if (!ctx) return Promise.resolve(false);
+    const token = (previewSeq = previewSeq + 1);
+    if (previewState && previewState.timer) cancelAnimationFrame(previewState.timer);
+    const car = profile.car || (engines.get('player') || {}).car || 'car_hero';
+    const red = GAME_REDLINE[car] || 7500, idle = GAME_IDLE[car] || 900;
+    const prev = engines.get('player');
+    const prevProf = prev && prev.car ? { car: prev.car, exhaust: prev.exhaust, sound: prev.sound || {}, ...(prev.simOverride ? { sim: prev.simOverride } : {}) } : null;
+    previewState = { token, after: (previewState && previewState.after) || prevProf };
+    this.stopEngine('player');
+    const v = makeVoice('player'); engines.set('player', v);
+    this.setEngineProfile('player', { ...profile, car, _preview: true });
+    return new Promise((resolve) => {
+      let t0 = 0, waitT = performance.now();
+      const step = () => {
+        if (!previewState || previewState.token !== token) return resolve(false);
+        const now = performance.now();
+        if (!t0) {   // wait for Engine Sim to be built (max 2.5 s), then run the curve
+          if ((v.sim || v.baked) && !v.ready && now - waitT < 2500) { v.update({ rpm: idle, maxRpm: red, throttle: 0 }); previewState.timer = requestAnimationFrame(step); return; }
+          t0 = now;
+        }
+        const t = (now - t0) / 1000;
+        let rpm, thr;
+        if (t < 0.35) { rpm = idle; thr = 0; }
+        else if (t < 0.95) { const k = (t - 0.35) / 0.6; rpm = idle + (red * 0.78 - idle) * Math.sin(k * Math.PI / 2); thr = 1; }
+        else if (t < 2.2) { const k = (t - 0.95) / 1.25; rpm = idle + (red * 0.78 - idle) * Math.exp(-k * 3.2); thr = 0; }
+        else rpm = idle, thr = 0;
+        v.update({ rpm, maxRpm: red, throttle: thr, load: thr * 0.4 });
+        if (t > 2.3) v.fadeOut(0.15);
+        if (t > 2.75) {
+          const after = previewState.after; previewState = null;
+          Audio.stopEngine('player');
+          if (after) Audio.setEngineProfile('player', after);
+          return resolve(true);
+        }
+        previewState.timer = requestAnimationFrame(step);
+      };
+      previewState.timer = requestAnimationFrame(step);
+    });
+  },
+
+  /** Sellable sound options: {exhaust: [...], swap: [...]}. */
+  soundOptions() {
+    return { exhaust: ['stock', 'sport', 'straight', 'antilag', 'popcorn'], swap: SWAPS.slice() };   // NO_TURBO: no turbo kit
+  },
+
+  /** ENGINE LAB: the Engine Sim catalogue (engines, chassis). Resolves after the module loads. */
+  simCatalog() {
+    return loadSim().then((m) => {
+      const E = m && (m.EngineSim || m.default);
+      return E ? { engines: E.engines(), vehicles: E.vehicles() } : { engines: [], vehicles: [] };
+    });
+  },
+  /** ENGINE LAB: per-car pick {engine, vehicle, turbo} (null clears), persisted for the game. */
+  setEnginePick(car, cfg) {
+    let picks = {};
+    try { picks = JSON.parse(localStorage.getItem('gt_engine_pick') || '{}') || {}; } catch { /* ignore */ }
+    if (cfg) picks[car] = { engine: cfg.engine, vehicle: cfg.vehicle, turbo: false }; else delete picks[car];   // NO_TURBO
+    try { localStorage.setItem('gt_engine_pick', JSON.stringify(picks)); } catch { /* ignore */ }
+    return picks;
+  },
+  getEnginePick(car) { return simPick(car); },
+
+  /** Engine character for 'player' / 'rival': {engine: 'i4t'|'i6t'|'rotary'|'boxer4t'|'v6mid'|'v8', car: carId
+   *  (mapped through manifest.car_engine), exhaust: 'stock'|'sport'|'straight'}. Loads that class's loops. */
+  setEngineProfile(id, o = {}) {
+    if (o && o.swap != null) {
+      const snd = { ...(o.sound || {}) };
+      if (o.swap != null) snd.swap = o.swap;
+      // NO_TURBO: a turbo kit / BOV in the profile is ignored
+      o = { ...o, sound: snd };
+    }
+    if (previewState && id === 'player' && !o._preview) { previewState.after = o; return; }   // apply after the preview
+    if (!o._preview) lastProfiles[id] = { ...(lastProfiles[id] || {}), ...o };
+    if (!ctx) { pendingProfiles[id] = { ...(pendingProfiles[id] || {}), ...o }; return; }
+    try {
+      let v = engines.get(id);
+      /* a classic fallback voice goes back to BAKED when the new car has a set */
+      if (v && engMode === 'baked' && !v.baked && !v.sim && o.car && bakedMan && bakedMan.cars && bakedMan.sets[bakedMan.cars[o.car]]) { v.destroy(); engines.delete(id); v = null; }
+      if (!v) { v = makeVoice(id); engines.set(id, v); v.fadeOut(0.01); }
+      v.setProfile(o);
+    } catch (e) { warnOnce(`prof:${id}`, 'setEngineProfile failed', e); }
+  },
+
+  /** Exhaust bangs from the procedural engine since the last call, [{time (audio clock), amp}] — for flames. */
+  takeEnginePops(id = 'player') {
+    const v = engines.get(id);
+    if (!v || !v.pops || !v.pops.length) return [];
+    const out = v.pops; v.pops = [];
+    return out;
+  },
+
+  /** 'baked' (default: the live engine recorded), 'classic' (ElevenLabs loops) or, in dev only, 'live'. ?eng=baked|classic|live. */
+  get engineMode() { return engMode; },
+  get engineBackend() { return engMode; },
+  setEngineMode(m) { this.setEngineBackend(m); },
+  /** 'baked' | 'classic' | 'live' (dev only; builds get 'baked'). Rebuilds running engines on the new backend. */
+  setEngineBackend(m) {
+    engMode = normBackend(m);
+    try { localStorage.setItem('gt_engine', engMode); } catch { /* ignore */ }
+    updateEngineButtons();
+    for (const [id, v] of [...engines]) { const prof = { car: v.car, engine: v.car ? undefined : (v.baseCls || v.cls), exhaust: v.exhaust }; v.destroy(); engines.delete(id); this.setEngineProfile(id, prof); }
+  },
+
+  /** What the engines are set to, plus the available classes / exhausts / car mapping. */
+  engineInfo() {
+    const out = { classes: Object.keys(manifest?.engines || {}), exhausts: EXHAUSTS, cars: { ...(manifest?.car_engine || {}) } };
+    engines.forEach((v, id) => { out[id] = { engine: v.cls, exhaust: v.exhaust, sim: !!v.sim, simEngine: v.sim ? SIM_CLASS[v.cls]?.engine : null }; });
+    out.mode = engMode;
+    return out;
+  },
+
+  /** Engine class for a car id (from the manifest), e.g. 'car_black' -> 'v8'. */
+  engineOf(car) { return manifest?.car_engine?.[car] || null; },
+
+  stopEngine(id) {
+    const v = engines.get(id);
+    if (v) { v.destroy(); engines.delete(id); }
+  },
+
+  /** Race extras for the player car, every frame: turbo whistle follows boost, gear whine follows speed.
+   *  {rpm, maxRpm, boost 0..1, speed m/s, throttle 0..1}. They fade out ~0.45 s after the calls stop. */
+  setRaceState(p = {}) {
+    if (!ctx) return;
+    raceLast = performance.now();
+    const thr = clamp(p.throttle ?? 1, 0, 1);
+    const rn = p.rpm && p.maxRpm ? clamp(p.rpm / p.maxRpm, 0, 1.1) : 0.7;
+    const boost = clamp(p.boost ?? rn * thr, 0, 1);
+    const sp = Math.max(0, p.speed ?? 0);
+    const pv = engines.get('player');
+    /* the generic gear_whine loop only for the CLASSIC sample engine. Baked sets carry the Engine Sim's own whine (whL,
+       pitched per gear); a baked voice still loading gets none (user 2026-11-14: its speed-swept pitch read as a jet).
+       The 'turbo' loop is never started (NO_TURBO): it is only stopped here. */
+    if (!pv || pv.sim || pv.baked) {   // no player engine (stopped after the line), Engine Sim or a baked set
+      if (loops.has('turbo')) this.stopLoop('turbo', 0.2);
+      if (loops.has('gear_whine')) this.stopLoop('gear_whine', 0.2);
+      return;
+    }
+    if (!loops.has('gear_whine')) this.startLoop('gear_whine', { volume: 0 });
+    const sn = clamp(sp / 80, 0, 1);
+    this.setLoopVolume('gear_whine', 0.3 * Math.pow(sn, 0.8) * (0.35 + 0.65 * thr));
+    this.setLoopRate('gear_whine', 0.85 + 0.3 * sn);
+  },
+
+  /** One-shot. opts: {volume, rate, pan, detune(random ±fraction of rate)}. Returns {stop()} or null. */
+  play(name, opts = {}) {
+    if (!ctx) return null;
+    try {
+      if (NO_TURBO && name === 'blowoff') return null;   // no turbo -> no blow-off valve
+      if (name === 'nitro_start' && !opts.raw && manifest?.sfx?.nitro_hit) { nitroHit(); return null; }
+      if (!opts.raw && name === 'launch') { const v = engines.get('player'); if (v && v.launch) v.launch(); const r = engines.get('rival'); if (r && r.launch) r.launch(); }
+      if (!opts.raw && (name === 'shift' || name === 'shift_perfect')) {
+        const v = engines.get(opts.pan < 0 ? 'rival' : 'player');
+        if (v && (v.sim || v.baked)) v.shift();
+      }
+      if (!opts.raw && (ENGINE_SFX[name] || name === 'blowoff')) {
+        const v = engines.get(opts.pan < 0 ? 'rival' : 'player');
+        if (v && v.sim && v.ready && !opts.car && !opts.engine && name !== 'rev_blip') return null;   // Engine Sim makes these itself
+      }
+      if (!opts.raw && ENGINE_SFX[name] && manifest?.engines) {   // class-flavoured rev / pop / limiter
+        const cls = opts.engine || (opts.car && manifest.car_engine?.[opts.car])
+          || (opts.pan < 0 ? engines.get('rival')?.cls : engines.get('player')?.cls) || manifest.default_engine;
+        const alt = manifest.engines[cls]?.sfx?.[ENGINE_SFX[name]];
+        if (alt && manifest.sfx?.[alt]) name = alt;
+      }
+      const m = entry('sfx', name);
+      if (!m) return null;
+      const buf = buffers.get(m.file);
+      if (!buf) { load(m.file); return null; }
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      let rate = opts.rate ?? 1;
+      if (opts.detune) rate *= 1 + (Math.random() * 2 - 1) * opts.detune;
+      src.playbackRate.value = rate;
+      const g = ctx.createGain();
+      g.gain.value = (m.gain ?? 1) * (opts.volume ?? 1);
+      let node = src.connect(g);
+      if (opts.pan) { const p = makePanner(opts.pan); node = node.connect(p); }
+      node.connect(sfxBus);
+      src.start();
+      return { stop: (fade = 0.05) => { try { ramp(g.gain, 0, fade / 3); src.stop(ctx.currentTime + fade); } catch { /* ignore */ } } };
+    } catch (e) { warnOnce(`play:${name}`, 'play failed', e); return null; }
+  },
+
+  /** Announcer line: 'three' 'two' 'one' 'go' 'ready' 'perfect_shift' 'perfect_launch' 'nitro' 'win' 'lose'
+   *  'new_record' 'photo_finish' 'boss_race' 'upgrade_complete' 'welcome' (display text like "You win!" works too).
+   *  Countdown lines always play (and follow countdownLang / countdownVoice); the others are rate-limited:
+   *  at most one per 1.2 s unless the new one has a higher priority (GO > result > launch > shift > nitro),
+   *  and never over a cast voice. Returns the duration played (0 if skipped). */
+  say(line, opts = {}) {
+    const key = lineKey(line);
+    const rec = { t: performance.now(), kind: 'say', name: key, played: false };
+    history.push(rec); if (history.length > 200) history.shift();
+    if (!ctx || !manifest || !opt.announcer) return 0;
+    try {
+      const pri = PRI[key] ?? 10;
+      const t = ctx.currentTime;
+      const count = COUNT.has(key);
+      if (!count && !opt.announcerAll) return 0;   // user: announcer only for the countdown (ready, 3, 2, 1, GO)
+      // only hand the countdown to a cast voice when that voice's audio actually exists (else announcer)
+      if (count && opt.countdownVoice !== 'announcer' && castLine(opt.countdownVoice, key)
+          && manifest.cast?.[opt.countdownVoice]?.[key]) {
+        const d = this.voice(opt.countdownVoice, key === 'ready' ? pickReady(opt.countdownVoice) : key, { force: true });   /* user: the same 'are you ready' every race got old: rotate the start lines */
+        rec.played = d > 0; rec.via = opt.countdownVoice;
+        return d;
+      }
+      if (!count && !opts.force) {
+        if (speech && t < speech.end && (speech.kind === 'voice' || pri <= speech.pri)) return 0;
+        if (t - lastSay.t < 1.2 && pri <= lastSay.pri) return 0;
+      }
+      const lang = count && key !== 'ready' && opt.countdownLang === 'jp' ? 'jp' : 'en';
+      const m = manifest.voice?.[lang]?.[key] || manifest.voice?.en?.[key];
+      if (!m) { warnOnce(`say:${key}`, `no announcer line "${key}"`); return 0; }
+      const buf = buffers.get(m.file);
+      if (!buf) { load(m.file); return 0; }
+      lastSay = { t, pri };
+      rec.played = true; rec.lang = lang;
+      return speak(buf, opts.volume ?? 1, pri, 'say', count);
+    } catch (e) { warnOnce(`say:${line}`, 'say failed', e); return 0; }
+  },
+
+  /** Cast line from cast.json, e.g. voice('rei', 'greet'). One voice at a time (cuts the previous one and the
+   *  announcer). Returns the line's duration in seconds so the UI can time a subtitle/portrait; when the audio
+   *  file is missing it still returns an estimate from the text (and logs once). */
+  /** opts: {volume, rate (0.8-1.25, pitch+speed, e.g. a per-rival offset), tilt (dB high shelf)} */
+  voice(charId, key, opts = {}) {
+    const line = castLine(charId, key);
+    const rec = { t: performance.now(), kind: 'voice', name: `${charId}.${key}`, played: false };
+    history.push(rec); if (history.length > 200) history.shift();
+    if (!line) { warnOnce(`cast:${charId}.${key}`, `no cast line ${charId}.${key}`); return 0; }
+    const est = (line.dur || estimate(line.text)) / clamp(Number(opts.rate) || 1, 0.8, 1.25);
+    if (!ctx || !manifest) return est;
+    try {
+      const m = manifest.cast?.[charId]?.[key];
+      if (!m) { warnOnce(`castfile:${charId}`, `no audio yet for ${charId} lines (subtitles only)`); return est; }
+      const buf = buffers.get(m.file);
+      if (!buf) { load(m.file); return est; }
+      rec.played = true; if (opts.rate) rec.rate = +(+opts.rate).toFixed(3);
+      return speak(buf, opts.volume ?? 1, 200, 'voice', COUNT.has(key), opts.rate || 1, opts.tilt || 0);
+    } catch (e) { warnOnce(`voice:${charId}`, 'voice failed', e); return est; }
+  },
+
+  /** Optional: nitro burn on/off with a level 0..1 (play('nitro_start') + startLoop('nitro_loop') do the same). */
+  setNitro(on, level = 1) {
+    if (!ctx) return;
+    if (on) { if (!nitro.on) nitroHit(); this.startLoop('nitro_loop', { volume: level }); nitroOn(level); this.setLoopVolume('nitro_roar', 0.9 * level); }
+    else this.stopLoop('nitro_loop', 0.25);
+  },
+
+  /** Stop whoever is talking. */
+  hush() {
+    if (speech && ctx) { try { ramp(speech.g.gain, 0, 0.02); speech.src.stop(ctx.currentTime + 0.08); } catch { /* ignore */ } speech = null; }
+  },
+
+  /** {countdownLang: 'en'|'jp', countdownVoice: 'announcer'|'mika', announcer: bool, autoMenu: bool} */
+  setOption(o = {}) {
+    if (o.countdownLang === 'en' || o.countdownLang === 'jp') opt.countdownLang = o.countdownLang;
+    if (typeof o.countdownVoice === 'string') opt.countdownVoice = o.countdownVoice;
+    if (o.announcer != null) opt.announcer = !!o.announcer;
+    if (o.autoMenu != null) opt.autoMenu = !!o.autoMenu;
+    if (o.rivalSim != null) opt.rivalSim = !!o.rivalSim;
+    if (o.liveWavetables != null) opt.liveWavetables = !!o.liveWavetables;
+    if (o.engineBackend) this.setEngineBackend(o.engineBackend);
+  },
+  getOption() { return { ...opt }; },
+
+  /** Looping sounds: nitro_loop, crowd, wind, turbo, gear_whine, rain, coin_tick. opts {volume, rate, fade} */
+  startLoop(name, opts = {}) {
+    if (!ctx) return;
+    if (name === 'nitro_loop' && manifest?.loops?.nitro_roar) nitroOn();
+    try {
+      const cur = loops.get(name);
+      if (cur && !cur.stopping) { if (opts.volume != null) this.setLoopVolume(name, opts.volume); return; }
+      const m = entry('loops', name);
+      if (!m) return;
+      const begin = (buf) => {
+        if (!buf) return;
+        const ex = loops.get(name);
+        if (ex && !ex.stopping && ex.src) return;
+        const vol0 = ex?.vol ?? opts.volume ?? 1;
+        const src = ctx.createBufferSource();
+        src.buffer = buf; src.loop = true; src.loopStart = m.loopStart; src.loopEnd = m.loopEnd;
+        src.playbackRate.value = ex?.rate ?? opts.rate ?? 1;
+        const g = ctx.createGain(); g.gain.value = 0;
+        let head = src;
+        if (LOOP_HP[name]) {   // no low rumble under everything: the air rush keeps only its hiss
+          const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = LOOP_HP[name]; hp.Q.value = 0.7;
+          head = src.connect(hp);
+        }
+        head.connect(g).connect(sfxBus);
+        const off = m.loopStart + Math.random() * (m.loopEnd - m.loopStart);
+        src.start(ctx.currentTime, off);
+        const rec = { src, g, vol: vol0, m, lastSet: performance.now(), pos0: off, tAt: ctx.currentTime, rateAt: src.playbackRate.value };   /* pos0 / tAt / rateAt: loopPos() */
+        loops.set(name, rec);
+        ramp(g.gain, (m.gain ?? 1) * rec.vol, opts.fade ?? 0.06);
+      };
+      const buf = buffers.get(m.file);
+      if (buf) begin(buf);
+      else { loops.set(name, { pending: true, vol: opts.volume ?? 1, rate: opts.rate }); load(m.file).then((b) => { if (loops.get(name)?.pending) begin(b); }); }
+    } catch (e) { warnOnce(`loop:${name}`, 'startLoop failed', e); }
+  },
+
+  stopLoop(name, fade = 0.12) {
+    if (name === 'nitro_loop' && nitro.on && ctx) nitroOff();
+    const rec = loops.get(name);
+    if (!rec) return;
+    loops.delete(name);
+    if (!rec.src) return;
+    rec.stopping = true;
+    try { ramp(rec.g.gain, 0, fade); rec.src.stop(ctx.currentTime + fade * 6); } catch { /* ignore */ }
+  },
+
+  setLoopVolume(name, v) {
+    const rec = loops.get(name);
+    if (!rec) return;
+    rec.vol = clamp(v, 0, 2) * (LOOP_TRIM[name] ?? 1);
+    rec.lastSet = performance.now();
+    if (rec.g) ramp(rec.g.gain, (rec.m.gain ?? 1) * rec.vol, 0.08);
+  },
+
+  setLoopRate(name, r) {
+    const rec = loops.get(name);
+    if (!rec) return;
+    rec.rate = clamp(r, 0.25, 4);
+    if (rec.src) { if (rec.tAt != null) { rec.pos0 = this.loopPos(name); rec.tAt = ctx.currentTime; rec.rateAt = rec.rate; } ramp(rec.src.playbackRate, rec.rate, 0.05); }
+  },
+
+  /** Where a playing loop is in its file (seconds), or null: lets visuals follow the sound (cop light bar on the siren). */
+  loopPos(name) {
+    const rec = loops.get(name);
+    if (!rec || !rec.src || rec.tAt == null || !ctx) return null;
+    const m = rec.m, len = m.loopEnd - m.loopStart;
+    let p = rec.pos0 + (ctx.currentTime - rec.tAt) * rec.rateAt;
+    if (p > m.loopEnd && len > 0) p = m.loopStart + ((p - m.loopStart) % len);
+    return p;
+  },
+  loopMeta(name) { return entry('loops', name) || null; },
+
+  /** 'menu' | 'race' | null, with a crossfade. The menu starts from a tiny intro clip if the full track is
+   *  still downloading, then hands over to the full loop at the same position. */
+  music(name, opts = {}) {
+    musicState.want = name;
+    if (!ctx) return;
+    if (name === musicState.name && musicState.src) return;
+    const fade = opts.fade ?? 1.2;
+    if (musicState.src) {
+      const { src, gain, intro } = musicState;
+      ramp(gain.gain, 0, fade / 4);
+      try { src.stop(ctx.currentTime + fade * 1.5); } catch { /* ignore */ }
+      if (intro) { try { ramp(intro.g.gain, 0, fade / 4); intro.src.stop(ctx.currentTime + fade * 1.5); } catch { /* ignore */ } }
+      musicState = { name: null, src: null, gain: null, want: name };
+    }
+    if (!name) return;
+    const startFull = (m, buf, offset, fadeIn) => {
+      if (!buf || musicState.want !== name || (musicState.src && !musicState.isIntro)) return;
+      const src = ctx.createBufferSource();
+      src.buffer = buf; src.loop = true; src.loopStart = m.loopStart; src.loopEnd = m.loopEnd;
+      const g = ctx.createGain(); g.gain.value = 0;
+      src.connect(g).connect(musicBus);
+      src.start(ctx.currentTime + 0.01, offset);
+      ramp(g.gain, m.gain ?? 0.5, fadeIn);
+      let intro = null;
+      if (musicState.isIntro) {        // hand over from the intro clip, same musical position
+        intro = { src: musicState.src, g: musicState.gain };
+        ramp(intro.g.gain, 0, 0.03);
+        try { intro.src.stop(ctx.currentTime + 0.3); } catch { /* ignore */ }
+      }
+      musicState = { name, src, gain: g, want: name };
+    };
+    const go = () => {
+      const m = entry('music', name);
+      if (!m) return;
+      const full = buffers.get(m.file);
+      if (full) { startFull(m, full, opts.offset ?? 0, fade / 4); return; }
+      if (name === 'menu') {
+        load(MENU_INTRO).then((ib) => {
+          if (!ib || musicState.want !== name || musicState.src || buffers.get(m.file)) return;
+          const src = ctx.createBufferSource(); src.buffer = ib;
+          const g = ctx.createGain(); g.gain.value = m.gain ?? 0.5;
+          src.connect(g).connect(musicBus);
+          const t0 = ctx.currentTime + 0.005;
+          src.start(t0);
+          musicState = { name, src, gain: g, want: name, isIntro: true, t0 };
+        });
+      }
+      load(m.file).then((buf) => {
+        if (musicState.isIntro && musicState.want === name) {
+          startFull(m, buf, Math.max(0, ctx.currentTime + 0.01 - musicState.t0), 0.03);
+        } else startFull(m, buf, opts.offset ?? 0, fade / 4);
+      });
+    };
+    if (manifest) go(); else loadManifest().then(go);
+  },
+
+  setVolume({ master: m, sfx, music, voice } = {}) {
+    if (m != null) vol.master = clamp(m, 0, 1);
+    if (sfx != null) vol.sfx = clamp(sfx, 0, 1);
+    if (music != null) vol.music = clamp(music, 0, 1);
+    if (voice != null) vol.voice = clamp(voice, 0, 1);
+    if (!ctx) return;
+    ramp(master.gain, vol.master, 0.03);
+    ramp(sfxBus.gain, vol.sfx, 0.03);
+    ramp(musicBus.gain, vol.music, 0.03);
+    ramp(voiceBus.gain, vol.voice * vol.sfx, 0.03);
+  },
+
+  getVolume() { return { ...vol }; },
+
+  /** Tuning: {samples, synth} levels of the engine layers (defaults 1 and 0.35). */
+  setEngineMix(o = {}) {
+    if (o.samples != null) mix.samples = clamp(o.samples, 0, 2);
+    if (o.synth != null) mix.synth = clamp(o.synth, 0, 3);
+  },
+
+  /** Every active engine voice and loop with its pitch (playbackRate) and gain. */
+  debugSources() {
+    const out = { engines: {}, loops: {} };
+    engines.forEach((v, id) => {
+      out.engines[id] = v.sim
+        ? { backend: 'live', engine: v.cfg ? `${v.cfg.engine}/${v.cfg.vehicle}${v.cfg.turbo ? '+turbo' : ''}` : v.cls, ready: !!v.ready, gain: +v.out.gain.value.toFixed(3),
+          source: v.engine ? (v.engine.combustion ? 'worklet' : 'wavetable') : 'loading', wavetables: !!(v.engine && v.engine.opts && v.engine.opts.wavetables) }
+        : v.baked ? { backend: 'baked', engine: v.setName, ready: !!v.ready, gain: +v.out.gain.value.toFixed(3),
+          layers: [...v.layersOn, ...v.layersOff, ...(v.layersFree || [])].filter((l) => l.g.gain.value > 0.01).map((l) => ({ rpm: l.rpm, rate: +l.src.playbackRate.value.toFixed(3), gain: +l.g.gain.value.toFixed(3) })) }
+        : { backend: 'classic', engine: v.cls, gain: +v.out.gain.value.toFixed(3),
+          synth: +(v.synthBus ? v.synthBus.gain.value : 0).toFixed(3), osc1Hz: v.osc1 ? Math.round(v.osc1.frequency.value) : 0,
+          layers: [...v.layersOn, ...v.layersOff, ...(v.layersFree || [])].filter((l) => l.g.gain.value > 0.01)
+            .map((l) => ({ rpm: l.rpm, rate: +l.src.playbackRate.value.toFixed(3), gain: +l.g.gain.value.toFixed(3) })) };
+    });
+    loops.forEach((r, n) => { if (r.src) out.loops[n] = { rate: +r.src.playbackRate.value.toFixed(3), gain: +r.g.gain.value.toFixed(3) }; });
+    return out;
+  },
+
+  /** Debug info for the test page. */
+  debug(id = 'player') {
+    const v = engines.get(id);
+    return {
+      state: ctx?.state, rate: ctx?.sampleRate, loaded: buffers.size, warned: [...warned],
+      music: musicState.name, intro: !!musicState.isIntro,
+      engine: v?.cls, exhaust: v?.exhaust,
+      layers: v ? v.layersOn.map((l, k) => ({ rpm: l.rpm, w: v.weights ? v.weights[k] : 0 })) : [],
+    };
+  },
+
+  stopAll() {
+    [...engines.keys()].forEach((id) => this.stopEngine(id));
+    [...loops.keys()].forEach((n) => this.stopLoop(n));
+    this.hush();
+    this.music(null);
+  },
+};
+
+export default Audio;

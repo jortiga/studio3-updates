@@ -1,0 +1,18 @@
+/* =================== theme: minimal (tokens for min.css) ===================
+   Copy this file to theme_<name>.css, change the tokens (and add look-only rules at the bottom if a style needs
+   textures/borders), then point the last <link> in index.html at it. Layout/centring/slots stay in min.css. */
+:root {
+  /* colour */
+  --acc: #ff4fa8; --acc2: rgba(255,79,168,.18); --acc-tx: #fff;
+  --cy: #40e8ff; --ok: #3dffb0; --bad: #ff5a78; --gold: #ffd76a;
+  --tx: #fff; --tx2: rgba(255,255,255,.64); --tx3: rgba(255,255,255,.42);
+  /* surfaces + lines */
+  --surf: rgba(10,10,20,.78); --surf2: rgba(255,255,255,.06); --surf3: rgba(255,255,255,.12);
+  --line: rgba(255,255,255,.14); --line2: rgba(255,255,255,.32);
+  --shadow: 0 calc(var(--u) * 12) calc(var(--u) * 32) rgba(0,0,0,.45);
+  --hud-bg: rgba(8,8,16,.28); --hud-line: rgba(255,255,255,.55);
+  /* shape + type */
+  --g: calc(var(--u) * 8); --r: calc(var(--u) * 12); --r-panel: calc(var(--u) * 16);
+  --f-head: var(--font); --f-body: var(--font2); --ls: .08em;
+  --ease: cubic-bezier(.2,.8,.2,1);
+}

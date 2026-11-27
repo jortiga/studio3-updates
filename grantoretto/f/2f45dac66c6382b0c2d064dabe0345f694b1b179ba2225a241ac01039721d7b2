@@ -1,0 +1,107 @@
+/* Studio 3 analytics (MOBILE_PERFORMANCE.md section 5c): Google Analytics 4 (sent straight to the collect endpoint, no gtag.js) inside the store app's WebView.
+   Same file in every app's web-src/. build_www.py copies it into the app www, loads it with <script src="analytics.js">
+   and writes the GA4 measurement id as window.S3A_ID into ad-ids.js. Portal builds drop the file and replace ad-ids.js,
+   so the web never runs it.
+   Generic set: first_visit (GA, a new device) + session_start (GA), app_open {cold}, app_leave {sec},
+   ad_show / ad_fail / ad_done / ad_reward {format}. Ad clicks: AdMob's own report (JS can't see them; on Android a
+   full-screen ad also hides the WebView, so leave/return around an ad is not counted as the player leaving).
+   Game code may call window.S3A.log(name, params). */
+(function () {
+  var ID = window.S3A_ID;
+  var C = window.Capacitor, native = !!(C && C.isNativePlatform && C.isNativePlatform());
+  var noop = function () {};
+  window.S3A = { log: noop, prop: noop };
+  if (!ID || !native) return;
+
+  var get = function (k) { try { return localStorage.getItem(k); } catch (e) { return null; } };
+  var put = function (k, v) { try { localStorage.setItem(k, v); } catch (e) { /* private mode */ } };
+  /* the WebView origin (https://localhost, capacitor://localhost on iOS) keeps no GA cookie, so the client id lives in
+     localStorage: the same phone stays the same user across launches */
+  var cid = get('s3a_cid');
+  if (!cid) { cid = Math.floor(Math.random() * 2147483647) + '.' + Math.floor(Date.now() / 1000); put('s3a_cid', cid); }
+
+  /* Events go straight to Google's collect endpoint (GA4 wire format), not through gtag.js: gtag sends nothing from
+     iOS's capacitor://localhost origin (not http/https), while a plain request from the WebView reaches Google fine. */
+  var plat = (C.getPlatform && C.getPlatform()) || 'app';
+  var props = { platform: plat };
+  var sid = 0, sct = 0, hits = 0, lastAt = 0, engStart = Date.now();
+  var firstVisit = !get('s3a_seen');
+  var dbg = 'direct ' + plat, sent_n = 0, fail_n = 0;
+  var showDbg = function () {
+    try { localStorage.setItem('s3a_dbg', dbg); } catch (e) { /* none */ }
+    var p = document.getElementById('pause'); if (!p) return;
+    var d = document.getElementById('s3a_dbg');
+    if (!d) { d = document.createElement('div'); d.id = 's3a_dbg'; d.style.cssText = 'font-size:11px;opacity:0.45;text-align:center;margin:2px 0 4px'; p.appendChild(d); }
+    d.textContent = 'analytics ' + dbg + ' | sent ' + sent_n + (fail_n ? ' failed ' + fail_n : '');
+  };
+  setInterval(showDbg, 3000);
+
+  function send(name, p, extra) {
+    var now = Date.now(), newSession = false;
+    if (!sid || now - lastAt > 30 * 60 * 1000) { sid = Math.floor(now / 1000); sct++; hits = 0; newSession = true; }
+    lastAt = now; hits++;
+    var q = ['v=2', 'tid=' + ID, 'cid=' + cid, 'sid=' + sid, 'sct=' + sct, 'seg=1', 'en=' + encodeURIComponent(name),
+             '_p=' + now, '_s=' + hits, 'dl=' + encodeURIComponent('https://' + (window.S3A_APP || 'app') + '.app/'),
+             'ul=' + ((navigator.language || 'en-us').toLowerCase()), 'sr=' + screen.width + 'x' + screen.height];
+    if (newSession) q.push('_ss=1');
+    if (extra) q.push(extra);
+    Object.keys(props).forEach(function (k) { q.push('up.' + encodeURIComponent(k) + '=' + encodeURIComponent(props[k])); });
+    p = p || {};
+    Object.keys(p).forEach(function (k) {
+      var v = p[k];
+      q.push((typeof v === 'number' ? 'epn.' : 'ep.') + encodeURIComponent(k) + '=' + encodeURIComponent(v));
+    });
+    var url = 'https://www.google-analytics.com/g/collect?' + q.join('&');
+    try {
+      fetch(url, { method: 'POST', mode: 'no-cors', cache: 'no-store', keepalive: true })
+        .then(function () { sent_n++; }, function () { fail_n++; try { navigator.sendBeacon(url); } catch (e) { /* none */ } });
+    } catch (e) { fail_n++; try { navigator.sendBeacon(url); } catch (e2) { /* none */ } }
+  }
+  function log(name, p, extra) {
+    try {
+      if (firstVisit) { firstVisit = false; put('s3a_seen', '1'); send('first_visit', {}, '_fv=1'); }
+      send(name, p, extra);
+    } catch (e) { /* never break the game */ }
+  }
+  window.S3A = { log: log, prop: function (k, v) { props[k] = String(v); } };
+
+  /* build stamp of the running bundle (live updates) */
+  fetch('bundle.json', { cache: 'no-store' }).then(function (r) { return r.json(); })
+    .then(function (b) { if (b && b.stamp) window.S3A.prop('build_stamp', String(b.stamp)); }).catch(noop);
+
+  /* opened / left */
+  var openAt = Date.now(), away = false, adOn = '', adAt = 0, backT = 0;
+  var adNear = function () { return adOn || Date.now() - adAt < 4000; };   /* an ad screen, not the player leaving */
+  log('app_open', { cold: 1 });
+  var leaveT = 0, sent = false;
+  function leave(now) {
+    if (away) return; away = true; clearTimeout(backT); clearTimeout(leaveT);
+    var sec = Math.round((Date.now() - openAt) / 1000);
+    var go = function () { if (away && !adNear() && !sent) { sent = true; log('app_leave', { sec: sec, transport_type: 'beacon' }); } };
+    /* Android: the hide comes a moment before the ad's Showed event, so decide 1.5 s later (the WebView keeps running
+       JS in the background); pagehide (the app being closed) sends at once */
+    if (now === true) go(); else leaveT = setTimeout(go, 1500);
+  }
+  function back() {
+    if (!away) return; away = false; sent = false;
+    /* wait a moment: the ad's Dismissed event arrives just after the WebView is visible again */
+    clearTimeout(backT); backT = setTimeout(function () { if (adNear()) return; openAt = Date.now(); log('app_open', { cold: 0 }); }, 1500);
+  }
+  document.addEventListener('visibilitychange', function () { if (document.hidden) leave(); else back(); });
+  window.addEventListener('pagehide', function () { if (!sent) { away = false; leave(true); } });
+
+  /* ads: listen to the AdMob plugin directly, so no ad bridge has to change */
+  var A = C.Plugins && C.Plugins.AdMob;
+  if (A && A.addListener) {
+    var on = function (ev, fn) { try { A.addListener(ev, fn); } catch (e) { /* older plugin */ } };
+    var fmt = { interstitial: 'interstitial', onRewardedVideo: 'rewarded' };
+    Object.keys(fmt).forEach(function (pre) {
+      var f = fmt[pre], ev = function (n) { return pre === 'interstitial' ? 'interstitialAd' + n : pre + 'Ad' + n; };
+      on(ev('Showed'), function () { adOn = f; adAt = Date.now(); log('ad_show', { format: f }); });
+      on(ev('FailedToLoad'), function (e) { log('ad_fail', { format: f, stage: 'load', reason: String((e && (e.code || e.message)) || '') }); });
+      on(ev('FailedToShow'), function (e) { adOn = ''; adAt = Date.now(); log('ad_fail', { format: f, stage: 'show', reason: String((e && (e.code || e.message)) || '') }); });
+      on(ev('Dismissed'), function () { adOn = ''; adAt = Date.now(); log('ad_done', { format: f }); });
+    });
+    on('onRewardedVideoAdReward', function () { log('ad_reward', { format: 'rewarded' }); });
+  }
+})();

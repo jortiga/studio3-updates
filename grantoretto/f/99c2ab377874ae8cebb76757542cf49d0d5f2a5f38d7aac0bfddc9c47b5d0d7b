@@ -1,0 +1,491 @@
+// Meta game: car catalog, upgrades, paints, career ladder, rewards, save. No DOM in here (the career sim imports it in Node).
+import * as P from './physics.js';
+import { ROUTE, stopOf, locOf } from './map.js';   /* career route: each rung's race type + place (map.js ROUTE) */
+
+export const TIERS = ['D', 'C', 'B', 'A', 'S'];
+export const TM = { D: 1, C: 2, B: 3.5, A: 6, S: 10 }; // economy multiplier per tier
+export const tierIdx = (t) => TIERS.indexOf(t);
+
+// Showroom order. Names live in physics.CARS (all fictional).
+export const CAR_META = {
+  car_hero:   { tier: 'D', price: 2200, starter: true },   /* new players start with no car and START_COINS: one starter */
+  car_yellow: { tier: 'D', price: 2500, starter: true },
+  /* early progression (2026-11-13): the 3rd D-class car joins the dealer after career win 2 (unlockD) at a launch deal
+     (list = the crossed-out price). Bought after ~2 more wins (tools/career_sim.mjs) */
+  car_neon:   { tier: 'D', price: 1800, list: 3600, unlockD: 2 },
+  car_silver: { tier: 'C', price: 5000 },
+  car_red:    { tier: 'B', price: 10000 },
+  car_cyan:   { tier: 'A', price: 20000 },
+  car_black:  { tier: 'S', price: 38000 },
+  car_drift:  { tier: 'A', price: 0, streak: 14 },   // login-streak rewards (daily.js STREAK)
+  car_hyper:  { tier: 'S', price: 0, streak: 30 },
+};
+export const CAR_ORDER = Object.keys(CAR_META);
+export const STARTERS = CAR_ORDER.filter((k) => CAR_META[k].starter);
+export const START_COINS = 2600;   /* buys exactly one starter (2,200 / 2,500), never two */
+export const hasCar = (save) => !!(save && save.owned && save.owned.length);
+export const carTier = (k) => CAR_META[k].tier;
+
+// ---------- upgrades ----------
+export const MAX_LV = 5;
+export const PARTS = [
+  { id: 'engine',  name: 'ENGINE',  icon: 0, k: 1.2, desc: 'More torque everywhere' },
+  { id: 'turbo',   name: 'TURBO',   icon: 1, k: 1.1, desc: 'Boost pressure: more torque' },
+  { id: 'gearbox', name: 'GEARBOX', icon: 2, k: 0.8, desc: 'Faster shifts (timing windows stay the same)' },
+  { id: 'nitro',   name: 'NITRO',   icon: 3, k: 0.9, desc: 'Stronger and longer nitro' },
+  { id: 'tires',   name: 'TIRES',   icon: 4, k: 0.8, desc: 'Launch grip, less wheelspin' },
+  { id: 'weight',  name: 'WEIGHT',  icon: 5, k: 1.0, desc: 'Strip weight: lighter is quicker' },
+  // more parts (2026-11-12): smaller steps each, so the total stays in balance with the career (tools/career_sim.mjs)
+  { id: 'intake',  name: 'INTAKE',  icon: 6, k: 0.6, desc: 'Cold-air intake: a little more mid-range torque' },
+  { id: 'ecu',     name: 'ECU TUNE', icon: 7, k: 0.9, desc: 'Higher rev limit + torque. Needs FUEL SYSTEM for levels 3-5' },
+  { id: 'intercooler', name: 'INTERCOOLER', icon: 8, k: 0.7, desc: 'Cooler charge: more torque, less fade up top' },
+  { id: 'fuel',    name: 'FUEL SYSTEM', icon: 9, k: 0.6, desc: 'Bigger injectors: small torque gain, unlocks ECU levels' },
+  { id: 'clutch',  name: 'CLUTCH',  icon: 10, k: 0.7, desc: 'Forgives a bad launch: shorter bog and wheelspin (launch windows stay the same)' },
+  { id: 'diff',    name: 'DIFFERENTIAL', icon: 11, k: 0.7, desc: 'Limited slip: better traction under power' },
+  { id: 'suspension', name: 'SUSPENSION', icon: 12, k: 0.8, desc: 'Plants the car: more grip in the first 60 ft' },
+];
+const LV_PRICE = [200, 380, 650, 1000, 1500];
+export const partPrice = (part, lv, tier) => (lv >= MAX_LV ? 0 : Math.round(LV_PRICE[lv] * TM[tier] * part.k / 10) * 10);
+export const zeroLv = () => Object.fromEntries(PARTS.map((p) => [p.id, 0]));
+/** Highest level a part can reach now (ECU levels 3-5 need the fuel system: ECU <= fuel + 2). */
+export const partCap = (L, id) => (id === 'ecu' ? Math.min(MAX_LV, (L.fuel || 0) + 2) : MAX_LV);
+
+export function modsFor(L) {
+  L = { ...zeroLv(), ...(L || {}) };
+  return {
+    tq: (1 + 0.05 * L.engine) * (1 + 0.04 * L.turbo) * (1 + 0.012 * L.intake) * (1 + 0.015 * L.ecu) * (1 + 0.015 * L.intercooler) * (1 + 0.008 * L.fuel),
+    redline: 1 + 0.012 * L.ecu,
+    shift: 1 - 0.12 * L.gearbox,
+    nitro: 0.035 * L.nitro, nitroDur: 0.2 * L.nitro,
+    grip: (1 + 0.035 * L.tires) * (1 + 0.012 * L.diff),
+    launchGrip: 1 + 0.03 * L.suspension,
+    clutch: 1 - 0.13 * L.clutch,
+    mass: 1 - 0.025 * L.weight,
+  };
+}
+export const buildSpec = (key, L) => P.prepareSpec(P.CARS[key], 1, modsFor(L));
+
+const etCache = new Map();
+export function predictET(key, L) {
+  const id = key + JSON.stringify(L || zeroLv());
+  if (!etCache.has(id)) etCache.set(id, P.idealET(buildSpec(key, L)).et);
+  return etCache.get(id);
+}
+export const fullLv = () => Object.fromEntries(PARTS.map((p) => [p.id, MAX_LV]));
+
+// Stat bars 0..1 (shown in garage / upgrade)
+export function stats(spec) {
+  const c = (v) => Math.max(0.04, Math.min(1, v));
+  return {
+    POWER: c(spec.hp / 820),
+    GRIP: c((spec.grip - 0.9) / 0.65),
+    SHIFT: c((1.12 - spec.shiftMul) / 0.72 + (spec.gears.length - 5) * 0.06),
+    NITRO: c(spec.nitro * spec.nitroDur / 2.6),
+    WEIGHT: c((1650 - spec.mass) / 900),
+  };
+}
+
+// Readable numbers for one part before/after a level.
+export function partEffect(part, spec) {
+  switch (part.id) {
+    case 'engine': case 'turbo': return [['POWER', spec.hp, 'hp'], ['TORQUE', Math.round(spec.tq), 'Nm']];
+    case 'gearbox': return [['PERFECT SHIFT', Math.round(60 * spec.shiftMul), 'ms'], ['GOOD SHIFT', Math.round(170 * spec.shiftMul), 'ms']];
+    case 'nitro': return [['BOOST', '+' + Math.round(spec.nitro * 100), '%'], ['DURATION', spec.nitroDur.toFixed(1), 's']];
+    case 'tires': return [['GRIP', (spec.grip * 100).toFixed(0), '']];
+    case 'weight': return [['WEIGHT', spec.mass, 'kg'], ['HP / TON', Math.round(spec.hp / spec.mass * 1000), '']];
+    case 'intake': case 'intercooler': case 'fuel': return [['POWER', spec.hp, 'hp'], ['TORQUE', Math.round(spec.tq), 'Nm']];
+    case 'ecu': return [['POWER', spec.hp, 'hp'], ['REV LIMIT', Math.round(spec.redline / 10) * 10, 'rpm']];
+    case 'clutch': return [['BOG / SPIN', Math.round(spec.clutchK * 100), '%']];
+    case 'diff': return [['GRIP', (spec.grip * 100).toFixed(0), '']];
+    case 'suspension': return [['LAUNCH GRIP', '+' + Math.round((spec.launchGrip - 1) * 100), '%']];
+  }
+  return [];
+}
+
+// ---------- paints ----------
+// finish: 0 gloss, 1 metallic flake, 2 pearl (two-tone shift). cost: coins or gems; premium ones unlock for every car.
+export const PAINTS = [
+  { id: 'factory', name: 'FACTORY', hex: null },
+  { id: 'violet', name: 'VIOLET', hex: '#7a2bff' }, { id: 'pink', name: 'HOT PINK', hex: '#ff2f9a' },
+  { id: 'red', name: 'RED', hex: '#e0242c' }, { id: 'orange', name: 'ORANGE', hex: '#ff7a1a' },
+  { id: 'yellow', name: 'YELLOW', hex: '#ffd02a' }, { id: 'green', name: 'GREEN', hex: '#2fa84a' },
+  { id: 'cyan', name: 'CYAN', hex: '#18d6e8' }, { id: 'blue', name: 'BLUE', hex: '#1662ff' },
+  { id: 'white', name: 'WHITE', hex: '#f2f4f8' }, { id: 'black', name: 'BLACK', hex: '#2a2a33' },
+  { id: 'm_gun', name: 'GUNMETAL', hex: '#5a6070', finish: 1, coins: 1200 },
+  { id: 'm_gold', name: 'GOLD FLAKE', hex: '#e0a820', finish: 1, coins: 1800 },
+  { id: 'm_ruby', name: 'CANDY RUBY', hex: '#c0102a', finish: 1, coins: 1800 },
+  { id: 'm_ice', name: 'ICE BLUE', hex: '#5ab8ff', finish: 1, coins: 2400 },
+  { id: 'p_aurora', name: 'AURORA PEARL', hex: '#18d6e8', hex2: '#a040ff', finish: 2, gems: 8 },
+  { id: 'p_sunset', name: 'SUNSET PEARL', hex: '#ff2f9a', hex2: '#ffb21a', finish: 2, gems: 8 },
+  { id: 'p_ghost', name: 'GHOST PEARL', hex: '#f2f4f8', hex2: '#7ae8ff', finish: 2, gems: 12 },
+  // special finishes (code-only, through the same metal / pearl shader): collectibles, never for sale
+  { id: 's_chrome', name: 'LIQUID CHROME', hex: '#dfe4ee', finish: 1, rare: true, unlock: 'daily' },
+  { id: 's_chameleon', name: 'CHAMELEON', hex: '#18e0a0', hex2: '#8a2be2', finish: 2, rare: true, unlock: 'daily' },
+  { id: 's_noir', name: 'NEON NOIR', hex: '#15121c', hex2: '#ff2f9a', finish: 2, rare: true, unlock: 'streak10' },
+  /* chapter reward paints (user, 2026-11-13: "more free skins for chapters 2-5"; BEATS below): rar rises per chapter,
+     each boss leaves a signature pearl named after them */
+  { id: 'c_harbor', name: 'HARBOR STEEL', hex: '#3d6f9a', finish: 1, rare: true, unlock: 'drop', rar: 'rare' },
+  { id: 'c_fox', name: 'SILVER FOX PEARL', hex: '#e6ebf2', hex2: '#5ad8ff', finish: 2, rare: true, unlock: 'drop', rar: 'epic' },
+  { id: 'b_lantern', name: 'LANTERN CANDY', hex: '#d8261a', finish: 1, rare: true, unlock: 'drop', rar: 'epic' },
+  { id: 'b_oni', name: 'ONI FLAME PEARL', hex: '#c8102a', hex2: '#ffb21a', finish: 2, rare: true, unlock: 'drop', rar: 'legend' },
+  { id: 'a_prism', name: 'PRISM PEARL', hex: '#7a2bff', hex2: '#18d6e8', finish: 2, rare: true, unlock: 'drop', rar: 'epic' },
+  { id: 'a_titan', name: 'TITANIUM CHROME', hex: '#cfd6e2', finish: 1, rare: true, unlock: 'drop', rar: 'epic' },
+  { id: 'a_comet', name: 'BLUE COMET PEARL', hex: '#18d6e8', hex2: '#1a2fd8', finish: 2, rare: true, unlock: 'drop', rar: 'legend' },
+  { id: 's_orchid', name: 'MIDNIGHT ORCHID', hex: '#1a0f2e', hex2: '#c04dff', finish: 2, rare: true, unlock: 'drop', rar: 'legend' },
+  { id: 's_empress', name: 'EMPRESS GOLD', hex: '#e0a820', hex2: '#3a0a22', finish: 2, rare: true, unlock: 'drop', rar: 'legend' },
+];
+export const paintById = (id) => PAINTS.find((p) => p.id === id) || PAINTS[0];
+/* rarity tiers (colour on the STYLE tab tiles, the reveal sheet and the result screen) */
+export const RARITY = { common: { name: 'COMMON', col: '#b9c2cf' }, rare: { name: 'RARE', col: '#3d9bff' }, epic: { name: 'EPIC', col: '#c04dff' }, legend: { name: 'LEGENDARY', col: '#ffb81f' } };
+export const RIMS = [{ id: 'wheel', name: 'TWIN-5', rar: 'common' }, { id: 'wheel2', name: 'MESH-10', coins: 800, rar: 'common' },
+  /* career drop rims (early progression, 2026-11-13; tools/make_rims.py sheet rims_drop): won in the career (BEATS below) */
+  { id: 'd_pink', name: 'CANDY TWIN', rare: true, unlock: 'drop', rar: 'epic' }, { id: 'd_chrome', name: 'CHROME DISH', rare: true, unlock: 'drop', rar: 'rare' },
+  { id: 'd_redring', name: 'RED RING-6', rare: true, unlock: 'drop', rar: 'rare' }, { id: 'd_cobalt', name: 'COBALT SPLIT', rare: true, unlock: 'drop', rar: 'epic' },
+  { id: 'd_turbine', name: 'TURBINE', rare: true, unlock: 'drop', rar: 'rare' }, { id: 'd_snow', name: 'SNOW MESH', rare: true, unlock: 'drop', rar: 'epic' },
+  // rare rims (tools/make_rims.py -> sprites/rim_<id>.webp): collectibles, never for sale. unlock: 'streak7' = day 7 of the
+  // login streak, 'daily' = a Daily Challenge GOLD (each gold gives the next missing one in this order)
+  { id: 'r_gold', name: 'GOLD MESH', rare: true, unlock: 'streak7', rar: 'legend' }, { id: 'r_redlip', name: 'RED LIP', rare: true, unlock: 'daily', rar: 'rare' },
+  { id: 'r_neon', name: 'NEON SPOKE', rare: true, unlock: 'daily', rar: 'legend' }, { id: 'r_aero', name: 'AERO DISC', rare: true, unlock: 'daily', rar: 'epic' },
+  { id: 'r_bronze', name: 'BRONZE 10', rare: true, unlock: 'daily', rar: 'rare' }, { id: 'r_white', name: 'WHITE STAR', rare: true, unlock: 'streak21', rar: 'legend' },
+  /* chapter reward rims (2026-11-13; sheets rims_drop2 / rims_drop3, tools/make_rims.py): rare in C, epic in B / A,
+     legendary in S; each boss drops a signature set one step up */
+  { id: 'c_harbor', name: 'HARBOR SIX', rare: true, unlock: 'drop', rar: 'rare' }, { id: 'c_anchor', name: 'ANCHOR MESH', rare: true, unlock: 'drop', rar: 'rare' },
+  { id: 'c_fox', name: 'SILVER FOX', rare: true, unlock: 'drop', rar: 'epic' }, { id: 'b_ember', name: 'EMBER FIVE', rare: true, unlock: 'drop', rar: 'epic' },
+  { id: 'b_lantern', name: 'LANTERN LATTICE', rare: true, unlock: 'drop', rar: 'epic' }, { id: 'b_oni', name: 'ONI FLAME', rare: true, unlock: 'drop', rar: 'legend' },
+  { id: 'a_cirrus', name: 'CIRRUS FAN', rare: true, unlock: 'drop', rar: 'epic' }, { id: 'a_prism', name: 'PRISM SPLIT', rare: true, unlock: 'drop', rar: 'epic' },
+  { id: 'a_comet', name: 'BLUE COMET', rare: true, unlock: 'drop', rar: 'legend' }, { id: 's_crown', name: 'GOLD CROWN', rare: true, unlock: 'drop', rar: 'legend' },
+  { id: 's_midnight', name: 'MIDNIGHT NEON', rare: true, unlock: 'drop', rar: 'legend' }, { id: 's_empress', name: 'EMPRESS FILIGREE', rare: true, unlock: 'drop', rar: 'legend' }];
+export const rarOf = (r) => RARITY[(r && r.rar) || (r && r.rare ? 'rare' : 'common')];
+export const rimFile = (id) => (id === 'wheel' || id === 'wheel2' ? `sprites/${id}.webp` : `sprites/rim_${id}.webp`);
+export const UNLOCK_HINT = { streak7: 'DAY 7 LOGIN STREAK', streak10: 'DAY 10 LOGIN STREAK', streak21: 'DAY 21 LOGIN STREAK', daily: 'DAILY CHALLENGE GOLD', drop: 'CAREER REWARD' };
+export const streakCar = (k) => CAR_META[k] && CAR_META[k].streak;
+// code-only cosmetics per car (save.cosm[car][kind] = option id). coins = buy once (works on every car);
+// unlock = collectible (daily.js). The look is applied by main.js / fx (window.GT_cosm(car) returns the choice).
+export const COSM = {
+  glow: { name: 'UNDERGLOW', opts: [{ id: 'off', name: 'OFF' }, { id: 'pink', name: 'PINK', hex: '#ff2f9a', coins: 900 }, { id: 'cyan', name: 'CYAN', hex: '#18e0ff', coins: 900 },
+    { id: 'purple', name: 'PURPLE', hex: '#9a40ff', coins: 900 }, { id: 'green', name: 'GREEN', hex: '#2fff7a', coins: 900 }, { id: 'red', name: 'RED', hex: '#ff2a3a', coins: 900 },
+    { id: 'white', name: 'ICE', hex: '#e8f6ff', rare: true, unlock: 'daily' },
+    /* chapter rewards (BEATS) */
+    { id: 'teal', name: 'HARBOR TEAL', hex: '#14e0c8', rare: true, unlock: 'drop', rar: 'rare' }, { id: 'lantern', name: 'LANTERN ORANGE', hex: '#ff6a1a', rare: true, unlock: 'drop', rar: 'epic' },
+    { id: 'comet', name: 'COMET BLUE', hex: '#3a6bff', rare: true, unlock: 'drop', rar: 'epic' }, { id: 'royal', name: 'ROYAL GOLD', hex: '#ffc21a', rare: true, unlock: 'drop', rar: 'legend' }] },
+  smoke: { name: 'TIRE SMOKE', opts: [{ id: 'white', name: 'WHITE', hex: '#e8e8ee' }, { id: 'pink', name: 'PINK', hex: '#ff6ac0', coins: 600 }, { id: 'blue', name: 'BLUE', hex: '#5ab8ff', coins: 600 },
+    { id: 'purple', name: 'PURPLE', hex: '#b070ff', coins: 600 }, { id: 'yellow', name: 'YELLOW', hex: '#ffd84a', coins: 600 }, { id: 'black', name: 'BLACK', hex: '#2a2a33', rare: true, unlock: 'streak7' }] },
+  flame: { name: 'NITRO FLAME', opts: [{ id: 'blue', name: 'BLUE', hex: '#3aa0ff' }, { id: 'purple', name: 'PURPLE', hex: '#a040ff', coins: 800 },
+    { id: 'green', name: 'GREEN', hex: '#2fff7a', coins: 800 }, { id: 'red', name: 'RED', hex: '#ff3020', coins: 800 }, { id: 'gold', name: 'GOLD', hex: '#ffc020', rare: true, unlock: 'daily' }] },
+  tint: { name: 'WINDOW TINT', opts: [{ id: 'light', name: 'LIGHT', v: 0 }, { id: 'dark', name: 'DARK', v: 0.5, coins: 400 }, { id: 'limo', name: 'LIMO', v: 0.85, coins: 700 }] },
+  decal: { name: 'DECAL', opts: [{ id: 'none', name: 'NONE' }, { id: 'single', name: 'SINGLE STRIPE', coins: 700 }, { id: 'double', name: 'TWIN STRIPE', coins: 900 },
+    { id: 'number', name: 'RACE NUMBER', rare: true, unlock: 'streak7' }] },
+};
+// engine / exhaust SOUND options per car (save.sound[car] = {exhaust, swap}); ids agreed with the audio side. No turbo
+// sounds (user decision). (audio.js setEngineProfile({car, exhaust, swap}); optional Audio.previewSound(profile) plays a 2-3 s rev)
+export const SOUND = {
+  exhaust: { name: 'EXHAUST', opts: [{ id: 'stock', name: 'STOCK' }, { id: 'sport', name: 'SPORT', coins: 500 }, { id: 'straight', name: 'STRAIGHT PIPE', coins: 1500 },
+    { id: 'popcorn', name: 'CRACKLE TUNE', coins: 4000 }, { id: 'antilag', name: 'ANTI-LAG', gems: 15, unlock: 'daily' }] },
+  swap: { name: 'ENGINE SWAP', opts: [{ id: 'default', name: 'FACTORY' }, { id: 'i6', name: 'INLINE-6', coins: 3000 }, { id: 'v8cross', name: 'V8 CROSSPLANE', coins: 4000 },
+    { id: 'v8flat', name: 'V8 FLATPLANE', coins: 4500 }, { id: 'flat6', name: 'FLAT-6', coins: 5000 }, { id: 'rotary2', name: 'TWIN ROTOR', gems: 12 },
+    { id: 'v10', name: 'V10', gems: 20, rare: true, unlock: 'daily' }, { id: 'v12', name: 'V12', rare: true, unlock: 'streak21' }] },
+};
+// 'sport' was the free default before the sound shop: keep it free for cars that already had it
+export const soundOf = (save, car) => { const o = Object.assign({ exhaust: (save.exhaust || {})[car] || 'sport', swap: 'default' }, (save.sound || {})[car] || {}); delete o.turbo; return o; };
+export const soundOwned = (save, kind, o) => (!o.coins && !o.gems && !o.rare) || (kind === 'exhaust' && o.id === 'sport') || (save.soundOwned || []).includes(kind + ':' + o.id);
+export const cosmOf = (save, car) => { const d = {}; for (const k in COSM) d[k] = COSM[k].opts[0].id; return Object.assign(d, (save.cosm || {})[car] || {}); };
+export const cosmOwned = (save, kind, o) => !o.coins && !o.rare || (save.cosmOwned || []).includes(kind + ':' + o.id);
+
+// ---------- career ----------
+const CREWS = {
+  D: { crew: 'BACK-ALLEY LEAGUE', ref: 'car_hero', names: ['RUST HOUND', 'MOTH', 'TWO-STROKE TAKA', 'NEON KID', 'SPARKY', 'DOC VOLT', 'LANTERN', 'BIG MAKO', 'SHUTTER'], boss: "KAITO 'ALLEY KING'", bossCar: 'car_red', bossPaint: 'm_ruby' },
+  C: { crew: 'HARBOR LIGHTS', ref: 'car_silver', names: ['PIER RAT', 'GULL', 'FOGHORN', 'CARGO', 'MISTRAL', 'RIN', 'TUGBOAT', 'ANCHOR', 'CRANE'], boss: "MISAKI 'SILVER FOX'", bossCar: 'car_silver', bossPaint: 'p_ghost' },
+  B: { crew: 'RED LANTERN CREW', ref: 'car_red', names: ['EMBER', 'TORCH', 'CINDER', 'FIRECRACKER', 'KAGURA', 'ASH', 'SMOKE', 'BLAZE', 'INFERNO'], boss: "GORO 'RED ONI'", bossCar: 'car_red', bossPaint: 'p_sunset' },
+  A: { crew: 'OVERPASS SYNDICATE', ref: 'car_cyan', names: ['VOLT', 'STATIC', 'ARC', 'PRISM', 'HALO', 'CIRRUS', 'ZENITH', 'NOVA', 'ORBIT'], boss: "SHIN 'BLUE COMET'", bossCar: 'car_cyan', bossPaint: 'p_aurora' },
+  S: { crew: 'MIDNIGHT CROWN', ref: 'car_black', names: ['SHADE', 'ECLIPSE', 'RAVEN', 'PHANTOM', 'OBSIDIAN', 'WRAITH', 'NOCTURNE', 'VOID', 'REAPER'], boss: 'THE MIDNIGHT EMPRESS', bossCar: 'car_black', bossPaint: 'm_gun' },
+};
+export const RUNGS = 10;
+/* ---------- race types (physics.RACE_TYPES): names, rules line, icon (inline SVG), reward multiplier ---------- */
+const SVG = (d) => `<svg class="rtI" viewBox="0 0 24 24">${d}</svg>`;
+export const TYPE_INFO = {
+  drag: { name: 'DRAG', sub: '1/4 MILE · LIGHT TREE', rules: 'Launch in the green, shift in the green.', k: 1, col: '#ff2f8e',
+    icon: SVG('<rect x="8" y="2.5" width="8" height="19" rx="2"/><circle cx="12" cy="7" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="17" r="1.6" class="f"/>') },
+  roll: { name: 'ROLL RACE', sub: '1/2 MILE · ROLLING START', rules: 'Cruise side by side. GO on the 3rd honk: it floors itself. Kick down first if it helps, then shift in the green.', k: 1.15, col: '#3dd6ff',
+    icon: SVG('<path d="M3 15a9 9 0 0 1 18 0"/><path d="M12 15l4.5-5"/><path d="M4 19h4M10 19h4M16 19h4"/>') },
+  cop: { name: 'COP CHASE', sub: '1/2 MILE · BAY PATROL', rules: 'Bay Patrol is closing in. GO on the 3rd beep, shift in the green, reach the off-ramp first.', k: 1.3, col: '#ff4a5a',
+    icon: SVG('<path d="M7 14a5 5 0 0 1 10 0v3H7z"/><path d="M5 20h14M12 4v3M5.5 7l2 2M18.5 7l-2 2"/>') },
+  half: { name: 'HALF-MILE', sub: '1/2 MILE · 2 NITRO SHOTS', rules: 'Twice the distance and two nitro shots. Top gear matters.', k: 1.2, col: '#ffd23a',
+    icon: SVG('<path d="M5 21V4"/><path d="M5 4h12l-2.5 4L17 12H5"/><path d="M19 15l-4 6M15 15h4v2"/>') },
+  wet: { name: 'WET NIGHT', sub: '1/4 MILE · RAIN · LOW GRIP', rules: 'Rain on the strip. Feather the launch, wheelspin costs time.', k: 1.15, col: '#5aa8ff',
+    icon: SVG('<path d="M12 3c3.5 4.5 5.5 7.5 5.5 10.5a5.5 5.5 0 0 1-11 0C6.5 10.5 8.5 7.5 12 3z"/><path d="M9.5 14a2.5 2.5 0 0 0 2.5 2.5"/>') },
+};
+export const TYPE_ORDER = ['drag', 'roll', 'cop', 'half', 'wet'];
+/* rival / cop target-ET multiplier per type (tools/career_sim.mjs: the same first-try win rate as a DRAG at that rung) */
+export const TYPE_ET = (typeof process !== 'undefined' && process.env && process.env.TYPE_ET) ? JSON.parse(process.env.TYPE_ET) : { drag: 1, wet: 1, roll: 1, half: 1, cop: 1 };
+/* career mix (map.js ROUTE, user 2026-11-13): a 2nd race type by the 2nd career race (3rd with the tutorial), a new one
+   every 2-3 races through tier D, COP CHASE as tier D's last rival; the boss races the area's signature type */
+export const SIGNATURE = Object.fromEntries(Object.keys(ROUTE).map((t) => [t, ROUTE[t][RUNGS - 1].t]));
+export const typeOf = (tier, i) => (stopOf(tier, i) || {}).t || 'drag';
+/* where a rung races: { id, name, sub, env, look, area, x, y } */
+export const placeOf = (tier, i) => { const s = stopOf(tier, i); return { id: s.at, ...locOf(s.at), x: s.x, y: s.y }; };
+// boss ET = this share of the way from stock to the fully upgraded ref car (0.7 with 6 parts; 13 parts make "full" faster)
+const BOSS_F = 0.57;
+/* tier rebalance (2026-11-13): D (slower stock) and B (6-speed, more grip) gain more from upgrades than before, so their bosses ask for a smaller share: the same seconds of upgrades as before */
+const BOSS_FT = { D: 0.5, C: 0.55, B: 0.5 };
+/* rival looks (user, 2026-11-13: "opponents all look like the stock cars you can own"): every rival has its own paint
+   from its name (gloss in D, metallic from C, pearls from B up), its own rims, and every boss a special finish + an
+   underglow. { name, hex, hex2 (pearl flip), finish (0 gloss / 1 metallic / 2 pearl), rim, glow (underglow hex) }.
+   main.js rivalLook() applies it (never the player's paint on the same model in the same race). */
+const LK = (name, hex, finish = 0, hex2 = null, rim = 'wheel2', glow = null) => ({ id: 'rv_' + name.toLowerCase().replace(/\W+/g, '_'), name, hex, hex2, finish, rim, glow });
+export const RIVAL_LOOKS = {
+  SHO: LK('MINT', '#5fe0b4', 0, null, 'wheel2'),
+  'RUST HOUND': LK('RUST ORANGE', '#b8521e', 0, null, 'wheel2'), MOTH: LK('DUSK LILAC', '#a08ad0', 0, null, 'd_chrome'),
+  'TWO-STROKE TAKA': LK('ACID GREEN', '#8cff1a', 0, null, 'wheel'), 'NEON KID': LK('HOT MAGENTA', '#ff1fb4', 0, null, 'd_pink'),
+  SPARKY: LK('VOLT YELLOW', '#ffe11a', 0, null, 'r_white'), 'DOC VOLT': LK('VOLT TEAL', '#14c8b4', 0, null, 'd_turbine'),
+  LANTERN: LK('LANTERN AMBER', '#ff9a1a', 0, null, 'r_bronze'), 'BIG MAKO': LK('SHARK GREY', '#4f6e8c', 1, null, 'd_redring'),
+  SHUTTER: LK('GRAPHITE', '#3b3f4a', 1, null, 'd_snow'),
+  "KAITO 'ALLEY KING'": LK('KING RUBY', '#c0102a', 2, '#ff6a1a', 'r_gold', '#ff2a3a'),
+  'PIER RAT': LK('DOCK OLIVE', '#6b7a3a', 1, null, 'wheel'), GULL: LK('GULL WHITE', '#eef1f6', 1, null, 'd_cobalt'),
+  FOGHORN: LK('SAFETY ORANGE', '#ff5a1a', 1, null, 'r_white'), CARGO: LK('CONTAINER BLUE', '#2f6fd8', 1, null, 'd_chrome'),
+  MISTRAL: LK('SEA MIST', '#8fd8e8', 1, null, 'd_snow'), RIN: LK('SAKURA', '#ff7aa8', 1, null, 'd_pink'),
+  TUGBOAT: LK('TUG RED', '#d42a2a', 1, null, 'r_bronze'), ANCHOR: LK('DEEP NAVY', '#1b2c5a', 1, null, 'd_turbine'),
+  CRANE: LK('CRANE YELLOW', '#ffc21a', 1, null, 'wheel2'),
+  "MISAKI 'SILVER FOX'": LK('FOX CHROME', '#dfe4ee', 2, '#7ae8ff', 'r_neon', '#18e0ff'),
+  EMBER: LK('EMBER', '#ff5a1f', 1, null, 'd_redring'), TORCH: LK('TORCH GOLD', '#ffb21a', 1, null, 'r_bronze'),
+  CINDER: LK('CINDER', '#3a2626', 2, '#ff4a1a', 'd_snow'), FIRECRACKER: LK('FIRECRACKER', '#ff2a3a', 2, '#ffd21a', 'r_white'),
+  KAGURA: LK('SHRINE PEARL', '#f2e6d6', 2, '#ff3a4a', 'r_gold'), ASH: LK('ASH', '#8a8a92', 1, null, 'd_cobalt'),
+  SMOKE: LK('SMOKE', '#4a4e58', 2, '#9aa4b8', 'd_chrome'), BLAZE: LK('BLAZE', '#ff7a00', 2, '#ff2a00', 'r_redlip'),
+  INFERNO: LK('INFERNO', '#b0001a', 2, '#ff7a00', 'r_aero'),
+  "GORO 'RED ONI'": LK('ONI PEARL', '#ff2f6a', 2, '#ffb21a', 'r_redlip', '#ff3a1a'),
+  VOLT: LK('VOLT', '#d4ff1a', 1, null, 'r_neon'), STATIC: LK('STATIC', '#9ab0ff', 2, '#f2f4ff', 'd_snow'),
+  ARC: LK('ARC BLUE', '#3d9bff', 1, null, 'r_white'), PRISM: LK('PRISM', '#ff4fd8', 2, '#18d6e8', 'd_pink'),
+  HALO: LK('HALO', '#fff2c0', 2, '#ffd02a', 'r_gold'), CIRRUS: LK('CIRRUS', '#cfe8ff', 1, null, 'd_chrome'),
+  ZENITH: LK('ZENITH', '#5a2bff', 2, '#18d6e8', 'r_aero'), NOVA: LK('NOVA', '#ff3a6a', 2, '#ffb21a', 'd_redring'),
+  ORBIT: LK('ORBIT', '#1a2a6a', 2, '#7a2bff', 'd_turbine'),
+  "SHIN 'BLUE COMET'": LK('COMET PEARL', '#18d6e8', 2, '#3a5bff', 'r_neon', '#3a8bff'),
+  SHADE: LK('SHADE', '#1e1e2a', 2, '#5a6070', 'd_snow'), ECLIPSE: LK('ECLIPSE', '#141018', 2, '#ffb21a', 'r_gold'),
+  RAVEN: LK('RAVEN', '#15121c', 2, '#3d6bff', 'd_cobalt'), PHANTOM: LK('PHANTOM', '#d8dce8', 1, null, 'r_white'),
+  OBSIDIAN: LK('OBSIDIAN', '#101018', 2, '#8a2be2', 'r_aero'), WRAITH: LK('WRAITH', '#9aa4b8', 2, '#e8f0ff', 'd_chrome'),
+  NOCTURNE: LK('NOCTURNE', '#1a1040', 2, '#ff2f9a', 'd_pink'), VOID: LK('VOID', '#0c0c12', 2, '#18e0a0', 'r_neon'),
+  REAPER: LK('REAPER', '#2a0008', 2, '#ff1a3a', 'r_redlip'),
+  'THE MIDNIGHT EMPRESS': LK('MIDNIGHT NOIR', '#15121c', 2, '#ff2f9a', 'r_gold', '#c04dff'),
+};
+/* quick races ("STREET RACER"): a look from the crew of that tier, or any */
+export const quickLook = (tier, r) => { const cr = CREWS[tier] || CREWS.D, L = cr.names.map((n) => RIVAL_LOOKS[n]).filter(Boolean); return L[Math.floor(r * L.length) % L.length]; };
+const RIVAL_CARS = ['car_silver', 'car_yellow', 'car_cyan', 'car_black', 'car_red', 'car_hero'];
+const tierRange = new Map();
+// Expected rival ET per rung: from (stock ref ET + 0.55 s) down to the boss at ~62 % of the way to the fully-upgraded ref ET.
+const DEBUT_EASE = (typeof process !== 'undefined' && process.env && process.env.DEBUT_EASE) ? +process.env.DEBUT_EASE : 0.15;
+export function rungInfo(tier, i) {
+  const cr = CREWS[tier];
+  if (!tierRange.has(tier)) tierRange.set(tier, [predictET(cr.ref), predictET(cr.ref, fullLv())]);
+  const [stock, max] = tierRange.get(tier);
+  /* CrazyGames review (2026-11-13): an easier start (stock + 0.62 s) and an ease-in curve (exp 1.35), so a decent run on
+     the stock or first-upgraded car wins rungs 1-3; the boss stays where it was (tools/career_sim.mjs) */
+  const a = stock + 0.62, boss = stock - (BOSS_FT[tier] || BOSS_F) * (stock - max);
+  const f = Math.pow(i / (RUNGS - 1), 1.35);
+  /* a race type's debut (its first rung in the career, tier D) is a bit easier: the new rules cost time the first go */
+  const ty = typeOf(tier, i), debut = tier === 'D' && ty !== 'drag' && i < RUNGS - 1 && ROUTE.D.findIndex((s) => s.t === ty) === i;
+  const et = a + (boss - a) * f + (debut ? DEBUT_EASE : 0);
+  const isBoss = i === RUNGS - 1;
+  const skill = isBoss ? 0.95 : 0.5 + 0.38 * i / (RUNGS - 2);
+  const pen = 0.04 + (1 - skill) * 0.45; // average time a driver of this skill loses vs the ideal
+  const ti = tierIdx(tier);
+  return {
+    tier, i, isBoss, name: isBoss ? cr.boss : cr.names[i], crew: cr.crew, skill, et, idealTarget: et - pen, type: typeOf(tier, i), place: placeOf(tier, i),
+    car: isBoss ? cr.bossCar : RIVAL_CARS[(i * 7 + ti * 3) % RIVAL_CARS.length], paint: isBoss ? cr.bossPaint : null, look: RIVAL_LOOKS[isBoss ? cr.boss : cr.names[i]] || null,
+  };
+}
+
+// Rival spec that runs targetET with a perfect driver: a uniform virtual upgrade level (fractional, can exceed 5) on
+// every part, so traction-limited cars also get quicker (torque alone stops helping once the tires are the limit).
+/* type + pspec (optional): for the longer / rolling types the rival is tuned on that type's own ideal time, scaled by the
+   player car's ratio (its ideal time on the type / its 1/4-mile ideal), so a rung is as hard in every type */
+const ratioCache = new Map();
+export function typeRatio(pspec, type) {
+  const T = P.RACE_TYPES[type];
+  if (!T || (!T.roll && !T.grip && T.dist === P.QUARTER)) return 1;   /* wet counts too (tier rebalance 2026-11-13) */
+  const id = type + ':' + pspec.tq.toFixed(1) + ':' + pspec.mass + ':' + pspec.redline + ':' + pspec.nitro + ':' + pspec.gears.length;
+  if (!ratioCache.has(id)) ratioCache.set(id, P.idealTime(P.prepType({ ...pspec }, type), type) / P.idealET(pspec).et);
+  return ratioCache.get(id);
+}
+const tuneCache = new Map();   /* tuneRival probe times (see below) */
+export function tuneRival(key, targetET, type = 'drag', pspec = null) {
+  const at = (l) => { const s0 = P.prepareSpec(P.CARS[key], 1, modsFor({ engine: l, turbo: l, gearbox: l, nitro: l, tires: l, weight: l })); s0.vlevelKey = 'L' + l; return s0; };
+  const T = P.RACE_TYPES[type], long = T && (T.roll || T.grip || T.dist !== P.QUARTER) && pspec;   /* wet: tuned on its own time too, so a grippy rival car gets no rain advantage */
+  const R = long ? typeRatio(pspec, type) : 1;
+  const time0 = long ? (sp) => P.idealTime(P.prepType({ ...sp }, type), type) / R : (sp) => P.idealET(sp).et;
+  /* perf (Note 9, 2026-11-15): each probe is a whole simulated race (~8 ms on the phone, ~25 per rival at the race start).
+     The probes are deterministic, so a level probed before (same car, race type, ratio) is reused: same result */
+  const time = (sp) => { const id = key + '|' + type + '|' + (long ? R.toFixed(6) : 1) + '|' + (sp.vlevelKey || ''); if (!sp.vlevelKey) return time0(sp); if (!tuneCache.has(id)) { if (tuneCache.size > 4000) tuneCache.clear(); tuneCache.set(id, time0(sp)); } return tuneCache.get(id); };
+  let lo = -4, hi = 9;
+  if (time(at(lo)) < targetET) {   /* a fast car far below its class (S car as a D rival): also scale its power, on the same race-type clock (tier rebalance 2026-11-13) */
+    const L = modsFor({ engine: lo, turbo: lo, gearbox: lo, nitro: lo, tires: lo, weight: lo });
+    let a = 0.2, b = 1;
+    for (let i = 0; i < 12; i++) { const m = (a + b) / 2; if (time(P.prepareSpec(P.CARS[key], m, L)) > targetET) a = m; else b = m; }
+    const s = P.prepareSpec(P.CARS[key], (a + b) / 2, L); s.vlevel = lo; return s;
+  }
+  for (let i = 0; i < 11; i++) { const mid = (lo + hi) / 2; if (time(at(mid)) > targetET) lo = mid; else hi = mid; }
+  const s = at((lo + hi) / 2); delete s.vlevelKey; s.vlevel = +((lo + hi) / 2).toFixed(2);
+  return s;
+}
+
+// ---------- rewards ----------
+export function reward({ mode, tier, rung = 0, won, margin = 0, launch = '', grades = [], replay = false, daily = false, boss = false, type = 'drag' }) {
+  const base = 220 * TM[tier] * ((TYPE_INFO[type] || TYPE_INFO.drag).k);   /* longer / harder race types pay more */
+  const lines = [];
+  let total = 0;
+  const add = (label, v) => { v = Math.round(v / 5) * 5; if (v > 0) { lines.push([label, v]); total += v; } };
+  const mult = mode === 'quick' ? 0.6 : replay ? 0.5 : 1;
+  if (won) add(boss ? 'BOSS DEFEATED' : 'WIN', base * mult * (boss ? 6 : 1 + 0.08 * rung));
+  else add('ENTRY', base * mult * 0.25);
+  const perf = grades.filter((g) => g === 'PERFECT').length, good = grades.filter((g) => g === 'GOOD').length;
+  if (launch === 'PERFECT') add('PERFECT LAUNCH', base * 0.12 * (mult > 0.5 ? 1 : 0.6));
+  if (perf) add(`PERFECT SHIFT x${perf}`, base * 0.08 * perf);
+  if (good) add(`GOOD SHIFT x${good}`, base * 0.03 * good);
+  if (won && margin > 0) add('MARGIN', base * mult * Math.min(0.5, margin * 0.5));
+  if (won && daily) add('DAILY FIRST WIN x2', total);
+  const gems = won && boss && !replay ? 10 : (won && perf >= 4 ? 1 : 0);
+  return { coins: total, gems, lines };
+}
+
+// ---------- save ----------
+export const SAVE_KEY = 'gt_save_v2';
+export function defaultSave() {
+  return { v: 3, streak: { n: 0, last: '' }, dly: null, coins: START_COINS, gems: 5, car: 'car_hero', owned: [], paint: {}, rims: {}, up: {}, paintsOwned: [], rimsOwned: ['wheel'],
+    career: { D: 0, C: 0, B: 0, A: 0, S: 0 }, races: 0, wins: 0, perfects: 0, daily: '', best: {} };
+}
+export function loadSave(storage) {
+  let s = defaultSave();
+  try {
+    const raw = storage && storage.getItem(SAVE_KEY);
+    if (raw) s = Object.assign(s, JSON.parse(raw));
+    else {
+      const old = storage && JSON.parse(storage.getItem('gt_save_v1') || 'null');
+      if (old) { // v1: {car, paint: {car: hex}, races, wins}
+        s.races = old.races || 0; s.wins = old.wins || 0;
+        for (const k in old.paint || {}) { const p = PAINTS.find((q) => q.hex === old.paint[k]); if (p) s.paint[k] = p.id; }
+      }
+    }
+  } catch { /* corrupt: start fresh */ }
+  s.career = Object.assign({ D: 0, C: 0, B: 0, A: 0, S: 0 }, s.career);
+  if (!s.owned.includes(s.car)) s.car = s.owned[0] || (CAR_META[s.car] ? s.car : STARTERS[0]);   /* no car yet: save.car = the car on show (not owned) */
+  for (const k of s.owned) upOf(s, k);
+  // v3: login streak + daily challenge + collectibles (daily.js); old saves just get the empty records
+  if (!(s.v >= 3)) { s.v = 3; s.streak = s.streak || { n: 0, last: '' }; s.dly = s.dly || null; }
+  s.cosm = s.cosm || {}; s.cosmOwned = s.cosmOwned || []; s.sound = s.sound || {}; s.soundOwned = s.soundOwned || [];
+  // the TURBO KIT sound was removed: refund it once (ui.js shows a toast for s._turboRefund) and drop turbo from every car
+  if (s.soundOwned.includes('turbo:on')) { s.soundOwned = s.soundOwned.filter((x) => !x.startsWith('turbo:')); s.coins += 2000; s._turboRefund = 2000; }
+  for (const c in s.sound) if (s.sound[c]) delete s.sound[c].turbo; if (!(s.adapt >= -2)) s.adapt = 0;
+  // saves that cleared a chapter before the free chapter car existed and can't race the next one: hand it over now
+  for (const t of TIERS.slice(0, -1)) { const nt = TIERS[tierIdx(t) + 1]; if (s.career[t] >= RUNGS && !ownsTierCar(s, nt)) grantChapterCar(s, t); }
+  migrateProg(s);   /* early progression beats (2026-11-13): saves from before get what they already passed, once */
+  catchUpBeats(s);   /* beats added later (chapter 2-5 rewards): wins already past them grant them once, quietly */
+  if (new URLSearchParams(typeof location !== 'undefined' ? location.search : '').has('unlockall')) {
+    for (const r of RIMS) if (!s.rimsOwned.includes(r.id)) s.rimsOwned.push(r.id);
+    for (const p of PAINTS) if (!s.paintsOwned.includes(p.id) && (p.coins || p.gems || p.rare)) s.paintsOwned.push(p.id);
+    for (const k in COSM) for (const o of COSM[k].opts) if ((o.coins || o.rare) && !s.cosmOwned.includes(k + ':' + o.id)) s.cosmOwned.push(k + ':' + o.id);
+    for (const k in SOUND) for (const o of SOUND[k].opts) if (!s.soundOwned.includes(k + ':' + o.id)) s.soundOwned.push(k + ':' + o.id);
+  }
+  return s;
+}
+export const upOf = (save, k) => { const z = zeroLv(), u = save.up[k] || (save.up[k] = z); for (const q in z) if (!(u[q] >= 0)) u[q] = 0; return u; };
+// Chapter reward: beating a tier's boss gives the first (cheapest, non-streak) car of the next tier for free, so the next
+// chapter can always be raced right away. save.carGift = the car whose unlock moment ui.js still has to show.
+export const giftCar = (t) => CAR_ORDER.filter((k) => CAR_META[k].tier === t && !CAR_META[k].streak).sort((a, b) => CAR_META[a].price - CAR_META[b].price)[0] || null;
+export const ownsTierCar = (save, t) => save.owned.some((k) => CAR_META[k] && tierIdx(CAR_META[k].tier) >= tierIdx(t));
+export function grantChapterCar(save, clearedTier) {
+  const nt = TIERS[tierIdx(clearedTier) + 1], k = nt && giftCar(nt);
+  if (!k || save.owned.includes(k)) return null;
+  save.owned.push(k); upOf(save, k);
+  if (save.owned.includes(save.car)) save.giftFrom = save.car;   /* ui.js offers to bring this car's look onto the gift */
+  if (tierIdx(CAR_META[save.car].tier) < tierIdx(nt)) save.car = k;   /* drive it straight into the new chapter */
+  save.carGift = k;
+  return k;
+}
+// ---------- early progression beats (user, 2026-11-13: "after the first races the player keeps getting cool things") ----------
+// BEATS[tier][wins] = what the w-th career win of that tier unlocks (tier D: something every 1-2 races; the race-type
+// debuts on the route fill the gaps). kinds: rim (free mags, reveal + EQUIP), car (joins the dealer), parts (a part group
+// opens in the garage), paint, cosm. Granted once (save.prog.got); the reveal sheets queue in save.prog.q (ui.js).
+export const BEATS = {
+  D: { 1: [{ kind: 'rim', id: 'd_pink' }], 2: [{ kind: 'car', k: 'car_neon' }], 3: [{ kind: 'parts', g: 'tune' }], 4: [{ kind: 'rim', id: 'd_chrome' }],
+    5: [{ kind: 'paint', id: 'm_gold' }], 6: [{ kind: 'parts', g: 'pro' }], 7: [{ kind: 'rim', id: 'd_redring' }], 8: [{ kind: 'cosm', ck: 'glow', id: 'pink' }],
+    10: [{ kind: 'rim', id: 'd_cobalt' }] },
+  /* chapters 2-5 (user, 2026-11-13: "more free skins, like wheels, unlocked by beating levels in chapters 2-5"; "their car
+     keeps getting more beautiful"): a cosmetic every 1-3 wins that builds up the look: rims -> paint -> underglow -> rims ->
+     decal / premium finish -> the boss's signature rims + pearl. Rarity rises per chapter (rare C, epic B / A, legendary S) */
+  C: { 2: [{ kind: 'rim', id: 'c_harbor' }], 4: [{ kind: 'paint', id: 'c_harbor' }], 5: [{ kind: 'rim', id: 'd_turbine' }], 7: [{ kind: 'cosm', ck: 'glow', id: 'teal' }],
+    8: [{ kind: 'rim', id: 'c_anchor' }, { kind: 'cosm', ck: 'decal', id: 'single' }], 10: [{ kind: 'rim', id: 'c_fox' }, { kind: 'paint', id: 'c_fox' }, { kind: 'rim', id: 'd_snow' }] },
+  B: { 2: [{ kind: 'rim', id: 'b_ember' }], 4: [{ kind: 'paint', id: 'b_lantern' }], 5: [{ kind: 'cosm', ck: 'glow', id: 'lantern' }], 7: [{ kind: 'rim', id: 'b_lantern' }],
+    8: [{ kind: 'cosm', ck: 'decal', id: 'double' }], 10: [{ kind: 'rim', id: 'b_oni' }, { kind: 'paint', id: 'b_oni' }] },
+  A: { 2: [{ kind: 'rim', id: 'a_cirrus' }], 4: [{ kind: 'paint', id: 'a_prism' }], 5: [{ kind: 'cosm', ck: 'glow', id: 'comet' }], 7: [{ kind: 'rim', id: 'a_prism' }],
+    8: [{ kind: 'paint', id: 'a_titan' }], 10: [{ kind: 'rim', id: 'a_comet' }, { kind: 'paint', id: 'a_comet' }] },
+  S: { 2: [{ kind: 'rim', id: 's_crown' }], 4: [{ kind: 'paint', id: 's_orchid' }], 5: [{ kind: 'cosm', ck: 'glow', id: 'royal' }], 7: [{ kind: 'rim', id: 's_midnight' }],
+    8: [{ kind: 'cosm', ck: 'decal', id: 'number' }], 10: [{ kind: 'rim', id: 's_empress' }, { kind: 'paint', id: 's_empress' }] },
+};
+/* part groups that open with tier D progress (the 6 basics are there from the start) */
+export const PART_GROUPS = { tune: { name: 'TUNING PARTS', at: 3, parts: ['intake', 'ecu', 'intercooler', 'fuel'] }, pro: { name: 'PRO PARTS', at: 6, parts: ['clutch', 'diff', 'suspension'] } };
+const PART_GATE = Object.fromEntries(Object.values(PART_GROUPS).flatMap((g) => g.parts.map((p) => [p, g.at])));
+export const partOpen = (save, id) => !PART_GATE[id] || ((save && save.career && save.career.D) || 0) >= PART_GATE[id];
+export const partGateAt = (id) => PART_GATE[id] || 0;
+/** a car's dealer gate (career D wins), 0 = none */
+export const carUnlockAt = (k) => (CAR_META[k] && CAR_META[k].unlockD) || 0;
+export const carUnlocked = (save, k) => !carUnlockAt(k) || ((save.career && save.career.D) || 0) >= carUnlockAt(k);
+const beatKey = (t, w, b) => `${t}${w}:${b.kind}:${b.id || b.k || b.g}`;
+function grantBeat(save, b) {
+  if (b.kind === 'rim' && !save.rimsOwned.includes(b.id)) save.rimsOwned.push(b.id);
+  if (b.kind === 'paint' && !save.paintsOwned.includes(b.id)) save.paintsOwned.push(b.id);
+  if (b.kind === 'cosm') { save.cosmOwned = save.cosmOwned || []; if (!save.cosmOwned.includes(b.ck + ':' + b.id)) save.cosmOwned.push(b.ck + ':' + b.id); }
+}
+/** label for one beat: { title, name, sub, rar } (ui.js reveal sheet, result screen, NEXT UNLOCK line) */
+export function beatInfo(b) {
+  if (b.kind === 'rim') { const r = RIMS.find((q) => q.id === b.id); return { title: 'FREE MAGS', name: r.name, sub: rarOf(r).name + ' RIMS', rar: r.rar }; }
+  if (b.kind === 'car') return { title: 'NEW CAR', name: P.CARS[b.k].name, sub: 'AT THE DEALER' };
+  if (b.kind === 'parts') { const g = PART_GROUPS[b.g]; return { title: 'NEW PARTS', name: g.name, sub: g.parts.length + ' NEW UPGRADES' }; }
+  if (b.kind === 'paint') { const p = paintById(b.id); return { title: 'FREE PAINT', name: p.name, sub: p.finish === 2 ? (p.hex2 ? 'TWO-TONE PEARL' : 'PEARL PAINT') : p.finish === 1 ? 'METALLIC PAINT' : 'PAINT', rar: p.rar }; }
+  if (b.kind === 'cosm') { const C = COSM[b.ck], o = C.opts.find((q) => q.id === b.id); return { title: b.ck === 'decal' ? 'NEW DECAL' : 'NEW STYLE', name: o.name + (b.ck === 'decal' ? '' : ' ' + C.name), sub: C.name, rar: o.rar }; }
+  return { title: 'NEW', name: '', sub: '' };
+}
+const ensureProg = (save) => (save.prog = save.prog || { got: [], q: [], fu: 0 });
+/** after a first-time career win (save.career already counted): grant that win's beats once, queue their reveals */
+export function progAfterWin(save, tier) {
+  const pr = ensureProg(save), w = save.career[tier] || 0, out = [];
+  for (const b of (BEATS[tier] || {})[w] || []) {
+    const key = beatKey(tier, w, b);
+    if (pr.got.includes(key)) continue;
+    pr.got.push(key); grantBeat(save, b);
+    const it = { ...b, tier, w }; pr.q.push(it); out.push(it);
+  }
+  return out;
+}
+/** the next beat ahead in the career: { b, tier, w, left } (left = career wins still needed), or null */
+export function nextBeat(save) {
+  for (const t of TIERS) {
+    const w0 = save.career[t] || 0;
+    for (let w = w0 + 1; w <= RUNGS; w++) { const bs = (BEATS[t] || {})[w]; if (bs && bs.length) return { b: bs[0], tier: t, w, left: w - w0 }; }
+    if (w0 < RUNGS) return null;
+  }
+  return null;
+}
+/* old saves (no save.prog): grant every beat already passed, once. The new car's reveal is queued (it is new to them);
+   the rest arrive as one catch-up line (save.prog.catchup, ui.js toast). The guided first upgrade counts as done. */
+function migrateProg(s) {
+  if (s.prog) return;
+  const pr = ensureProg(s), names = [];
+  for (const t of TIERS) for (let w = 1; w <= (s.career[t] || 0); w++) for (const b of (BEATS[t] || {})[w] || []) {
+    pr.got.push(beatKey(t, w, b)); grantBeat(s, b);
+    if (b.kind === 'car') { if (!s.owned.includes(b.k)) pr.q.push({ ...b, tier: t, w }); }
+    else if (b.kind !== 'parts') names.push(beatInfo(b).name);
+  }
+  if (names.length) pr.catchup = names;
+  pr.fu = (s.career.D || 0) >= 1 || s.races > 2 ? 1 : 0;
+}
+/* saves that already have save.prog but passed wins whose beats were added later: grant those once (no reveal sheets,
+   one catch-up toast line like migrateProg) */
+function catchUpBeats(s) {
+  const pr = ensureProg(s), names = [];
+  for (const t of TIERS) for (let w = 1; w <= (s.career[t] || 0); w++) for (const b of (BEATS[t] || {})[w] || []) {
+    const key = beatKey(t, w, b);
+    if (pr.got.includes(key) || b.kind === 'car' || b.kind === 'parts') continue;
+    pr.got.push(key); grantBeat(s, b); names.push(beatInfo(b).name);
+  }
+  if (names.length) pr.catchup = (pr.catchup || []).concat(names);
+}
+// Tier is open once the previous tier's boss is beaten.
+export const tierOpen = (save, t) => tierIdx(t) === 0 || save.career[TIERS[tierIdx(t) - 1]] >= RUNGS;
+export const today = () => new Date().toISOString().slice(0, 10);

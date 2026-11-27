@@ -1,0 +1,40 @@
+/* =================== theme: NEON SYNTHWAVE GLASS (frosted panels, pink/cyan neon edges, gradient fills) =================== */
+:root[data-theme="synth"] { --acc: #ff3fb4; --acc2: rgba(255,63,180,.22); --cy: #3ff2ff; --surf: rgba(34,16,64,.62); --surf2: rgba(120,80,255,.12); --surf3: rgba(160,120,255,.22);
+  --line: rgba(120,230,255,.45); --line2: rgba(255,120,220,.7); --r: calc(var(--u) * 14); --r-panel: calc(var(--u) * 18); --hud-bg: rgba(30,14,60,.45); --hud-line: rgba(63,242,255,.85);
+  --tx2: rgba(225,215,255,.78); --tx3: rgba(200,190,255,.55);
+  --tach-face: rgba(20,8,44,.62); --tach-ring: #3ff2ff; --tach-ring2: #ff3fb4; --tach-ring-w: 3; --tach-glow: 10; --tach-tick: #e9f9ff; --tach-tick2: rgba(160,240,255,.5);
+  --tach-num: #e9f9ff; --tach-red: #ff3f6a; --tach-needle: #ff3fb4; --tach-prog: #ff9be0; --tach-font: 'Barlow Condensed'; --tach-font-w: italic 700; --tach-led-off: rgba(160,120,255,.3); }
+:root[data-theme="synth"] .btn { box-shadow: inset 0 0 0 1.5px var(--line), 0 0 12px rgba(63,242,255,.28); background: linear-gradient(180deg, rgba(90,50,170,.45), rgba(30,14,70,.55)); }
+:root[data-theme="synth"] .btn.gold, :root[data-theme="synth"] #career .btn.gold { background: linear-gradient(90deg, #ff3fb4, #9b3cff); box-shadow: inset 0 0 0 1.5px rgba(255,190,240,.9), 0 0 20px rgba(255,63,180,.65); }
+:root[data-theme="synth"] .btn, :root[data-theme="synth"] .tab, :root[data-theme="synth"] .mTxt, :root[data-theme="synth"] .banner, :root[data-theme="synth"] .carT, :root[data-theme="synth"] #uName, :root[data-theme="synth"] .tabTitle { font-style: italic; }
+:root[data-theme="synth"] .btn.tile { box-shadow: inset 0 0 0 1.5px rgba(255,120,220,.7), 0 0 14px rgba(255,63,180,.35); }
+:root[data-theme="synth"] .glass, :root[data-theme="synth"] .panel, :root[data-theme="synth"] .aCta, :root[data-theme="synth"] #career .aCard { background: linear-gradient(180deg, rgba(60,24,110,.62), rgba(18,8,40,.72)); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+  box-shadow: inset 0 0 0 1.5px var(--line2), 0 0 22px rgba(255,63,180,.35), var(--shadow); }
+:root[data-theme="synth"] #career .btn { box-shadow: inset 0 0 0 1.5px var(--line), 0 0 10px rgba(63,242,255,.25); background: rgba(60,30,120,.4); }
+:root[data-theme="synth"] .cpill { background: rgba(30,14,60,.7); box-shadow: inset 0 0 0 1.5px var(--line), 0 0 10px rgba(63,242,255,.3); }
+:root[data-theme="synth"] #title .logo .l1 { font-style: italic; font-size: calc(var(--u) * 38); color: #c9f9ff; text-shadow: 0 0 10px rgba(63,242,255,.9), 0 0 24px rgba(63,242,255,.5); }
+:root[data-theme="synth"] #title .logo .l1 span { color: #ff8fd8; text-shadow: 0 0 10px rgba(255,63,180,.95), 0 0 26px rgba(255,63,180,.6); }
+:root[data-theme="synth"] #title .logo .tag { color: #ffb8e8; }
+:root[data-theme="synth"] .tab.on, :root[data-theme="synth"] .seg button.on { background: linear-gradient(90deg, #ff3fb4, #9b3cff); color: #fff; }
+:root[data-theme="synth"] .part.on, :root[data-theme="synth"] .th.on { box-shadow: inset 0 0 0 1.5px var(--cy), 0 0 14px rgba(63,242,255,.55); background-color: rgba(63,242,255,.1); }
+:root[data-theme="synth"] .sb .bar i { background: linear-gradient(90deg, #3ff2ff, #ff3fb4); }
+:root[data-theme="synth"] #subs span, :root[data-theme="synth"] #toast, :root[data-theme="synth"] .coachBub { background: rgba(34,16,64,.82); box-shadow: inset 0 0 0 1.5px var(--line2), 0 0 16px rgba(255,63,180,.35); }
+:root[data-theme="synth"] #subs b { color: #ff8fd8; text-shadow: 0 0 8px rgba(255,63,180,.8); }
+:root[data-theme="synth"] #hud .btn.ic { box-shadow: inset 0 0 0 1.5px var(--hud-line), 0 0 12px rgba(63,242,255,.5); }
+:root[data-theme="synth"] #hud #plus, :root[data-theme="synth"] #hud #gas { box-shadow: inset 0 0 0 1.5px #ff8fd8, 0 0 14px rgba(255,63,180,.6); }
+:root[data-theme="synth"] #prog .track { height: 3px; background: linear-gradient(90deg, rgba(63,242,255,.6), rgba(255,63,180,.6)); box-shadow: 0 0 8px rgba(63,242,255,.5); }
+:root[data-theme="synth"] #mk1 { background: #ff3fb4; box-shadow: 0 0 0 1.5px #fff, 0 0 10px #ff3fb4; }
+:root[data-theme="synth"] #mk2 { background: #3ff2ff; box-shadow: 0 0 0 1.5px #fff, 0 0 10px #3ff2ff; }
+:root[data-theme="synth"] .trow .dot.p1 { background: #ff3fb4; } :root[data-theme="synth"] .trow .dot.p2 { background: #3ff2ff; }
+:root[data-theme="synth"] #gear { color: #fff; text-shadow: 0 0 12px rgba(255,63,180,.9); font-style: italic; }
+:root[data-theme="synth"] .cdNum { color: #fff; text-shadow: 0 0 6px #fff, 2px 2px 0 #ff8fd8, 4px 4px 0 #ff3fb4, 6px 6px 0 #9b3cff, 0 0 30px rgba(255,63,180,.9), 0 0 50px rgba(63,242,255,.5); }
+:root[data-theme="synth"] .cdRing i { background: #3ff2ff; }
+:root[data-theme="synth"] .pop b { text-shadow: 0 0 14px rgba(255,63,180,.8), 0 2px 10px rgba(0,0,0,.5); }
+/* win/lose scene + VS intro */
+:root[data-theme="synth"] { --scene-win: rgba(155,60,255,.4); --scene-lose: rgba(60,20,110,.45); --vs-l1: #ff3fb4; --vs-l2: #7a2bff; --vs-r1: #3ff2ff; --vs-r2: #1f4fd6; --vs-bolt: #3ff2ff; }
+:root[data-theme="synth"] .rsPhoto { -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); box-shadow: inset 0 0 0 1.5px var(--line2), 0 0 22px rgba(255,63,180,.35); }
+:root[data-theme="synth"] .rsWord { font-style: italic; color: #ff8fd8; text-shadow: 0 0 12px rgba(255,63,180,.95), 0 0 30px rgba(255,63,180,.6); }
+:root[data-theme="synth"] .lose .rsWord { color: #9fdcff; text-shadow: 0 0 12px rgba(63,242,255,.7); }
+:root[data-theme="synth"] .rsMargin { text-shadow: 0 0 12px currentColor; font-style: italic; }
+:root[data-theme="synth"] .vsInfo b, :root[data-theme="synth"] .vsVs::before { font-style: italic; } :root[data-theme="synth"] .vsVs::before { text-shadow: 0 0 14px rgba(255,63,180,.9), 0 0 30px rgba(63,242,255,.6); }
+:root[data-theme="synth"] .vsInfo em, :root[data-theme="synth"] .coachBub { box-shadow: inset 0 0 0 1.5px var(--line2), 0 0 12px rgba(255,63,180,.35); }

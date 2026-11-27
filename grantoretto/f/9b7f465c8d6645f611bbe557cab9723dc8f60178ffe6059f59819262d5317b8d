@@ -1,0 +1,106 @@
+// Retention: Daily Challenge (one car per UTC day, solo vs the clock, 3 targets) + login streak + collectible
+// cosmetics (rare rims / special paints). Pure save logic; ui.js draws it, main.js runs the 'daily' race mode.
+// Save v3 (meta.loadSave migrates): save.streak = {n, last}, save.dly = {date, best, paid: {b, s, g}}.
+// Test flags: ?daily=YYYY-MM-DD (pretend date), ?streak=N (set the streak, next claim = day N+1), ?unlockall.
+import * as M from './meta.js';
+import * as P from './physics.js';
+
+const Q = new URLSearchParams(typeof location !== 'undefined' ? location.search : '');
+export const dayKey = () => (/^\d{4}-\d{2}-\d{2}$/.test(Q.get('daily') || '') ? Q.get('daily') : new Date().toISOString().slice(0, 10));
+const prevDay = (d) => new Date(Date.parse(d + 'T00:00:00Z') - 864e5).toISOString().slice(0, 10);
+function hash(str) { let h = 2166136261; for (const c of str) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); } return h >>> 0; }
+
+// ---------- daily challenge ----------
+const DLV = 2; // every part at level 2 for everyone
+export const OFF = { b: 0.6, s: 0.34, g: 0.18 };
+export const DTYPES = ['drag', 'half', 'wet'];
+export const DOFF = { drag: 1, half: 1.0, wet: 0.8 };   /* target offsets scale with the type's length / spread */
+export function challenge(date = dayKey()) {
+  const cars = M.CAR_ORDER.filter((k) => P.CARS[k] && !M.streakCar(k)); // reward cars stay out of the daily
+  const car = cars[hash('gt-daily-' + date) % cars.length];
+  const L = {}; for (const p of M.PARTS) L[p.id] = DLV;
+  /* the daily rotates race types (solo: DRAG / HALF-MILE / WET NIGHT); targets from that type's perfect run */
+  const type = DTYPES[hash('gt-dtype-' + date) % DTYPES.length];
+  const ideal = type === 'drag' ? M.predictET(car, L) : P.idealTime(P.prepType(M.buildSpec(car, L), type), type);
+  // calibrated with tools/daily_sim.mjs (bot skill 0.6 -> Bronze, 0.75 -> Silver, 0.88 -> Gold over 20 seeds, every car)
+  const k = DOFF[type] || 1;
+  const t = { b: +(ideal + OFF.b * k).toFixed(2), s: +(ideal + OFF.s * k).toFixed(2), g: +(ideal + OFF.g * k).toFixed(2) };
+  return { date, car, levels: L, ideal, targets: t, type };
+}
+export const REWARD = { b: { coins: 400 }, s: { coins: 700, gems: 3 }, g: { item: true } };
+export function dailyState(save) {
+  const c = challenge();
+  if (!save.dly || save.dly.date !== c.date) save.dly = { date: c.date, best: 0, paid: {} };
+  return { c, best: save.dly.best, paid: save.dly.paid };
+}
+export const medalFor = (et, t) => (et > 0 && et <= t.g ? 'g' : et > 0 && et <= t.s ? 's' : et > 0 && et <= t.b ? 'b' : null);
+export const MEDAL_NAME = { b: 'BRONZE', s: 'SILVER', g: 'GOLD' };
+/** After a daily run: best time, new medals paid once per day. Returns {medal, lines, coins, gems, item}. */
+export function finishDaily(save, et) {
+  const { c } = dailyState(save);
+  if (et > 0 && (!save.dly.best || et < save.dly.best)) save.dly.best = et;
+  const medal = medalFor(et, c.targets);
+  const out = { medal, lines: [], coins: 0, gems: 0, item: null };
+  for (const m of ['b', 's', 'g']) {
+    if (!medal || 'bsg'.indexOf(m) > 'bsg'.indexOf(medal) || save.dly.paid[m]) continue;
+    save.dly.paid[m] = 1;
+    const r = REWARD[m];
+    if (r.coins) { out.coins += r.coins; out.lines.push([`DAILY ${MEDAL_NAME[m]}`, r.coins]); }
+    if (r.gems) out.gems += r.gems;
+    if (r.item) { out.item = grantNext(save, 'daily'); }
+  }
+  return out; // main.js adds coins/gems with the race reward
+}
+/** Seconds until the next UTC day. */
+export const untilNext = () => { const n = new Date(); return Math.max(0, (Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate() + 1) - n.getTime()) / 1000); };
+
+// ---------- collectibles ----------
+export const rareItems = (unlock) => [...M.RIMS.filter((r) => r.rare && r.unlock === unlock).map((r) => ({ kind: 'rim', ...r })),
+  ...M.PAINTS.filter((p) => p.rare && p.unlock === unlock).map((p) => ({ kind: 'paint', ...p })),
+  ...Object.entries(M.COSM).flatMap(([k, c]) => c.opts.filter((o) => o.rare && o.unlock === unlock).map((o) => ({ kind: 'cosm', ck: k, ...o, name: o.name + ' ' + c.name }))),
+  ...Object.entries(M.SOUND).flatMap(([k, c]) => c.opts.filter((o) => o.unlock === unlock).map((o) => ({ kind: 'sound', ck: k, ...o, name: o.name + ' ' + c.name })))];
+const listOf = (save, it) => (it.kind === 'rim' ? save.rimsOwned : it.kind === 'paint' ? save.paintsOwned : it.kind === 'sound' ? (save.soundOwned || (save.soundOwned = [])) : (save.cosmOwned || (save.cosmOwned = [])));
+const keyOf = (it) => (it.kind === 'cosm' || it.kind === 'sound' ? it.ck + ':' + it.id : it.id);
+export const owns = (save, it) => listOf(save, it).includes(keyOf(it)) || Q.has('unlockall');
+/** Give the next not-yet-owned collectible of that kind (rims first, then paints). Null when the set is complete. */
+export function grantNext(save, unlock) {
+  const it = rareItems(unlock).find((x) => !owns(save, x));
+  if (!it) return null;
+  listOf(save, it).push(keyOf(it));
+  return it;
+}
+
+// ---------- login streak: a 30-day track ----------
+// milestones: day 7 rare rim, 10 special paint, 14 SAKURA KAI R, 21 rare rim, 30 SEIRYU HX-16; the rest coins / gems.
+// After day 30 it starts again at day 1 (cars already owned give coins instead).
+const C7 = [{ coins: 200 }, { coins: 300 }, { gems: 3 }, { coins: 500 }, { coins: 600 }, { gems: 5 }];
+export const STREAK_LEN = 30;
+export const STREAK = Array.from({ length: STREAK_LEN }, (_, i) => {
+  const d = i + 1, w = Math.floor(i / 7);
+  if (d === 7) return { item: 'streak7' };
+  if (d === 10) return { item: 'streak10' };
+  if (d === 14) return { car: 'car_drift' };
+  if (d === 21) return { item: 'streak21' };
+  if (d === 30) return { car: 'car_hyper' };
+  const b = C7[i % 7] || { coins: 800 }, m = 1 + w * 0.5; // later weeks pay more
+  return b.gems ? { gems: Math.round(b.gems * m) } : { coins: Math.round(b.coins * m / 50) * 50 };
+});
+let streakFlag = false;
+/** Today's claim: {day (1-30), reward}, or null if already claimed today. ?streak=N makes today day N. */
+export function streakDue(save) {
+  const d = dayKey(), s = save.streak || (save.streak = { n: 0, last: '' });
+  if (Q.has('streak') && !streakFlag) { streakFlag = true; s.n = Math.max(0, Math.min(STREAK_LEN - 1, (+Q.get('streak') | 0) - 1)); s.last = prevDay(d); }
+  if (s.last === d) return null;
+  const n = s.last === prevDay(d) ? s.n % STREAK_LEN : 0; // missed a day (or never) -> day 1
+  return { day: n + 1, reward: STREAK[n] };
+}
+export function claimStreak(save) {
+  const due = streakDue(save); if (!due) return null;
+  const r = due.reward, out = { day: due.day, coins: r.coins || 0, gems: r.gems || 0, item: null, car: null };
+  save.coins += out.coins; save.gems += out.gems;
+  if (r.item) out.item = grantNext(save, r.item) || null;
+  if (r.car) { if (!save.owned.includes(r.car)) { save.owned.push(r.car); M.upOf(save, r.car); out.car = r.car; } }
+  if ((r.item && !out.item) || (r.car && !out.car)) { out.coins += 1000; save.coins += 1000; } // already owned: coins instead
+  save.streak = { n: due.day, last: dayKey() };
+  return out;
+}

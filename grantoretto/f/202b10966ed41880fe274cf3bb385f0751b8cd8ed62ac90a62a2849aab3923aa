@@ -1,0 +1,148 @@
+// Staging coach: the 3-2-1-GO countdown (big extruded numeral in a draining dotted ring) and the first-race launch
+// tutorial (tap the needle into the green 3 times before the lights start, Rei coaching from beside the gas pedal).
+// main.js calls hud.holdStage(G, player, dt, save, STAGE) once per physics step while staging; while it returns true
+// the stage clock is parked before the first amber, so the countdown only starts once the tutorial is passed.
+// Flags: ?tut=1 forces the tutorial (also in headless/auto runs), ?tut=0 skips it, ?tuthold=N freezes it at success N.
+import * as C from './cast.js';
+
+const $ = (id) => document.getElementById(id);
+const Q = new URLSearchParams(location.search);
+/* CrazyGames review (2026-11-13): the gate is ONE hold in the green (0.6 s, the bar fills), then the countdown starts right
+   away; same words as the pedal and the hints: HOLD to rev, TAP to shift, N for nitro, colour word GREEN. No progress for
+   ~5 s -> a bigger hint (Rei + a pulsing pedal). */
+const NEED = 1, HOLD = 0.6;
+const MOBILE = matchMedia('(pointer: coarse)').matches || /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && innerWidth < 900);
+const GAS = MOBILE ? 'THE GAS PEDAL' : 'SPACE';
+
+let tut = null;          // tutorial state for the current race, null when not running
+let raceKey = -1;        // detects a new race (G.raceNo or a stageT reset)
+let lastStageT = 1e9;
+let cdShown = '';        // countdown numeral on screen
+let cdOn = -1, cdDots = null;   /* lit ring dots, cached dot list */
+let goT = 0;
+
+function el(id, html, parent) {
+  let e = $(id);
+  if (!e) { e = document.createElement('div'); e.id = id; e.innerHTML = html; (parent || $('hud')).appendChild(e); }
+  return e;
+}
+function ensureDom() {
+  /* the ring: 24 dots (r 3.2 on radius 54 of a 120 box, as the old SVG). perf (Note 9): HTML dots instead of SVG circles, so
+     each dot's fade runs on the compositor; the SVG repainted every frame through the countdown */
+  el('count', `<div class="cdRing">${Array.from({ length: 24 }, (_, i) => {
+    const a = -Math.PI / 2 + i / 24 * Math.PI * 2; return `<i style="left:${((60 + Math.cos(a) * 54 - 3.2) / 1.2).toFixed(3)}%;top:${((60 + Math.sin(a) * 54 - 3.2) / 1.2).toFixed(3)}%"></i>`; }).join('')}</div><b class="cdNum"></b>`);
+  el('tut', `<div class="tutTxt">HOLD ${GAS} · REV INTO THE GREEN</div><div class="tutBar"><i></i></div>`);
+  el('coach', '<div class="coachBub"></div><div class="coachArt"></div>');
+}
+
+function coachSay(text, voiceKey) {
+  const b = document.querySelector('#coach .coachBub'); if (!b) return;
+  b.textContent = text;
+  b.classList.remove('in'); void b.offsetWidth; b.classList.add('in');
+  if (voiceKey) C.voice('rei', voiceKey);
+}
+
+function startTut(save) {
+  tut = { n: 0, hold: 0, perf: 0, needRelease: false, done: false, said: '', save, doneT: 0, idle: 0, nag: false };
+  document.body.classList.add('tutOn');
+  $('coach').classList.add('show');
+  coachSay(`Hold ${MOBILE ? 'the gas' : 'SPACE'} to rev. Too high? Ease off. Keep the needle in the green.`);
+  renderTut();
+}
+function endTut() {
+  tut = null;
+  document.body.classList.remove('tutOn', 'tutNag');
+  const c = $('coach'); if (c) c.classList.remove('show');
+}
+function renderTut() {
+  const t = $('tut'); if (!t || !tut) return;
+  t.querySelector('.tutBar i').style.transform = `scaleX(${tut.done ? 1 : Math.min(1, tut.hold / HOLD)})`;
+  t.querySelector('.tutTxt').textContent = tut.done ? 'KEEP IT IN THE GREEN · LAUNCH ON GO' : tut.high ? 'TOO HIGH · EASE OFF, THEN HOLD AGAIN' : `HOLD ${GAS} · KEEP THE NEEDLE IN THE GREEN`;
+  t.classList.toggle('high', !!(tut.high && !tut.done));
+}
+
+/** Per physics step while staging. Returns true while the stage clock must wait (tutorial running). */
+let forcedUsed = false;
+export function holdStage(G, p, dt, save, STAGE, hud) {
+  ensureDom();
+  if (G.stageT < lastStageT) { // new race
+    raceKey++; cdShown = ''; setCount('', 0);
+    endTut();
+    const forced = Q.get('tut');
+    const auto = Q.has('auto') || Q.has('t');
+    // ?tut=1 forces the tutorial for the FIRST race of the session only (it used to repeat every race)
+    const force1 = forced === '1' && !forcedUsed; if (force1) forcedUsed = true;
+    const tutRace = G.lastOpts && G.lastOpts.mode === 'tutorial' && save && !save.tutorialDone;
+    if (force1 || (forced !== '1' && forced !== '0' && !auto && save && (tutRace || save.tutorialReplay))) startTut(save);
+  }
+  lastStageT = G.stageT;
+  const ambers = STAGE.amber, green = STAGE.green;
+  if (tut) {
+    const s = p.spec, rpm = p.rpm;
+    const inGood = rpm >= s.launch.good[0] && rpm <= s.launch.good[1], inPerf = rpm >= s.launch.perfect[0] && rpm <= s.launch.perfect[1];
+    if (!tut.done) {
+      const gas = G.gas || (((Q.get('tut') === '1' && (Q.has('auto') || Q.has('t'))) || (Q.has('autoplay') && !window.GT_BUILD)) && rpm > 1500); // bot drives the demo (?autoplay too)
+      /* no progress for ~5 s: Rei repeats it bigger and the pedal / SPACE hint pulses */
+      { const now = performance.now(); if (G.gas || gas || !tut.idleAt) tut.idleAt = now; tut.idle = G.gas || gas ? 0 : (now - tut.idleAt) / 1000; }   /* wall-clock: slow frames must not stretch it */
+      if (tut.idle > 5 && !tut.nag) { tut.nag = true; document.body.classList.add('tutNag'); coachSay(MOBILE ? 'Press and HOLD the gas pedal!' : 'Press and HOLD SPACE!'); }
+      else if (tut.nag && tut.idle === 0) { tut.nag = false; document.body.classList.remove('tutNag'); }
+      if (tut.needRelease) { /* user: leaving the GREEN (or lifting) re-arms it, no need to drop out of the yellow */ if (!G.gas || rpm < s.launch.perfect[0] || rpm > s.launch.perfect[1]) tut.needRelease = false; if (Q.has('auto') || (Q.has('autoplay') && !window.GT_BUILD)) tut.needRelease = false; }
+      else if (gas && inGood) {
+        tut.hold += dt; if (inPerf) tut.perf += dt;
+        const hq = +Q.get('tuthold');
+        if (tut.hold >= HOLD && hq && tut.n >= hq) tut.hold = HOLD * 0.6; // ?tuthold=N: freeze after N successes (screenshots)
+        else if (tut.hold >= HOLD) {
+          tut.n++;
+          const perfect = tut.perf >= HOLD * 0.5;
+          hud.pop(perfect ? 'PERFECT' : 'GOOD', perfect ? 'huge' : 'good', '');
+          tut.hold = 0; tut.perf = 0;
+          if (tut.n >= NEED) { tut.done = true; tut.doneT = G.stageT; document.body.classList.remove('tutNag'); coachSay(MOBILE ? (tut.save && tut.save.manual ? 'Keep it in the green. At GO swipe up on the left into 1 and keep the gas down. Then swipe ↓ for 2, a Z for 3, in the green.' : 'Keep it in the green. Then TAP GEAR UP (the arrow) in the green.') : 'Keep it in the green. Then PRESS SPACE to shift in the green.', 'pep'); if (tut.save) tut.save.tutorialReplay = false; }   /* tutorialDone is set by the first win (main.js) */
+          else { tut.needRelease = true; coachSay(tut.n === 1 ? "That's it. Again." : 'Once more.'); }
+        }
+      } else if (tut.hold > 0) { tut.hold = Math.max(0, tut.hold - dt * 0.4); tut.perf = Math.min(tut.perf, tut.hold); }   /* forgiving: progress drains slowly, a few passes through the green fill it */
+      tut.high = rpm > s.launch.perfect[1]; tut.low = !(G.gas || gas);
+      renderTut();
+      return true;
+    }
+    renderTut();
+    // short beat after the third success, then the countdown starts and the coach leaves
+    tut.wait = (tut.wait || 0) + dt;   // own timer: the stage clock is parked while we return true (old check never ended)
+    if (tut.wait < 0.25) return true;   // straight into the countdown
+    endTut();
+    // no idle wait for the parked clock to reach the first amber (once the cars have rolled in)
+    if (G.stageT > STAGE.stage) G.stageT = Math.max(G.stageT, ambers[0] - 0.02);
+  }
+  // countdown: 3 / 2 / 1 on the ambers, GO on the green; the dotted ring drains over each second
+  const t = G.stageT;
+  const k = ambers.filter((a) => t >= a).length;
+  if (k > 0 && t < green) setCount(String(4 - k), 1 - (t - ambers[k - 1]) / ((ambers[k] || green) - ambers[k - 1]));
+  else if (t >= green - 0.02) setCount('GO', 1);
+  return false;
+}
+
+function setCount(txt, frac) {
+  const c = $('count'); if (!c) return;
+  if (txt !== cdShown) {
+    cdShown = txt;
+    c.classList.toggle('show', !!txt); c.classList.toggle('go', txt === 'GO');
+    document.body.classList.toggle('ov-count', !!txt);
+    const n = c.querySelector('.cdNum'); n.textContent = txt;
+    n.classList.remove('cdIn'); void n.offsetWidth; n.classList.add('cdIn');
+    clearTimeout(goT);
+    if (txt === 'GO') goT = setTimeout(() => { cdShown = ''; c.classList.remove('show', 'go'); document.body.classList.remove('ov-count'); }, 700);
+  }
+  if (txt && txt !== 'GO') {
+    const on = Math.ceil(24 * Math.max(0, Math.min(1, frac)));
+    if (on !== cdOn) {   /* perf: touch the dots only when the lit count changes (this runs every physics step) */
+      cdOn = on; const dots = cdDots || (cdDots = c.querySelectorAll('.cdRing i'));
+      for (let i = 0; i < dots.length; i++) dots[i].classList.toggle('off', i >= on);
+    }
+  } else if (txt === 'GO' && cdOn !== 24) { cdOn = 24; c.querySelectorAll('.cdRing i').forEach((d) => d.classList.remove('off')); }
+  if (!txt) cdOn = -1;
+}
+
+/* perf: build the countdown / tutorial DOM at load, not on the first staging frame (it cost ~70 ms there on a Note 9) */
+setTimeout(() => { try { if ($('hud')) ensureDom(); } catch (e) { /* the HUD is not there yet: built on first use */ } }, 0);
+
+/** Leaving the race (menu/result): clear everything. */
+export function reset() { endTut(); setCount('', 0); lastStageT = 1e9; }

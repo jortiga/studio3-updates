@@ -1,0 +1,224 @@
+// In-world 3D effects (effects pass, 2026-11-12):
+//   makeFlame()   exhaust flame: two crossed noise-shaded cards from the tailpipe tip (backfire pop / nitro with shock diamonds)
+//   FxParticles   GPU particle system: instanced quads, motion solved in the vertex shader from spawn data (no per-frame
+//                 CPU work besides writing new spawns into a ring buffer), one draw call per system.
+//                 kinds: 'spark' (velocity-stretched hot streaks), 'smoke' (soft lit billows), 'trail' (light streaks)
+import * as THREE from './vendor/three.module.min.js';
+import * as D from './depth.js';
+
+const NOISE = `
+float h21(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float vn(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(h21(i), h21(i + vec2(1.0, 0.0)), f.x), mix(h21(i + vec2(0.0, 1.0)), h21(i + vec2(1.0, 1.0)), f.x), f.y); }`;
+
+// ---------------------------------------------------------------- exhaust flame
+// Geometry: unit card with the nozzle at x = 0 and the flame running to x = -1, y in [-0.5, 0.5]. The group is scaled
+// (length, height, height) per frame; a second card lies flat (xz) so the cone keeps volume at the chase-cam pitch.
+const FLAME_VS = `varying vec2 vF; varying vec3 vWp;
+void main(){ vF = vec2(-position.x, position.y * 2.0); vec4 wp = modelMatrix * vec4(position, 1.0); vWp = wp.xyz;
+  gl_Position = projectionMatrix * viewMatrix * wp; }`;
+const FLAME_FS = `${D.FOG_GLSL}
+${NOISE}
+uniform float uTime, uI, uNitro, uSeed, uLen, uFlat; uniform vec3 uNCol, uNTip;
+varying vec2 vF; varying vec3 vWp;
+void main(){
+  float x = vF.x, y = vF.y, t = uTime;
+  // turbulence scrolls away from the nozzle (world-scaled so a longer flame keeps the same grain)
+  float n = vn(vec2(x * 7.0 * uLen - t * 34.0, y * 2.2 + uSeed)) * 0.6 + vn(vec2(x * 15.0 * uLen - t * 57.0, y * 4.5 - uSeed)) * 0.4;
+  // cone: narrow at the pipe, swells, tapers to a ragged tip
+  float r = mix(0.34, 1.0, smoothstep(0.0, 0.22, x)) * (1.0 - pow(x, 1.4));
+  r *= 0.8 + 0.45 * (n - 0.5) * smoothstep(0.05, 0.4, x) + 0.2 * smoothstep(0.05, 0.4, x);
+  float d = abs(y) / max(r, 1e-3);
+  float tipFade = 1.0 - smoothstep(0.55, 1.0, x + (n - 0.5) * 0.35);
+  float body = (1.0 - smoothstep(0.45, 1.0, d)) * tipFade;
+  float core = (1.0 - smoothstep(0.0, 0.5, d)) * (1.0 - smoothstep(0.08, 0.5 + 0.1 * uNitro, x + (n - 0.5) * 0.15));
+  // shock diamonds (nitro): standing bright cells along the core every ~0.3 m
+  float cell = fract(x * uLen / 0.3 + 0.35);
+  float q = abs(cell - 0.5) * 2.0;
+  float dia = (1.0 - smoothstep(0.25, 0.7, q * 0.55 + d * 0.9)) * (1.0 - smoothstep(0.2, 0.75, x)) * smoothstep(0.03, 0.1, x) * uNitro;
+  vec3 outerP = mix(vec3(1.0, 0.28, 0.05), vec3(1.0, 0.62, 0.18), 1.0 - smoothstep(0.1, 0.7, x));
+  vec3 outerN = mix(uNTip, uNCol, 1.0 - smoothstep(0.15, 0.75, x));
+  vec3 outer = mix(outerP, outerN, uNitro);
+  vec3 coreC = mix(vec3(1.0, 0.93, 0.72), mix(vec3(1.0), uNCol, 0.2), uNitro);
+  float flick = 0.85 + 0.3 * n;
+  vec3 col = outer * body * (0.75 + 0.5 * n) + coreC * core * 1.35 + vec3(0.85, 0.95, 1.0) * dia * 1.3;
+  col *= uI * flick * mix(1.0, 0.55, uFlat) * (1.0 - fogF(vWp));
+  gl_FragColor = vec4(col, 1.0);
+}`;
+export function makeFlame(order) {
+  const g = new THREE.PlaneGeometry(1, 1); g.translate(-0.5, 0, 0);
+  const mat = (flat) => new THREE.ShaderMaterial({
+    uniforms: { ...D.SH, uI: { value: 0 }, uNitro: { value: 0 }, uSeed: { value: Math.random() * 50 }, uLen: { value: 1 }, uFlat: { value: flat }, uNCol: { value: new THREE.Color(0.18, 0.5, 1) }, uNTip: { value: new THREE.Color(0.5, 0.18, 1) } },
+    vertexShader: FLAME_VS, fragmentShader: FLAME_FS, transparent: true, depthTest: true, depthWrite: false,
+    blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+  });
+  const grp = new THREE.Group();
+  const a = new THREE.Mesh(g, mat(0)), b = new THREE.Mesh(g, mat(1));
+  b.rotation.x = Math.PI / 2;
+  for (const m of [a, b]) { m.renderOrder = order; m.frustumCulled = false; grp.add(m); }
+  grp.visible = false;
+  // shares uniforms between both cards except uFlat
+  b.material.uniforms.uI = a.material.uniforms.uI; b.material.uniforms.uNitro = a.material.uniforms.uNitro;
+  b.material.uniforms.uSeed = a.material.uniforms.uSeed; b.material.uniforms.uLen = a.material.uniforms.uLen;
+  b.material.uniforms.uNCol = a.material.uniforms.uNCol; b.material.uniforms.uNTip = a.material.uniforms.uNTip;
+  grp.userData.u = a.material.uniforms;
+  return grp;
+}
+
+// ---------------------------------------------------------------- GPU particles
+// Per instance (ring buffer, written once at spawn): p0 = xyz + spawn time, v = velocity + life,
+// s = size0, size1, drag, gravity, c = rgb + alpha/intensity, x = seed, stretch (spark: s of motion blur, trail: length m),
+// spin, ground (1 = stays above the road). Motion is solved in the vertex shader; dead instances collapse to nothing.
+const P_VS = `${D.LAMP_GLSL}
+attribute vec4 aP0, aV, aS, aC, aX;
+uniform float uTime, uKind; uniform vec4 uTail[2]; uniform vec3 uTailCol, uCamV;
+varying vec2 vQ; varying vec4 vC; varying float vK, vSeed; varying vec3 vWp, vLit;
+void main(){
+  float age = uTime - aP0.w, k = age / aV.w;
+  vQ = position.xy * 2.0; vC = aC; vK = k; vSeed = aX.x;
+  if (k < 0.0 || k >= 1.0) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+  float dr = aS.z, e = dr > 0.0 ? (1.0 - exp(-dr * age)) / dr : age;
+  vec3 p = aP0.xyz + aV.xyz * e; p.y -= 0.5 * aS.w * age * age;
+  vec3 vel = aV.xyz * exp(-dr * age); vel.y -= aS.w * age;
+  if (aX.w > 0.5 && p.y < 0.02) { p.y = 0.02; vel.y = 0.0; }
+  float size = mix(aS.x, aS.y, 1.0 - (1.0 - k) * (1.0 - k));
+  vec4 hv = viewMatrix * vec4(p, 1.0);
+  vec3 wp = p;
+  if (uKind < 0.5 || uKind > 1.5) {
+    // streak: head at p, tail at p - motion (spark) or p - x * length (trail), quad along the projected axis
+    vec3 tailW = uKind < 0.5 ? p - (vel - uCamV) * aX.y : p - vec3(aX.y * (0.4 + 0.6 * min(1.0, k * 4.0)), 0.0, 0.0);
+    vec4 tv = viewMatrix * vec4(tailW, 1.0);
+    vec2 ax = tv.xy - hv.xy; float L = length(ax);
+    vec2 dir = L > 1e-4 ? ax / L : vec2(1.0, 0.0), nrm = vec2(-dir.y, dir.x);
+    float f = position.x + 0.5;
+    hv = mix(hv, tv, f); hv.xy += nrm * position.y * size;
+    hv.xy -= dir * size * 0.5 * (1.0 - 2.0 * f); // round caps
+    wp = mix(p, tailW, f);
+  } else {
+    float a = aX.x * 6.283 + aX.z * age;
+    float c = cos(a), s = sin(a);
+    hv.xy += mat2(c, s, -s, c) * position.xy * size;
+    wp = p + vec3(position.xy * size, 0.0);
+    // light the smoke: street lamps + the cars' tail lights (per vertex)
+    vec3 lit = vec3(0.0);
+    for (int i = 0; i < ${D.NL}; i++) { vec3 L = uLamp[i].xyz - wp; float d2 = dot(L, L); lit += uLampCol * (uLamp[i].w * 9.0 / (d2 + 12.0)); }
+    for (int i = 0; i < 2; i++) { vec3 L = uTail[i].xyz - wp; lit += uTailCol * (uTail[i].w * 0.55 / (dot(L, L) + 0.9)); }
+    vLit = lit;
+  }
+  vWp = wp;
+  gl_Position = projectionMatrix * hv;
+}`;
+const P_FS = `${D.FOG_GLSL}
+${NOISE}
+uniform float uKind, uTime; uniform sampler2D uNoise; uniform vec3 uAmb;
+varying vec2 vQ; varying vec4 vC; varying float vK, vSeed; varying vec3 vWp, vLit;
+void main(){
+  if (uKind < 0.5 || uKind > 1.5) {
+    // hot streak: white core cooling to the particle colour, then to dark red
+    float a = (1.0 - smoothstep(0.0, 1.0, abs(vQ.y))) * (1.0 - smoothstep(0.6, 1.0, abs(vQ.x)) * 0.6);
+    float cool = smoothstep(0.0, 0.85, vK);
+    vec3 col = uKind < 0.5 ? mix(mix(vec3(1.0, 0.97, 0.9), vC.rgb, smoothstep(0.0, 0.35, vK)), vC.rgb * vec3(0.8, 0.25, 0.15), smoothstep(0.5, 1.0, vK)) : vC.rgb;
+    float fade = uKind < 0.5 ? (1.0 - cool * cool) : (1.0 - vK) * (1.0 - vK);
+    gl_FragColor = vec4(col * a * fade * vC.a * (1.0 - fogF(vWp)), 1.0);
+  } else {
+    float r = length(vQ);
+    float n = texture2D(uNoise, vQ * 0.32 + vec2(vSeed * 7.1, vSeed * 3.3 + uTime * 0.03)).r;
+    float n2 = texture2D(uNoise, vQ * 0.7 + vec2(vSeed * 3.7 + vK * 0.4, vSeed * 9.1)).g;
+    float m = 1.0 - smoothstep(0.25, 1.0, r + (n * 0.6 + n2 * 0.4 - 0.5) * 0.7);
+    float fade = smoothstep(0.0, 0.08, vK) * (1.0 - smoothstep(0.35, 1.0, vK));
+    float ground = smoothstep(0.0, 0.28, vWp.y);       // soft against the road
+    float a = m * fade * ground * vC.a;
+    // self-shadowed billow: denser centre a touch darker, rim lit
+    vec3 col = vC.rgb * (uAmb + vLit) * (0.8 + 0.35 * n2) * (1.0 - 0.18 * m);
+    col = mix(col, fogCol(vWp), fogF(vWp));
+    gl_FragColor = vec4(col, a);
+  }
+}`;
+const KIND = { spark: 0, smoke: 1, trail: 2 };
+export class FxParticles {
+  constructor(max, kind, order, noiseTex) {
+    this.max = max; this.head = 0; this.time = 0; this.dirty = false; this.limit = max;
+    const base = new THREE.PlaneGeometry(1, 1);
+    const g = new THREE.InstancedBufferGeometry();
+    g.index = base.index; g.setAttribute('position', base.attributes.position);
+    const A = (n) => { const a = new THREE.InstancedBufferAttribute(new Float32Array(max * 4), 4); a.setUsage(THREE.DynamicDrawUsage); return a; };
+    this.a = { aP0: A(), aV: A(), aS: A(), aC: A(), aX: A() };
+    for (const k in this.a) g.setAttribute(k, this.a[k]);
+    for (let i = 0; i < max; i++) this.a.aP0.array[i * 4 + 3] = -1e9; // all dead
+    for (let i = 0; i < max; i++) this.a.aV.array[i * 4 + 3] = 1;
+    g.instanceCount = max;
+    this.geo = g;
+    const k = KIND[kind], add = k !== 1;
+    this.mat = new THREE.ShaderMaterial({
+      uniforms: { ...D.SH, uTime: { value: 0 }, uKind: { value: k }, uNoise: { value: noiseTex }, uAmb: { value: new THREE.Color(0.36, 0.34, 0.46) },
+        uTail: { value: [new THREE.Vector4(0, -50, 0, 0), new THREE.Vector4(0, -50, 0, 0)] }, uTailCol: { value: new THREE.Color(1.0, 0.16, 0.22) }, uCamV: { value: new THREE.Vector3() } },
+      vertexShader: P_VS, fragmentShader: P_FS, transparent: true, depthTest: true, depthWrite: false,
+      blending: add ? THREE.AdditiveBlending : THREE.NormalBlending,
+    });
+    this.mesh = new THREE.Mesh(g, this.mat);
+    this.mesh.frustumCulled = false; this.mesh.renderOrder = order;
+  }
+  /** quality scale: fraction of spawns kept (LOW/MED/HIGH) */
+  setQuality(q) { this.q = q; }
+  spawn(x, y, z, vx, vy, vz, life, s0, s1, drag, grav, r, g, b, a, seed = Math.random(), stretch = 0.03, spin = 0, ground = 1) {
+    const i = this.head; this.head = (this.head + 1) % this.max;
+    const o = i * 4, A = this.a;
+    A.aP0.array[o] = x; A.aP0.array[o + 1] = y; A.aP0.array[o + 2] = z; A.aP0.array[o + 3] = this.time;
+    A.aV.array[o] = vx; A.aV.array[o + 1] = vy; A.aV.array[o + 2] = vz; A.aV.array[o + 3] = life;
+    A.aS.array[o] = s0; A.aS.array[o + 1] = s1; A.aS.array[o + 2] = drag; A.aS.array[o + 3] = grav;
+    A.aC.array[o] = r; A.aC.array[o + 1] = g; A.aC.array[o + 2] = b; A.aC.array[o + 3] = a;
+    A.aX.array[o] = seed; A.aX.array[o + 1] = stretch; A.aX.array[o + 2] = spin; A.aX.array[o + 3] = ground;
+    this.dirty = true;
+  }
+  update(dt) {
+    this.time += dt; this.mat.uniforms.uTime.value = this.time;
+    if (this.dirty) { for (const k in this.a) this.a[k].needsUpdate = true; this.dirty = false; }
+  }
+  clear() { for (let i = 0; i < this.max; i++) this.a.aP0.array[i * 4 + 3] = -1e9; this.a.aP0.needsUpdate = true; }
+}
+
+// ---------------------------------------------------------------- paint glow on the road (showroom / anime floor reflection)
+// One flat quad per car: an elongated soft ellipse a bit larger than the footprint, brightest along the sills, tinted by
+// the paint (paint -> paint2 front to back for pearl/two-tone). uI = intensity (garage > staging > racing), the CPU
+// stretches it backwards with speed.
+const GLOW_FS = `${D.FOG_GLSL}
+uniform vec3 uCol1, uCol2; uniform float uI, uSill; varying vec2 vF; varying vec3 vWp;
+void main(){
+  vec2 q = vF;                               // x: -1 rear .. 1 front, y: -1 far .. 1 near
+  float d = length(q * vec2(1.0, 1.0));
+  float pool = pow(1.0 - smoothstep(0.0, 1.0, d), 1.25);
+  float sill = exp(-pow((abs(q.y) - 0.46) / 0.14, 2.0)) * (1.0 - smoothstep(0.5, 0.85, abs(q.x)));
+  vec3 col = mix(uCol2, uCol1, q.x * 0.5 + 0.5);
+  float a = (pool * 0.8 + sill * uSill) * uI;
+  gl_FragColor = vec4(min(col * a, vec3(0.55)) * (1.0 - fogF(vWp)), 1.0);   // clamped before bloom
+}`;
+export function makePaintGlow(order) {
+  const g = new THREE.PlaneGeometry(1, 1);
+  const m = new THREE.Mesh(g, new THREE.ShaderMaterial({
+    uniforms: { ...D.SH, uCol1: { value: new THREE.Color(1, 1, 1) }, uCol2: { value: new THREE.Color(1, 1, 1) }, uI: { value: 0.5 }, uSill: { value: 0.6 } },
+    vertexShader: 'varying vec2 vF; varying vec3 vWp; void main(){ vF = position.xy * 2.0; vec4 wp = modelMatrix * vec4(position, 1.0); vWp = wp.xyz; gl_Position = projectionMatrix * viewMatrix * wp; }',
+    fragmentShader: GLOW_FS, transparent: true, depthTest: false, depthWrite: false, blending: THREE.AdditiveBlending,
+  }));
+  m.rotation.x = -Math.PI / 2; m.renderOrder = order; m.frustumCulled = false;
+  return m;
+}
+
+// ---------------------------------------------------------------- ground shockwave ring (nitro ignition)
+// One flat quad on the road; uK = 0..1 progress (radius grows, ring thins and fades). Additive, depth-tested.
+export function makeShockRing(order) {
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.ShaderMaterial({
+    uniforms: { ...D.SH, uK: { value: 1 }, uCol: { value: new THREE.Color(0.3, 0.6, 1) } },
+    vertexShader: 'varying vec2 vQ; varying vec3 vWp; void main(){ vQ = position.xy * 2.0; vec4 wp = modelMatrix * vec4(position, 1.0); vWp = wp.xyz; gl_Position = projectionMatrix * viewMatrix * wp; }',
+    fragmentShader: `${D.FOG_GLSL}
+uniform float uK; uniform vec3 uCol; varying vec2 vQ; varying vec3 vWp;
+void main(){
+  float r = length(vQ), R = 0.15 + 0.8 * (1.0 - (1.0 - uK) * (1.0 - uK)), w = 0.03 + 0.12 * (1.0 - uK);
+  float ring = exp(-pow((r - R) / w, 2.0)) * (1.0 - uK) * step(r, 1.0);
+  float core = exp(-r * r * 30.0) * (1.0 - smoothstep(0.0, 0.35, uK)) * 0.6;
+  gl_FragColor = vec4((uCol * ring * 1.3 + vec3(0.8, 0.9, 1.0) * core) * (1.0 - fogF(vWp)), 1.0);
+}`,
+    transparent: true, depthTest: false, depthWrite: false, blending: THREE.AdditiveBlending,
+  }));
+  m.rotation.x = -Math.PI / 2; m.renderOrder = order; m.frustumCulled = false; m.visible = false;
+  return m;
+}

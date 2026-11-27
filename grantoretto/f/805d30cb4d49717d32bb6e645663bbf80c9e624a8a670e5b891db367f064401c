@@ -1,0 +1,387 @@
+// Drag race physics (SI units: meters, seconds, kg, N, Nm). No three.js in here.
+export const QUARTER = 402.336;          // 1/4 mile in meters
+export const G = 9.81;
+export const DT = 1 / 120;               // fixed sim step
+export const HALF = QUARTER * 2;         /* 1/2 mile */
+/* Race types (TASKS.md "Race-type variety"). dist = metres from the start (roll: from the GO point); roll = rolling start
+   at ROLL.v0 in ROLL.gear, GO on the third honk; cop = roll start with Bay Patrol closing from ROLL.copGap behind (win =
+   reach the off-ramp first); grip = wet-road multiplier; nitro = nitro charges. */
+export const RACE_TYPES = {
+  drag: { dist: QUARTER },
+  half: { dist: HALF, nitro: 2 },
+  wet:  { dist: QUARTER, grip: 0.8 },
+  roll: { dist: HALF, roll: true },
+  cop:  { dist: HALF, roll: true, cop: true },
+};
+export const ROLL = { v0: 60 / 3.6, gear: 2, honks: [1.4, 2.2, 3.0], copGap: 16, auto: 0.02 };   /* auto: the player's car floors it by itself at GO (one step) */
+/** Per-race spec changes for a type (call on the race's own spec copy). */
+export function prepType(spec, type) {
+  const T = RACE_TYPES[type] || RACE_TYPES.drag;
+  if (T.grip) { spec.grip *= T.grip; spec.launchGrip = (spec.launchGrip || 1) * 0.94; }
+  spec.nitroCharges = T.nitro || 1;
+  return spec;
+}
+
+// Torque curve shape (rpm fraction of redline -> fraction of peak torque). Turbo-ish: lazy low end, fat middle.
+const SHAPE = [[0, 0.45], [0.12, 0.5], [0.3, 0.66], [0.45, 0.86], [0.6, 0.98], [0.7, 1.0], [0.8, 0.96], [0.9, 0.88], [1.0, 0.8], [1.06, 0.7]];
+
+// Original fictional cars. sprite = key in manifest/cars.json; len = body length in meters (sprite width).
+/* Tier rebalance 2026-11-13 (TASKS.md): a clean ladder of perfect-driver stock 1/4-mile times, ~0.7 s per class:
+   D 12.45-12.50 (Tsurugi 12.0) / C 11.55 / B 10.85 / A 10.15-10.22 / S 9.45 (Seiryu 9.25). D cars are 5-speeds, C-S
+   6-speeds; ratios spaced so every gear is used and the 1/2-mile types reach the top gear. Tune with tools/career_sim.mjs */
+export const CARS = {
+  car_hero:   { name: 'Kazekiri 16T', short: 'KAZEKIRI', mass: 960,  tq: 223, redline: 8200, idle: 950,
+                gears: [3.31, 2.36, 1.68, 1.19, 0.85], final: 4.30, tireR: 0.30, grip: 1.09, cda: 0.62, nitro: 0.42, len: 4.2, paint: '#2fa84a', tier: 'D' },
+  car_silver: { name: 'Hakuro GT-S', short: 'HAKURO', mass: 1240, tq: 385, redline: 7600, idle: 900,
+                gears: [3.10, 2.13, 1.61, 1.25, 0.99, 0.79], final: 3.90, tireR: 0.32, grip: 1.15, cda: 0.64, nitro: 0.4, len: 4.5, paint: '#d8dde6', tier: 'C' },
+  /* 2026-11-13: a D-class starter (pick your first car): its ideal 1/4 mile (~12.50 s) matches the Kazekiri (12.45 s):
+     more power and revs, more weight */
+  car_yellow: { name: 'Kitsune R7', short: 'KITSUNE', mass: 1100, tq: 241, redline: 8800, idle: 1000,
+                gears: [3.48, 2.52, 1.82, 1.31, 0.95], final: 4.10, tireR: 0.31, grip: 1.11, cda: 0.6, nitro: 0.42, len: 4.3, paint: '#ffd02a', tier: 'D' },
+  /* 2026-11-13 early progression: the 3rd D-class car (unlocked at the dealer after career race 2, meta.CAR_META
+     unlockD). Unused painted art (tools/raw/car_neon.png, green respray), tuned so its stock 1/4 mile (~12.0 s) beats the starters
+     (12.45 s) but stays below the C-class Hakuro (11.55 s), with a higher ceiling (meta.CAR_META: 1,800 launch deal) */
+  car_neon:   { name: 'Tsurugi S8', short: 'TSURUGI', mass: 1090, tq: 272, redline: 8600, idle: 950,
+                gears: [3.30, 2.38, 1.71, 1.24, 0.89], final: 4.10, tireR: 0.31, grip: 1.13, cda: 0.6, nitro: 0.44, len: 4.4, paint: '#2fd06a', tier: 'D' },
+  car_red:    { name: 'Akabane EVR', short: 'AKABANE', mass: 1300, tq: 478, redline: 7400, idle: 900,
+                gears: [2.95, 1.95, 1.44, 1.09, 0.85, 0.66], final: 4.20, tireR: 0.31, grip: 1.28, cda: 0.7, nitro: 0.38, len: 4.4, paint: '#e0242c', tier: 'B' },
+  car_cyan:   { name: 'Aozora MR-9', short: 'AOZORA', mass: 1220, tq: 528, redline: 8400, idle: 1000,
+                gears: [3.00, 2.04, 1.54, 1.19, 0.94, 0.75], final: 3.80, tireR: 0.32, grip: 1.27, cda: 0.58, nitro: 0.42, len: 4.4, paint: '#18d6e8', tier: 'A' },
+  car_black:  { name: 'Kuroshio RS-X', short: 'KUROSHIO', mass: 1420, tq: 998, redline: 7200, idle: 850,
+                gears: [2.90, 1.88, 1.37, 1.03, 0.78, 0.61], final: 3.70, tireR: 0.33, grip: 1.31, cda: 0.68, nitro: 0.4, len: 4.6, paint: '#1b1b22', tier: 'S' },
+  // login-streak reward cars (never for sale; meta.CAR_META streak day). Sprites: Codex car_drift / car_hyper + car_meta.py
+  car_drift:  { name: 'Sakura Kai R', short: 'SAKURA', mass: 1150, tq: 488, redline: 8000, idle: 950, streakOnly: true,
+                gears: [3.15, 2.07, 1.52, 1.15, 0.89, 0.69], final: 4.00, tireR: 0.31, grip: 1.33, cda: 0.64, nitro: 0.4, len: 4.4, paint: '#f4f0f6', tier: 'A' },
+  car_hyper:  { name: 'Seiryu HX-16', short: 'SEIRYU', mass: 1850, tq: 1408, redline: 7000, idle: 800, streakOnly: true,   /* ~1100 hp, traction-limited off the line */
+                gears: [3.10, 2.02, 1.46, 1.10, 0.84, 0.65], final: 3.30, tireR: 0.34, grip: 1.34, cda: 0.62, nitro: 0.36, len: 4.6, paint: '#1a3a8a', tier: 'S' },
+  /* Bay Patrol cruiser (cop chase only; hidden = never in the garage, shop, daily or the random rival pool). Its own
+     painted sedan (tools/make_sprites.py car_cop); drives with the Kuroshio's numbers as before */
+  car_cop:    { name: 'Bay Patrol Interceptor', short: 'PATROL', mass: 1420, tq: 700, redline: 7200, idle: 850, hidden: true,
+                gears: [2.90, 1.98, 1.45, 1.13, 0.92, 0.76], final: 3.70, tireR: 0.33, grip: 1.25, cda: 0.68, nitro: 0.4, len: 4.7, paint: '#eef1f6', tier: 'S' },
+};
+
+export function torqueAt(spec, rpm) {
+  const f = rpm / spec.redline;
+  if (f <= 0) return SHAPE[0][1] * spec.tq;
+  for (let i = 1; i < SHAPE.length; i++) {
+    if (f <= SHAPE[i][0]) {
+      const [x0, y0] = SHAPE[i - 1], [x1, y1] = SHAPE[i];
+      return (y0 + (y1 - y0) * (f - x0) / (x1 - x0)) * spec.tq;
+    }
+  }
+  return SHAPE[SHAPE.length - 1][1] * spec.tq;
+}
+
+const RPM_PER_RADS = 60 / (2 * Math.PI);
+export const rpmFromSpeed = (spec, v, gear) => (v / spec.tireR) * spec.gears[gear - 1] * spec.final * RPM_PER_RADS;
+export const speedFromRpm = (spec, rpm, gear) => rpm / RPM_PER_RADS / (spec.gears[gear - 1] * spec.final) * spec.tireR;
+
+// Shift point per gear: where the next gear pulls harder than this one (max acceleration), capped below the limiter.
+// mods (upgrades, see meta.js): { tq: torque mult, shift: shift-duration mult, nitro: + boost, nitroDur: + seconds,
+// grip: launch grip mult, mass: mass mult }. Timing windows (PERFECT/GOOD ms) never change: shifting stays pure skill.
+export function prepareSpec(base, power = 1, mods = null) {
+  const m = mods || {};
+  const s = { ...base, tq: base.tq * power * (m.tq || 1), power, mass: Math.round(base.mass * (m.mass || 1)), grip: base.grip * (m.grip || 1),
+    nitro: base.nitro + (m.nitro || 0), nitroDur: 3.0 + (m.nitroDur || 0), shiftMul: m.shift || 1,
+    redline: Math.round(base.redline * (m.redline || 1)), launchGrip: m.launchGrip || 1, clutchK: m.clutch || 1 };
+  s.shiftRpm = [];
+  for (let g = 1; g < s.gears.length; g++) {
+    let best = s.redline - 150;
+    for (let r = s.redline * 0.6; r < s.redline; r += 25) {
+      const f1 = torqueAt(s, r) * s.gears[g - 1];
+      const r2 = r * s.gears[g] / s.gears[g - 1];
+      const f2 = torqueAt(s, r2) * s.gears[g];
+      if (f2 > f1) { best = r; break; }
+    }
+    s.shiftRpm.push(Math.min(best, s.redline * 0.945));
+  }
+  s.launch = { perfect: [s.redline * 0.58, s.redline * 0.68], good: [s.redline * 0.48, s.redline * 0.78] };
+  s.hp = Math.round(Math.max(...Array.from({ length: 60 }, (_, i) => torqueAt(s, s.redline * i / 59) * s.redline * i / 59 / 7121)));
+  return s;
+}
+
+export function newCar(spec, id) {
+  return {
+    id, spec, x: 0, v: 0, a: 0, aSm: 0, rpm: spec.idle, rpmVis: spec.idle, rpmRate: 0, gear: 0, throttle: 0,
+    launched: false, shiftT: 0, shiftDur: 0, shiftTo: 0, shiftFrom: 0, nitroLeft: 1, nitroT: 0, nitroDur: spec.nitroDur || 3.0,
+    boostT: 0, spinT: 0, bogT: 0, clutchT: 0, launchRpm: 0, limiter: false, limiterT: 0, wheelSpin: 0,
+    finishT: 0, t: 0, t100: 0, top: 0, shifts: [], launchGrade: '', events: [], driveF: 0, slip: 0,
+    dist: QUARTER, cruise: 0, nitroUsed: 0, nitroRefill: 0,
+    manual: false, gasIn: 1, thr: 1,   /* MANUAL controls (main.js sets manual + gasIn per frame): the pedal is a real throttle; AUTO keeps throttle 1 */
+  };
+}
+/* ---- rolling start: both cars cruise at ROLL.v0, kick down if they like, then GO ---- */
+export function rollCar(c, x, gear = ROLL.gear) { c.x = x; c.v = ROLL.v0; c.gear = gear; c.rpm = c.rpmVis = rpmFromSpeed(c.spec, c.v, c.gear); c.wheelSpin = c.v / c.spec.tireR; }
+/** Steady cruise (before GO, or while the driver has not hit it yet): speed held, rpm coupled to the gear. */
+export function cruiseStep(c, dt) {
+  const s = c.spec;
+  c.x += c.v * dt; c.a = 0; c.aSm += (0 - c.aSm) * Math.min(1, dt * 6); c.throttle = 0.25; c.limiter = false; c.slip = 0; c.driveF = 0;
+  c.rpm = rpmFromSpeed(s, c.v, Math.max(1, c.gear)); c.rpmVis += (c.rpm - c.rpmVis) * Math.min(1, dt * 12); c.wheelSpin = c.v / s.tireR; c.rpmRate = 0;
+}
+/** Kickdown before GO: one gear lower unless the engine would sit on the limiter there. Returns true when it shifted. */
+export function kickdown(c) {
+  if (c.launched || c.gear <= 1) return false;
+  const r = rpmFromSpeed(c.spec, c.v, c.gear - 1);
+  if (r > c.spec.redline - 250) return false;
+  c.gear--; c.rpm = r; c.events.push('kickdown'); return true;
+}
+/** Kickdown helps when the lower gear lands below its shift point (more pull, no instant upshift). */
+export const kickdownGood = (c) => c.gear > 1 && rpmFromSpeed(c.spec, c.v, c.gear - 1) < c.spec.shiftRpm[c.gear - 2] - 300;
+/** GO on a rolling start: the race clock starts for everyone; the car keeps cruising for `hold` s (rival reaction;
+ *  the player: ROLL.auto, or 0.6 s after a jump start). */
+export function rollGo(c, hold, dist) { c.launched = true; c.t = 0; c.clutchT = 0; c.launchRpm = 0; c.cruise = hold; c.launchGrade = 'ROLL'; c.dist = dist; }
+
+// Countdown: free rev with throttle (0/1).
+export function revStep(c, throttle, dt) {
+  const s = c.spec;
+  c.throttle = throttle;
+  const up = 9000 * (1 - 0.45 * c.rpm / s.redline), down = 5200;
+  c.rpm += (throttle ? up : -down) * dt;
+  c.limiter = false;
+  if (c.rpm >= s.redline) { c.rpm = s.redline - 350; c.limiter = true; c.events.push('limiter'); }
+  if (c.rpm < s.idle) c.rpm = s.idle;
+  c.rpmVis += (c.rpm - c.rpmVis) * Math.min(1, dt * 25);
+}
+
+export function launchGrade(c) {
+  const L = c.spec.launch, r = c.rpm;
+  if (r >= L.perfect[0] && r <= L.perfect[1]) return 'PERFECT';
+  if (r >= L.good[0] && r <= L.good[1]) return 'GOOD';
+  return r < L.good[0] ? 'BOG' : 'SPIN';
+}
+
+export function launch(c, force) {   /* force: a grade decided by the caller (MANUAL: reaction time off the green) */
+  c.launched = true; c.gear = 1; c.launchRpm = c.rpm; c.clutchT = 0.45;
+  const g = force || launchGrade(c);
+  c.launchGrade = g;
+  const ck = c.spec.clutchK || 1; // CLUTCH upgrade: a bad launch hurts less (the PERFECT/GOOD rpm windows never change)
+  if (g === 'BOG') c.bogT = (0.35 + (c.spec.launch.good[0] - c.rpm) / c.spec.redline * 2.5) * ck;
+  if (g === 'SPIN') c.spinT = (0.35 + (c.rpm - c.spec.launch.good[1]) / c.spec.redline * 4) * ck;
+  if (g === 'PERFECT') c.boostT = 1.2;
+  if (g === 'LATE') c.bogT = 0.15 * ck;   /* MANUAL: a slow reaction off the green = a soft launch (the clock already ran) */
+  c.events.push('launch:' + g);
+}
+
+// Grade a shift from timing relative to the gear's shift point. ms<0 early, >0 late.
+export function shiftTiming(c) {
+  const s = c.spec, g = c.gear;
+  if (g < 1 || g >= s.gears.length) return null;
+  const target = s.shiftRpm[g - 1];
+  const rate = Math.max(c.rpmRate, 200);
+  let ms = (c.rpm - target) / rate * 1000;
+  if (c.limiterT > 0) ms = Math.max(ms, 150 + c.limiterT * 1000);
+  return ms;
+}
+export function gradeMs(ms) {
+  const a = Math.abs(ms);
+  if (a <= 55) return 'PERFECT';
+  if (a <= 160) return 'GOOD';
+  return ms < 0 ? 'EARLY' : 'LATE';
+}
+
+export function shiftUp(c) {
+  const s = c.spec;
+  if (!c.launched || c.finishT || c.shiftT > 0 || c.gear >= s.gears.length || c.cruise > 0) return null;
+  const ms = shiftTiming(c);
+  const grade = gradeMs(ms);
+  c.shiftFrom = c.gear; c.shiftTo = c.gear + 1;
+  c.shiftDur = c.shiftT = (grade === 'PERFECT' ? 0.06 : grade === 'GOOD' ? 0.17 : 0.3) * (s.shiftMul || 1);
+  if (grade === 'PERFECT') c.boostT = 1.0;
+  c.shifts.push({ gear: c.gear, grade, ms: Math.round(ms), t: c.t });
+  c.events.push('shift:' + grade);
+  return { grade, ms };
+}
+
+export function shiftDown(c) {
+  if (!c.launched || c.finishT || c.shiftT > 0 || c.gear <= 1) return;
+  c.shiftFrom = c.gear; c.shiftTo = c.gear - 1; c.shiftDur = c.shiftT = 0.18 * (c.spec.shiftMul || 1);
+  c.events.push('downshift');
+}
+
+/** MANUAL H-gate: engage gear g. The next gear up is a graded shiftUp (PERFECT / GOOD windows); any other gear
+ *  (down or skipping up) is an ungraded shift like shiftDown. */
+export function selectGear(c, g) {
+  if (!c.launched || c.finishT || c.shiftT > 0 || c.cruise > 0 || g < 1 || g > c.spec.gears.length) return null;
+  if (g === c.gear) return null;
+  if (g === c.gear + 1) return shiftUp(c);
+  c.shiftFrom = c.gear; c.shiftTo = g; c.shiftDur = c.shiftT = 0.18 * (c.spec.shiftMul || 1); c.events.push('downshift');
+  return null;
+}
+
+export function fireNitro(c) {
+  if (!c.launched || c.finishT || c.nitroLeft <= 0 || c.nitroT > 0 || c.cruise > 0) return false;
+  c.nitroLeft = 0; c.nitroT = c.nitroDur; c.nitroUsed++; c.events.push('nitro');
+  return true;
+}
+
+// One race step (after green). Auto throttle.
+export function raceStep(c, dt) {
+  const s = c.spec;
+  c.t += dt;
+  if (c.finishT && c.t > c.finishT + 0.35) { // past the line: lift, chute/brakes
+    c.throttle = 0; c.limiter = false; c.nitroT = 0; c.slip = 0;
+    c.a = -Math.min(7, 2 + c.v * 0.12); c.v = Math.max(0, c.v + c.a * dt); c.x += c.v * dt; c.aSm += (c.a - c.aSm) * Math.min(1, dt * 6);
+    if (c.gear > 1 && c.rpm < s.redline * 0.35) c.gear--;
+    c.rpm = Math.max(s.idle, rpmFromSpeed(s, c.v, Math.max(1, c.gear)));
+    c.rpmVis += (c.rpm - c.rpmVis) * Math.min(1, dt * 10); c.wheelSpin = c.v / s.tireR; c.driveF = 0;
+    return;
+  }
+  if (c.cruise > 0) { c.cruise -= dt; cruiseStep(c, dt); if (c.cruise <= 0) { c.cruise = 0; c.hitT = c.t; c.events.push('hit'); } return; }   /* rolling start: not hit yet */
+  if (c.nitroLeft <= 0 && c.nitroT <= 0 && c.nitroUsed < (s.nitroCharges || 1)) { c.nitroRefill += dt; if (c.nitroRefill > 1.2) { c.nitroLeft = 1; c.nitroRefill = 0; c.events.push('nitro_ready'); } }   /* half-mile: 2nd charge */
+  if (c.manual) { c.thr += ((c.gasIn ? 1 : 0) - c.thr) * Math.min(1, dt * 14); c.throttle = c.thr; } else { c.thr = 1; c.throttle = 1; }   /* MANUAL: pedal down = full throttle (ramps in ~70 ms), up = off */
+  const meff = s.mass * (1.03 + 0.0009 * Math.pow(s.gears[Math.max(0, c.gear - 1)] * s.final, 2));
+  let F = 0;
+  const coupled = rpmFromSpeed(s, c.v, c.gear);
+  let rpm;
+  if (c.shiftT > 0) {
+    c.shiftT -= dt;
+    const k = 1 - Math.max(0, c.shiftT) / c.shiftDur;
+    const rFrom = rpmFromSpeed(s, c.v, c.shiftFrom), rTo = rpmFromSpeed(s, c.v, c.shiftTo);
+    rpm = rFrom + (rTo - rFrom) * (k * k * (3 - 2 * k));
+    if (c.shiftT <= 0) { c.gear = c.shiftTo; c.shiftT = 0; c.limiterT = 0; }
+    F = 0;
+  } else {
+    rpm = coupled;
+    const hold = Math.max(c.launchRpm * 0.72, s.idle * 1.6);
+    if (c.clutchT > 0 || (coupled < hold && c.t < 2.5)) { // clutch slips off the line until the wheels catch up
+      c.clutchT -= dt;
+      const k = Math.max(0, c.clutchT) / 0.45;
+      rpm = Math.max(coupled, c.launchRpm * (0.72 + 0.28 * k) * (c.bogT > 0 ? 0.8 : 1), s.idle * 1.6);
+    }
+    rpm = Math.max(rpm, s.idle * 0.9);
+    let tq = torqueAt(s, rpm);
+    if (c.bogT > 0) { c.bogT -= dt; tq *= 0.5; }
+    if (c.boostT > 0) { c.boostT -= dt; tq *= 1.08; }
+    if (c.nitroT > 0) { c.nitroT -= dt; tq *= 1 + s.nitro; }
+    // rev limiter: fuel cut while at the limit, extra loss so a late shift costs time
+    if (rpm >= s.redline && (!c.manual || c.thr > 0.05)) { c.limiter = true; c.limiterT += dt; tq = 0; F -= s.mass * G * 0.12; }
+    else c.limiter = false;
+    F += tq * s.gears[c.gear - 1] * s.final * 0.88 / s.tireR * (c.manual ? c.thr : 1);
+    /* MANUAL, gas released: no drive and engine braking (stronger at high rpm and in low gears); rpm stays coupled to the wheels so it falls with the speed */
+    if (c.manual && c.thr < 1) F -= (1 - c.thr) * s.mass * G * 0.14 * (rpm / s.redline) * (0.45 + 0.55 * s.gears[c.gear - 1] / s.gears[0]);
+  }
+  // traction (rear-drive, weight transfer with acceleration)
+  const Fmax = s.grip * s.mass * G * (0.6 + 0.32 * Math.max(0, c.aSm) / G) * (c.boostT > 0 && c.t < 1.5 ? 1.06 : 1)
+    * (c.x < 18.3 ? (s.launchGrip || 1) : 1);   // SUSPENSION upgrade: grip in the first 60 ft
+  c.slip = 0;
+  if (F > Fmax) {
+    const pen = c.spinT > 0 ? 0.7 : 0.96;
+    c.slip = Math.min(1, (F - Fmax) / Fmax + (c.spinT > 0 ? 0.6 : 0.15));
+    F = Fmax * pen;
+  } else if (c.spinT > 0) { c.slip = 0.6; F *= 0.8; }
+  if (c.spinT > 0) c.spinT -= dt;
+  c.driveF = F;
+  const drag = 0.5 * 1.2 * s.cda * c.v * c.v + 0.014 * s.mass * G;
+  c.a = (F - drag) / meff;
+  if (c.v <= 0 && c.a < 0) c.a = 0;
+  c.v = Math.max(0, c.v + c.a * dt);
+  c.x += c.v * dt;
+  c.aSm += (c.a - c.aSm) * Math.min(1, dt * 8);
+  // rpm rate the driver sees climbing (used for the shift window): from acceleration in this gear
+  c.rpmRate = Math.max(0, c.aSm) / s.tireR * s.gears[Math.max(0, c.gear - 1)] * s.final * RPM_PER_RADS;
+  c.rpm = Math.min(rpm, s.redline + 50);
+  const bounce = c.limiter ? Math.sin(c.t * 95) * 260 - 200 : 0;
+  c.rpmVis += (c.rpm + bounce - c.rpmVis) * Math.min(1, dt * 30);
+  c.wheelSpin = c.v / s.tireR * (1 + c.slip * 0.8);
+  if (c.v * 3.6 >= 100 && !c.t100) c.t100 = c.t;
+  c.top = Math.max(c.top, c.v);
+  if (!c.finishT && c.x >= c.dist) {
+    // interpolate the exact crossing time
+    const over = (c.x - c.dist) / Math.max(0.01, c.v);
+    c.finishT = c.t - over; c.trap = c.v; c.events.push('finish');
+  }
+}
+
+// --- AI driver ---------------------------------------------------------------------------------------------------
+export function makeAI(c, skill, rnd) {
+  const gauss = () => { let u = 0, v = 0; while (!u) u = rnd(); v = rnd(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
+  const sigma = 25 + (1 - skill) * 170;
+  return {
+    skill, gauss, sigma,
+    launchTarget: (c.spec.launch.perfect[0] + c.spec.launch.perfect[1]) / 2 + gauss() * (1 - skill) * 1400,
+    errMs: gauss() * sigma + (1 - skill) * 30,
+    lateAcc: 0,
+    nitroGear: skill > 0.5 ? 2 + Math.floor(rnd() * 2) : 1 + Math.floor(rnd() * 4),
+    nitroDelay: rnd() * 0.6,
+  };
+}
+export function aiRev(c, ai) { return c.rpm < ai.launchTarget ? 1 : 0; }
+export function aiStep(c, ai, dt) {
+  if (!c.launched || c.finishT || c.shiftT > 0) return null;
+  const s = c.spec;
+  if (c.gear >= ai.nitroGear && c.nitroLeft > 0 && c.gear < s.gears.length + 1) {
+    ai.nitroDelay -= dt;
+    if (ai.nitroDelay <= 0) fireNitro(c);
+  }
+  if (c.gear >= s.gears.length || c.clutchT > 0 || c.t < 0.5) return null;
+  const target = s.shiftRpm[c.gear - 1] + ai.errMs / 1000 * Math.max(c.rpmRate, 200);
+  let go = false;
+  if (target < s.redline) go = c.rpm >= target;
+  else if (c.limiter) { ai.lateAcc += dt; go = ai.lateAcc * 1000 >= ai.errMs - 120; }
+  if (go) {
+    ai.lateAcc = 0;
+    const r = shiftUp(c);
+    ai.errMs = ai.gauss() * ai.sigma + (1 - ai.skill) * 30;
+    return r;
+  }
+  return null;
+}
+
+/* rolling start AI: reaction after the 3rd honk (s) and whether this driver kicks down */
+export const aiReact = (ai) => Math.max(0.1, 0.16 + (1 - ai.skill) * 0.38 + Math.abs(ai.gauss()) * 0.06 * (1.2 - ai.skill));
+export const aiKick = (c, ai, rnd) => kickdownGood(c) && rnd() < 0.35 + ai.skill * 0.6;
+
+/** Headless race of any type (career_sim, daily targets, idealTime). o: {type, pspec, rspec?, pskill, rskill, rnd}.
+ *  Returns {won, p, r, margin, launch, grades, busted, gapM}. Mirrors the race flow in main.js. */
+export function runRace(o) {
+  const T = RACE_TYPES[o.type] || RACE_TYPES.drag, rnd = o.rnd || Math.random;
+  const p = newCar(o.pspec, 'p'), r = o.rspec ? newCar(o.rspec, 'r') : null;
+  const pa = makeAI(p, o.pskill, rnd), ra = r ? makeAI(r, o.rskill, rnd) : null;
+  if (o.pskill >= 1) { pa.errMs = 0; pa.sigma = 0; pa.launchTarget = (p.spec.launch.perfect[0] + p.spec.launch.perfect[1]) / 2; }
+  const cars = r ? [[p, pa], [r, ra]] : [[p, pa]];
+  if (T.roll) {
+    const x0 = -ROLL.v0 * ROLL.honks[2];
+    rollCar(p, x0); if (r) rollCar(r, T.cop ? x0 - ROLL.copGap : x0);
+    for (const [c, ai] of cars) if (ai.skill >= 1 ? kickdownGood(c) : aiKick(c, ai, rnd)) kickdown(c);
+    for (const [c] of cars) c.x += ROLL.v0 * ROLL.honks[2];
+    for (const [c, ai] of cars) rollGo(c, c === p ? ROLL.auto : T.cop ? 0.35 : aiReact(ai), T.cop && c === r ? 1e9 : p.x + T.dist);   /* player: auto throttle at GO (main.js) */
+  } else {
+    for (let i = 0; i < 400; i++) for (const [c, ai] of cars) revStep(c, aiRev(c, ai), DT);
+    for (const [c] of cars) { c.dist = T.dist; launch(c); }
+  }
+  let busted = false;
+  for (let i = 0; i < 9000 && !(p.finishT && (!r || r.finishT || T.cop)); i++) {
+    for (const [c, ai] of cars) { aiStep(c, ai, DT); raceStep(c, DT); }
+    if (T.cop && r && !p.finishT && r.x >= p.x - 0.3) { busted = true; break; }
+  }
+  const won = T.cop ? !busted && !!p.finishT : !!p.finishT && (!r || !r.finishT || p.finishT <= r.finishT);
+  return { won, p: p.finishT, r: r ? r.finishT : 0, margin: r && r.finishT && p.finishT ? Math.abs(p.finishT - r.finishT) : T.cop && r ? (p.x - r.x) / Math.max(1, p.v) : 0,
+    launch: p.launchGrade, grades: p.shifts.map((q) => q.grade), busted, gapM: r ? p.x - r.x : 0 };
+}
+/** Perfect-driver time of a spec for a race type (daily targets). */
+export const idealTime = (spec, type) => runRace({ type, pspec: spec, pskill: 1, rnd: (() => { let sd = 7; return () => ((sd = (sd * 16807) % 2147483647) / 2147483647); })() }).p;
+
+// Ideal elapsed time of a spec with a near-perfect driver (used to balance rivals).
+export function idealET(spec, skill = 1) {
+  let seed = 7; const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  const c = newCar(spec, 'sim');
+  const ai = makeAI(c, skill, rnd);
+  ai.launchTarget = (spec.launch.perfect[0] + spec.launch.perfect[1]) / 2;
+  if (skill >= 1) ai.errMs = 0, ai.sigma = 0;
+  for (let i = 0; i < 400; i++) revStep(c, aiRev(c, ai), DT);
+  launch(c);
+  for (let i = 0; i < 30 * 120 && !c.finishT; i++) { aiStep(c, ai, DT); raceStep(c, DT); }
+  return { et: c.finishT || 99, trap: (c.trap || c.v) * 3.6, t100: c.t100, shifts: c.shifts };
+}
+
+// Scale a rival's power so its ideal ET lands at targetET.
+export function tuneToET(base, targetET) {
+  let p = 1;
+  for (let i = 0; i < 6; i++) {
+    const et = idealET(prepareSpec(base, p)).et;
+    // ET ~ power^-1/3
+    p *= Math.pow(et / targetET, 3);
+    p = Math.max(0.35, Math.min(2.5, p));
+  }
+  return prepareSpec(base, p);
+}

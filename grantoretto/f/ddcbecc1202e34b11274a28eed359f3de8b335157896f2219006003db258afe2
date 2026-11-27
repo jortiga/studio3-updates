@@ -1,0 +1,928 @@
+{
+ "about": "Voiced cast for Drag Nights Race. Single source of truth for names, looks (portrait briefs), voices and lines. 'sub' is the subtitle text; 'file' is relative to game/; 'dur' (seconds) is filled in by tools/make_audio.py once the audio exists. Use Audio.voice(id, key).",
+ "meta_renames": {
+  "THE MIDNIGHT EMPEROR": "THE MIDNIGHT EMPRESS"
+ },
+ "meta_note": "Boss names otherwise match meta.js CREWS. Only the S-tier boss changes (male -> female); the UI agent should update CREWS.S.boss in meta.js. Women: Mika, Rei, Misaki (C), Empress (S).",
+ "characters": {
+  "mika": {
+   "id": "mika",
+   "name": "Mika",
+   "role": "Start-line flag girl",
+   "look": "Confident young woman in a cropped neon-pink racing jacket and white boots, long twin-tail hair, holding a checkered flag up high under the street lights.",
+   "personality": "Playful, teasing hype girl who owns the start line; flirts with the crowd, roots for the underdog.",
+   "voice_name": "Jessica",
+   "voice_id": "cgSgspJ2msm6clMCkdW9",
+   "voice_settings": {
+    "stability": 0.35,
+    "similarity_boost": 0.8,
+    "style": 0.7,
+    "use_speaker_boost": true
+   },
+   "lines": {
+    "ready": {
+     "text": "Racers... are you ready?",
+     "sub": "Racers… are you ready?",
+     "file": "audio/vo_mika_ready.mp3",
+     "tag": "[teasing]",
+     "dur": 1.597
+    },
+    "ready2": {
+     "text": "Light 'em up, boys!",
+     "sub": "Light 'em up, boys!",
+     "file": "audio/vo_mika_ready2.mp3",
+     "dur": 1.486
+    },
+    "ready3": {
+     "text": "Show me what you've got!",
+     "sub": "Show me what you've got!",
+     "file": "audio/vo_mika_ready3.mp3",
+     "dur": 1.874
+    },
+    "ready4": {
+     "text": "Eyes on the tree, boys.",
+     "sub": "Eyes on the tree, boys.",
+     "file": "audio/vo_mika_ready4.mp3",
+     "dur": 1.776
+    },
+    "ready5": {
+     "text": "Make some noise!",
+     "sub": "Make some noise!",
+     "file": "audio/vo_mika_ready5.mp3",
+     "dur": 1.555
+    },
+    "ready6": {
+     "text": "Don't you dare blink.",
+     "sub": "Don't you dare blink.",
+     "file": "audio/vo_mika_ready6.mp3",
+     "dur": 1.521
+    },
+    "eyes": {
+     "text": "Eyes on me, boys.",
+     "sub": "Eyes on me, boys.",
+     "file": "audio/vo_mika_eyes.mp3",
+     "dur": 1.473
+    },
+    "three": {
+     "text": "Three...",
+     "sub": "Three…",
+     "file": "audio/vo_mika_three.mp3",
+     "tag": "[excited]",
+     "dur": 0.47
+    },
+    "two": {
+     "text": "Two...",
+     "sub": "Two…",
+     "file": "audio/vo_mika_two.mp3",
+     "tag": "[excited]",
+     "dur": 0.478
+    },
+    "one": {
+     "text": "One...",
+     "sub": "One…",
+     "file": "audio/vo_mika_one.mp3",
+     "tag": "[excited]",
+     "dur": 0.474
+    },
+    "go": {
+     "text": "GO!",
+     "sub": "GO!",
+     "file": "audio/vo_mika_go.mp3",
+     "tag": "[shouting]",
+     "dur": 0.851
+    },
+    "win": {
+     "text": "Ooh, look at you! That's my winner.",
+     "sub": "Ooh, look at you! That's my winner.",
+     "file": "audio/vo_mika_win.mp3",
+     "dur": 2.771
+    },
+    "lose": {
+     "text": "Aww... so close, cutie. Run it back?",
+     "sub": "Aww… so close, cutie. Run it back?",
+     "file": "audio/vo_mika_lose.mp3",
+     "dur": 3.52
+    }
+   },
+   "tag": "[playful]"
+  },
+  "rei": {
+   "id": "rei",
+   "name": "Rei",
+   "role": "Crew chief and mechanic (garage)",
+   "look": "Tall woman in an open grease-stained work jumpsuit tied at the waist, black tank top, short silver bob, torque wrench resting on her shoulder, leaning on a car in a neon-lit garage.",
+   "personality": "Cool, dry and teasing; secretly proud of you; talks to the car like it is alive.",
+   "voice_name": "Charlotte",
+   "voice_id": "XB0fDUnXU5powFXDhCwa",
+   "voice_settings": {
+    "stability": 0.55,
+    "similarity_boost": 0.8,
+    "style": 0.45,
+    "use_speaker_boost": true
+   },
+   "lines": {
+    "greet": {
+     "text": "Back again? Good. She missed you.",
+     "sub": "Back again? Good. She missed you.",
+     "file": "audio/vo_rei_greet.mp3",
+     "dur": 3.36
+    },
+    "greet2": {
+     "text": "Hey, rookie. Engine's warm. So am I... about your chances.",
+     "sub": "Hey, rookie. Engine's warm. So am I… about your chances.",
+     "file": "audio/vo_rei_greet2.mp3",
+     "dur": 5.427
+    },
+    "up_engine": {
+     "text": "More torque. Try not to waste it.",
+     "sub": "More torque. Try not to waste it.",
+     "file": "audio/vo_rei_up_engine.mp3",
+     "dur": 2.107
+    },
+    "up_turbo": {
+     "text": "Bigger turbo. Listen for the whistle.",
+     "sub": "Bigger turbo. Listen for the whistle.",
+     "file": "audio/vo_rei_up_turbo.mp3",
+     "dur": 2.24
+    },
+    "up_gearbox": {
+     "text": "Quicker shifts. Don't make me regret it.",
+     "sub": "Quicker shifts. Don't make me regret it.",
+     "file": "audio/vo_rei_up_gearbox.mp3",
+     "dur": 2.687
+    },
+    "up_nitro": {
+     "text": "Bigger bottle. Save it for when it counts.",
+     "sub": "Bigger bottle. Save it for when it counts.",
+     "file": "audio/vo_rei_up_nitro.mp3",
+     "dur": 2.499
+    },
+    "up_tires": {
+     "text": "Fresh rubber. Now launch like you mean it.",
+     "sub": "Fresh rubber. Now launch like you mean it.",
+     "file": "audio/vo_rei_up_tires.mp3",
+     "dur": 2.8
+    },
+    "up_weight": {
+     "text": "Stripped her down. Lighter is faster.",
+     "sub": "Stripped her down. Lighter is faster.",
+     "file": "audio/vo_rei_up_weight.mp3",
+     "dur": 2.72
+    },
+    "paint": {
+     "text": "Nice color. She looks dangerous now.",
+     "sub": "Nice color. She looks dangerous now.",
+     "file": "audio/vo_rei_paint.mp3",
+     "dur": 3.486
+    },
+    "broke": {
+     "text": "Can't afford that, sweetheart. Go win something.",
+     "sub": "Can't afford that, sweetheart. Go win something.",
+     "file": "audio/vo_rei_broke.mp3",
+     "dur": 2.884
+    },
+    "new_car": {
+     "text": "A new ride? Bring her back in one piece.",
+     "sub": "A new ride? Bring her back in one piece.",
+     "file": "audio/vo_rei_new_car.mp3",
+     "dur": 3.6
+    },
+    "pep": {
+     "text": "Watch the lights, shift on the beep... and don't you dare lose.",
+     "sub": "Watch the lights, shift on the beep… and don't you dare lose.",
+     "file": "audio/vo_rei_pep.mp3",
+     "dur": 4.191
+    },
+    "tip_late": {
+     "text": "You shifted late in third. Listen to the engine.",
+     "sub": "You shifted late in third. Listen to the engine.",
+     "file": "audio/vo_rei_tip_late.mp3",
+     "dur": 2.914
+    },
+    "tip_early": {
+     "text": "Too early on the shift. Let her sing a little longer.",
+     "sub": "Too early on the shift. Let her sing a little longer.",
+     "file": "audio/vo_rei_tip_early.mp3",
+     "dur": 3.237
+    },
+    "tip_launch": {
+     "text": "Bad launch. Keep the needle in the green.",
+     "sub": "Bad launch. Keep the needle in the green.",
+     "file": "audio/vo_rei_tip_launch.mp3",
+     "dur": 2.398
+    }
+   },
+   "tag": "[deadpan]"
+  },
+  "kaito": {
+   "id": "kaito",
+   "name": "Kaito 'Alley King'",
+   "role": "Tier D boss, BACK-ALLEY LEAGUE",
+   "look": "Lanky young man in a ripped denim jacket covered in patches, bleached spiky hair, toothpick, leaning on a red hatchback in a graffiti alley.",
+   "personality": "Cocky small-time street king, fast mouth, hates losing on his home turf.",
+   "voice_name": "Liam",
+   "voice_id": "TX3LPaxmHKxFdv7VOQHJ",
+   "voice_settings": {
+    "stability": 0.3,
+    "similarity_boost": 0.8,
+    "style": 0.8,
+    "use_speaker_boost": true
+   },
+   "tier": "D",
+   "meta_name": "KAITO 'ALLEY KING'",
+   "lines": {
+    "intro": {
+     "text": "This alley is mine. Pay the toll or go home.",
+     "sub": "This alley is mine. Pay the toll or go home.",
+     "file": "audio/vo_kaito_intro.mp3",
+     "dur": 3.123
+    },
+    "taunt1": {
+     "text": "You brought THAT to my street?",
+     "sub": "You brought THAT to my street?",
+     "file": "audio/vo_kaito_taunt1.mp3",
+     "dur": 1.932
+    },
+    "taunt2": {
+     "text": "Blink and you'll miss me.",
+     "sub": "Blink and you'll miss me.",
+     "file": "audio/vo_kaito_taunt2.mp3",
+     "dur": 0.941
+    },
+    "taunt3": {
+     "text": "Your tires are crying already.",
+     "sub": "Your tires are crying already.",
+     "file": "audio/vo_kaito_taunt3.mp3",
+     "dur": 1.612
+    },
+    "pass": {
+     "text": "See ya!",
+     "sub": "See ya!",
+     "file": "audio/vo_kaito_pass.mp3",
+     "dur": 0.358
+    },
+    "they_win": {
+     "text": "Told you. Alley King.",
+     "sub": "Told you. Alley King.",
+     "file": "audio/vo_kaito_they_win.mp3",
+     "dur": 1.408
+    },
+    "they_lose": {
+     "text": "No way... that's MY alley!",
+     "sub": "No way… that's MY alley!",
+     "file": "audio/vo_kaito_they_lose.mp3",
+     "dur": 1.76
+    }
+   },
+   "tag": "[cocky]"
+  },
+  "misaki": {
+   "id": "misaki",
+   "name": "Misaki 'Silver Fox'",
+   "role": "Tier C boss, HARBOR LIGHTS",
+   "look": "Elegant woman in a long white trench coat over a silver racing suit, sleek black hair with one silver streak, sunglasses pushed up, harbor cranes and fog behind her.",
+   "personality": "Smooth, sultry and calculating; never raises her voice; toys with challengers.",
+   "voice_name": "Alice",
+   "voice_id": "Xb7hH8MSUJpSbSDYk0k2",
+   "voice_settings": {
+    "stability": 0.35,
+    "similarity_boost": 0.8,
+    "style": 0.7,
+    "use_speaker_boost": true
+   },
+   "tier": "C",
+   "meta_name": "MISAKI 'SILVER FOX'",
+   "lines": {
+    "intro": {
+     "text": "The fog rolls in... and so do I.",
+     "sub": "The fog rolls in… and so do I.",
+     "file": "audio/vo_misaki_intro.mp3",
+     "dur": 3.046
+    },
+    "taunt1": {
+     "text": "Cute car. Shame about the driver.",
+     "sub": "Cute car. Shame about the driver.",
+     "file": "audio/vo_misaki_taunt1.mp3",
+     "dur": 2.103
+    },
+    "taunt2": {
+     "text": "Try to keep up, darling.",
+     "sub": "Try to keep up, darling.",
+     "file": "audio/vo_misaki_taunt2.mp3",
+     "dur": 1.532
+    },
+    "taunt3": {
+     "text": "I'll wave at you from the finish.",
+     "sub": "I'll wave at you from the finish.",
+     "file": "audio/vo_misaki_taunt3.mp3",
+     "dur": 1.839
+    },
+    "pass": {
+     "text": "Too slow, darling.",
+     "sub": "Too slow, darling.",
+     "file": "audio/vo_misaki_pass.mp3",
+     "dur": 1.324
+    },
+    "they_win": {
+     "text": "Mm. Come back when you've grown up.",
+     "sub": "Mm. Come back when you've grown up.",
+     "file": "audio/vo_misaki_they_win.mp3",
+     "dur": 2.1
+    },
+    "they_lose": {
+     "text": "Well, well... you're more fun than you look.",
+     "sub": "Well, well… you're more fun than you look.",
+     "file": "audio/vo_misaki_they_lose.mp3",
+     "dur": 2.485
+    }
+   },
+   "tag": "[teasing]"
+  },
+  "goro": {
+   "id": "goro",
+   "name": "Goro 'Red Oni'",
+   "role": "Tier B boss, RED LANTERN CREW",
+   "look": "Huge broad-shouldered man in a red leather jacket with a painted oni mask on the back, shaved head, red paper lanterns overhead.",
+   "personality": "Loud, intimidating brawler with a code of honor; respects anyone who beats him.",
+   "voice_name": "Clyde",
+   "voice_id": "2EiwWnXFnvU5JabPnv8n",
+   "voice_settings": {
+    "stability": 0.3,
+    "similarity_boost": 0.8,
+    "style": 0.8,
+    "use_speaker_boost": true
+   },
+   "tier": "B",
+   "meta_name": "GORO 'RED ONI'",
+   "lines": {
+    "intro": {
+     "text": "Under the red lanterns, only the strong survive.",
+     "sub": "Under the red lanterns, only the strong survive.",
+     "file": "audio/vo_goro_intro.mp3",
+     "dur": 3.466
+    },
+    "taunt1": {
+     "text": "I'll burn you off the line.",
+     "sub": "I'll burn you off the line.",
+     "file": "audio/vo_goro_taunt1.mp3",
+     "dur": 1.589
+    },
+    "taunt2": {
+     "text": "Your engine sounds scared.",
+     "sub": "Your engine sounds scared.",
+     "file": "audio/vo_goro_taunt2.mp3",
+     "dur": 1.708
+    },
+    "taunt3": {
+     "text": "Red lights, red line. Let's go!",
+     "sub": "Red lights, red line. Let's go!",
+     "file": "audio/vo_goro_taunt3.mp3",
+     "dur": 2.567
+    },
+    "pass": {
+     "text": "Eat my smoke!",
+     "sub": "Eat my smoke!",
+     "file": "audio/vo_goro_pass.mp3",
+     "dur": 1.287
+    },
+    "they_win": {
+     "text": "Hah! Too weak.",
+     "sub": "Hah! Too weak.",
+     "file": "audio/vo_goro_they_win.mp3",
+     "dur": 1.893
+    },
+    "they_lose": {
+     "text": "Hmph... you've got fire. Respect.",
+     "sub": "Hmph… you've got fire. Respect.",
+     "file": "audio/vo_goro_they_lose.mp3",
+     "dur": 3.333
+    }
+   },
+   "tag": "[gruff]"
+  },
+  "shin": {
+   "id": "shin",
+   "name": "Shin 'Blue Comet'",
+   "role": "Tier A boss, OVERPASS SYNDICATE",
+   "look": "Slim man in a high-collar cyan racing jacket with light-up seams, visor glasses, cold expression, standing on a rain-slick overpass.",
+   "personality": "Cold perfectionist who treats every race as math; quietly intense.",
+   "voice_name": "Callum",
+   "voice_id": "N2lVS1w4EtoT3dr4eOWO",
+   "voice_settings": {
+    "stability": 0.55,
+    "similarity_boost": 0.8,
+    "style": 0.45,
+    "use_speaker_boost": true
+   },
+   "tier": "A",
+   "meta_name": "SHIN 'BLUE COMET'",
+   "lines": {
+    "intro": {
+     "text": "I've calculated this race. You lose by point three seconds.",
+     "sub": "I've calculated this race. You lose by point three seconds.",
+     "file": "audio/vo_shin_intro.mp3",
+     "dur": 4.424
+    },
+    "taunt1": {
+     "text": "Your shift points are sloppy.",
+     "sub": "Your shift points are sloppy.",
+     "file": "audio/vo_shin_taunt1.mp3",
+     "dur": 1.827
+    },
+    "taunt2": {
+     "text": "Nobody catches the comet.",
+     "sub": "Nobody catches the comet.",
+     "file": "audio/vo_shin_taunt2.mp3",
+     "dur": 1.774
+    },
+    "taunt3": {
+     "text": "Your odds? Zero point zero.",
+     "sub": "Your odds? Zero point zero.",
+     "file": "audio/vo_shin_taunt3.mp3",
+     "dur": 3.788
+    },
+    "pass": {
+     "text": "Predictable.",
+     "sub": "Predictable.",
+     "file": "audio/vo_shin_pass.mp3",
+     "dur": 1.124
+    },
+    "they_win": {
+     "text": "As calculated.",
+     "sub": "As calculated.",
+     "file": "audio/vo_shin_they_win.mp3",
+     "dur": 1.202
+    },
+    "they_lose": {
+     "text": "Impossible... recalculating.",
+     "sub": "Impossible… recalculating.",
+     "file": "audio/vo_shin_they_lose.mp3",
+     "dur": 2.675
+    }
+   },
+   "tag": "[cold]"
+  },
+  "empress": {
+   "id": "empress",
+   "name": "The Midnight Empress",
+   "role": "Tier S boss, MIDNIGHT CROWN",
+   "look": "Regal woman in a black and gold racing suit with a high collar and a long black coat over her shoulders, dark lipstick, a thin gold crown pin in her hair, black hypercar behind her under a full moon.",
+   "personality": "Commanding, sultry and untouchable queen of the night streets; amused by challengers.",
+   "voice_name": "Lily",
+   "voice_id": "pFZP5JQG7iQjIQuC4Bku",
+   "voice_settings": {
+    "stability": 0.35,
+    "similarity_boost": 0.8,
+    "style": 0.7,
+    "use_speaker_boost": true
+   },
+   "tier": "S",
+   "meta_name": "THE MIDNIGHT EMPRESS",
+   "rename_from": "THE MIDNIGHT EMPEROR",
+   "lines": {
+    "intro": {
+     "text": "So you made it to midnight. Kneel... or race.",
+     "sub": "So you made it to midnight. Kneel… or race.",
+     "file": "audio/vo_empress_intro.mp3",
+     "dur": 4.88
+    },
+    "taunt1": {
+     "text": "Every king of these streets once bowed to me.",
+     "sub": "Every king of these streets once bowed to me.",
+     "file": "audio/vo_empress_taunt1.mp3",
+     "dur": 3.319
+    },
+    "taunt2": {
+     "text": "Show me something worth my time.",
+     "sub": "Show me something worth my time.",
+     "file": "audio/vo_empress_taunt2.mp3",
+     "dur": 1.84
+    },
+    "taunt3": {
+     "text": "Amuse me, little racer.",
+     "sub": "Amuse me, little racer.",
+     "file": "audio/vo_empress_taunt3.mp3",
+     "dur": 1.467
+    },
+    "pass": {
+     "text": "Goodnight, darling.",
+     "sub": "Goodnight, darling.",
+     "file": "audio/vo_empress_pass.mp3",
+     "dur": 0.966
+    },
+    "they_win": {
+     "text": "The crown stays with me.",
+     "sub": "The crown stays with me.",
+     "file": "audio/vo_empress_they_win.mp3",
+     "dur": 1.851
+    },
+    "they_lose": {
+     "text": "Hm... finally. A worthy rival.",
+     "sub": "Hm… finally. A worthy rival.",
+     "file": "audio/vo_empress_they_lose.mp3",
+     "dur": 3.494
+    }
+   },
+   "tag": "[confident]"
+  },
+  "rival_a": {
+   "id": "rival_a",
+   "name": "Street Rival (Brash)",
+   "role": "Generic rival racer",
+   "look": "Young man in a snapback and a neon windbreaker, grinning, leaning out of a car window.",
+   "personality": "Brash trash-talker.",
+   "voice_name": "Charlie",
+   "voice_id": "IKne3meq5aSn9XLyUdCD",
+   "voice_settings": {
+    "stability": 0.3,
+    "similarity_boost": 0.8,
+    "style": 0.8,
+    "use_speaker_boost": true
+   },
+   "lines": {
+    "taunt1": {
+     "text": "You're about to get smoked.",
+     "sub": "You're about to get smoked.",
+     "file": "audio/vo_rival_a_taunt1.mp3",
+     "dur": 1.573
+    },
+    "taunt2": {
+     "text": "Hope you said goodbye to your pink slip.",
+     "sub": "Hope you said goodbye to your pink slip.",
+     "file": "audio/vo_rival_a_taunt2.mp3",
+     "dur": 1.815
+    },
+    "taunt3": {
+     "text": "Get ready to eat my exhaust!",
+     "sub": "Get ready to eat my exhaust!",
+     "file": "audio/vo_rival_a_taunt3.mp3",
+     "dur": 2.24
+    },
+    "pass": {
+     "text": "Later, slowpoke!",
+     "sub": "Later, slowpoke!",
+     "file": "audio/vo_rival_a_pass.mp3",
+     "dur": 1.2
+    },
+    "they_win": {
+     "text": "Too easy!",
+     "sub": "Too easy!",
+     "file": "audio/vo_rival_a_they_win.mp3",
+     "dur": 0.993
+    },
+    "they_lose": {
+     "text": "Rematch! Right now!",
+     "sub": "Rematch! Right now!",
+     "file": "audio/vo_rival_a_they_lose.mp3",
+     "dur": 1.786
+    }
+   },
+   "tag": "[excited]"
+  },
+  "rival_b": {
+   "id": "rival_b",
+   "name": "Street Rival (Cool)",
+   "role": "Generic rival racer",
+   "look": "Quiet man in a black hoodie and fingerless gloves, hood up, arms crossed by his car.",
+   "personality": "Laid-back, few words, quietly confident.",
+   "voice_name": "Will",
+   "voice_id": "bIHbv24MWmeRgasZH58o",
+   "voice_settings": {
+    "stability": 0.55,
+    "similarity_boost": 0.8,
+    "style": 0.45,
+    "use_speaker_boost": true
+   },
+   "lines": {
+    "taunt1": {
+     "text": "Let's see what you've got.",
+     "sub": "Let's see what you've got.",
+     "file": "audio/vo_rival_b_taunt1.mp3",
+     "dur": 1.013
+    },
+    "taunt2": {
+     "text": "Nice car. Shame.",
+     "sub": "Nice car. Shame.",
+     "file": "audio/vo_rival_b_taunt2.mp3",
+     "dur": 2.189
+    },
+    "taunt3": {
+     "text": "Don't blink.",
+     "sub": "Don't blink.",
+     "file": "audio/vo_rival_b_taunt3.mp3",
+     "dur": 0.693
+    },
+    "pass": {
+     "text": "Later.",
+     "sub": "Later.",
+     "file": "audio/vo_rival_b_pass.mp3",
+     "dur": 1.6
+    },
+    "they_win": {
+     "text": "Good race. Not good enough.",
+     "sub": "Good race. Not good enough.",
+     "file": "audio/vo_rival_b_they_win.mp3",
+     "dur": 2.64
+    },
+    "they_lose": {
+     "text": "Huh. Not bad.",
+     "sub": "Huh. Not bad.",
+     "file": "audio/vo_rival_b_they_lose.mp3",
+     "dur": 1.931
+    }
+   },
+   "tag": "[calm]"
+  },
+  "rival_c": {
+   "id": "rival_c",
+   "name": "Street Rival (Brash, f)",
+   "role": "Generic rival racer",
+   "look": "Young woman in a cropped neon racing jacket and a backwards cap, bubblegum, leaning on her car door.",
+   "personality": "Brash, teasing trash-talker.",
+   "voice_name": "Laura",
+   "voice_id": "FGY2WhTYpPnrIDTdsKH5",
+   "voice_settings": {
+    "stability": 0.3,
+    "similarity_boost": 0.8,
+    "style": 0.8,
+    "use_speaker_boost": true
+   },
+   "lines": {
+    "taunt1": {
+     "text": "Aww, is that your car? Cute.",
+     "sub": "Aww, is that your car? Cute.",
+     "file": "audio/vo_rival_c_taunt1.mp3",
+     "dur": 2.64
+    },
+    "taunt2": {
+     "text": "Try not to cry when I leave you behind.",
+     "sub": "Try not to cry when I leave you behind.",
+     "file": "audio/vo_rival_c_taunt2.mp3",
+     "dur": 2.56
+    },
+    "taunt3": {
+     "text": "Tick tock, slowpoke!",
+     "sub": "Tick tock, slowpoke!",
+     "file": "audio/vo_rival_c_taunt3.mp3",
+     "dur": 1.924
+    },
+    "pass": {
+     "text": "Bye-bye, slowpoke!",
+     "sub": "Bye-bye, slowpoke!",
+     "file": "audio/vo_rival_c_pass.mp3",
+     "dur": 1.618
+    },
+    "they_win": {
+     "text": "Too easy, sweetie!",
+     "sub": "Too easy, sweetie!",
+     "file": "audio/vo_rival_c_they_win.mp3",
+     "dur": 1.984
+    },
+    "they_lose": {
+     "text": "Ugh! Lucky shift. Rematch!",
+     "sub": "Ugh! Lucky shift. Rematch!",
+     "file": "audio/vo_rival_c_they_lose.mp3",
+     "dur": 2.492
+    }
+   },
+   "tag": "[teasing]"
+  },
+  "rival_d": {
+   "id": "rival_d",
+   "name": "Street Rival (Cool, f)",
+   "role": "Generic rival racer",
+   "look": "Composed woman in a black leather racing jacket, sleek ponytail, arms folded beside her car.",
+   "personality": "Cool, confident, few words.",
+   "voice_name": "Sarah",
+   "voice_id": "EXAVITQu4vr4xnSDxMaL",
+   "voice_settings": {
+    "stability": 0.55,
+    "similarity_boost": 0.8,
+    "style": 0.45,
+    "use_speaker_boost": true
+   },
+   "lines": {
+    "taunt1": {
+     "text": "Let's see if you're worth my time.",
+     "sub": "Let's see if you're worth my time.",
+     "file": "audio/vo_rival_d_taunt1.mp3",
+     "dur": 1.667
+    },
+    "taunt2": {
+     "text": "Keep up, if you can.",
+     "sub": "Keep up, if you can.",
+     "file": "audio/vo_rival_d_taunt2.mp3",
+     "dur": 1.794
+    },
+    "taunt3": {
+     "text": "I don't lose twice.",
+     "sub": "I don't lose twice.",
+     "file": "audio/vo_rival_d_taunt3.mp3",
+     "dur": 1.702
+    },
+    "pass": {
+     "text": "See you at the line.",
+     "sub": "See you at the line.",
+     "file": "audio/vo_rival_d_pass.mp3",
+     "dur": 1.015
+    },
+    "they_win": {
+     "text": "Clean run. Better luck next time.",
+     "sub": "Clean run. Better luck next time.",
+     "file": "audio/vo_rival_d_they_win.mp3",
+     "dur": 1.95
+    },
+    "they_lose": {
+     "text": "Hm. Not bad at all.",
+     "sub": "Hm. Not bad at all.",
+     "file": "audio/vo_rival_d_they_lose.mp3",
+     "dur": 2.24
+    }
+   },
+   "tag": "[confident]"
+  }
+ },
+ "rivals": {
+  "rival_d_0": {
+   "name": "RUST HOUND",
+   "sex": "m"
+  },
+  "rival_d_1": {
+   "name": "MOTH",
+   "sex": "f"
+  },
+  "rival_d_2": {
+   "name": "TWO-STROKE TAKA",
+   "sex": "m"
+  },
+  "rival_d_3": {
+   "name": "NEON KID",
+   "sex": "m"
+  },
+  "rival_d_4": {
+   "name": "SPARKY",
+   "sex": "m"
+  },
+  "rival_d_5": {
+   "name": "DOC VOLT",
+   "sex": "m"
+  },
+  "rival_d_6": {
+   "name": "LANTERN",
+   "sex": "m"
+  },
+  "rival_d_7": {
+   "name": "BIG MAKO",
+   "sex": "m"
+  },
+  "rival_d_8": {
+   "name": "SHUTTER",
+   "sex": "f"
+  },
+  "rival_c_0": {
+   "name": "PIER RAT",
+   "sex": "m"
+  },
+  "rival_c_1": {
+   "name": "GULL",
+   "sex": "m"
+  },
+  "rival_c_2": {
+   "name": "FOGHORN",
+   "sex": "m"
+  },
+  "rival_c_3": {
+   "name": "CARGO",
+   "sex": "m"
+  },
+  "rival_c_4": {
+   "name": "MISTRAL",
+   "sex": "f"
+  },
+  "rival_c_5": {
+   "name": "RIN",
+   "sex": "f"
+  },
+  "rival_c_6": {
+   "name": "TUGBOAT",
+   "sex": "m"
+  },
+  "rival_c_7": {
+   "name": "ANCHOR",
+   "sex": "m"
+  },
+  "rival_c_8": {
+   "name": "CRANE",
+   "sex": "m"
+  },
+  "rival_b_0": {
+   "name": "EMBER",
+   "sex": "m"
+  },
+  "rival_b_1": {
+   "name": "TORCH",
+   "sex": "m"
+  },
+  "rival_b_2": {
+   "name": "CINDER",
+   "sex": "m"
+  },
+  "rival_b_3": {
+   "name": "FIRECRACKER",
+   "sex": "f"
+  },
+  "rival_b_4": {
+   "name": "KAGURA",
+   "sex": "f"
+  },
+  "rival_b_5": {
+   "name": "ASH",
+   "sex": "m"
+  },
+  "rival_b_6": {
+   "name": "SMOKE",
+   "sex": "f"
+  },
+  "rival_b_7": {
+   "name": "BLAZE",
+   "sex": "m"
+  },
+  "rival_b_8": {
+   "name": "INFERNO",
+   "sex": "m"
+  },
+  "rival_a_0": {
+   "name": "VOLT",
+   "sex": "m"
+  },
+  "rival_a_1": {
+   "name": "STATIC",
+   "sex": "m"
+  },
+  "rival_a_2": {
+   "name": "ARC",
+   "sex": "m"
+  },
+  "rival_a_3": {
+   "name": "PRISM",
+   "sex": "f"
+  },
+  "rival_a_4": {
+   "name": "HALO",
+   "sex": "f"
+  },
+  "rival_a_5": {
+   "name": "CIRRUS",
+   "sex": "m"
+  },
+  "rival_a_6": {
+   "name": "ZENITH",
+   "sex": "m"
+  },
+  "rival_a_7": {
+   "name": "NOVA",
+   "sex": "f"
+  },
+  "rival_a_8": {
+   "name": "ORBIT",
+   "sex": "m"
+  },
+  "rival_s_0": {
+   "name": "SHADE",
+   "sex": "m"
+  },
+  "rival_s_1": {
+   "name": "ECLIPSE",
+   "sex": "f"
+  },
+  "rival_s_2": {
+   "name": "RAVEN",
+   "sex": "m"
+  },
+  "rival_s_3": {
+   "name": "PHANTOM",
+   "sex": "m"
+  },
+  "rival_s_4": {
+   "name": "OBSIDIAN",
+   "sex": "m"
+  },
+  "rival_s_5": {
+   "name": "WRAITH",
+   "sex": "f"
+  },
+  "rival_s_6": {
+   "name": "NOCTURNE",
+   "sex": "f"
+  },
+  "rival_s_7": {
+   "name": "VOID",
+   "sex": "m"
+  },
+  "rival_s_8": {
+   "name": "REAPER",
+   "sex": "m"
+  }
+ },
+ "rivals_note": "Per-rival busts reuse the generic voices: men -> rival_a / rival_b, women -> rival_c / rival_d, with a small per-rival pitch offset (cast.js)."
+}

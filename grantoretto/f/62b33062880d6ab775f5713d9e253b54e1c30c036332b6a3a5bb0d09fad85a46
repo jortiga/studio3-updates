@@ -1,0 +1,90 @@
+/* Live game updates in the store app (Capgo updater plugin 7.53, self-hosted on GitHub; nothing goes to Capgo's servers).
+   Same flow as Runebound's updater.js, plus DELTA updates (Gran Toretto's www is ~30 MB, too big to re-download on a
+   phone connection):
+   - At launch: confirm this bundle works (else the plugin rolls back to the last good one), read <game>/latest.json from
+     the public updates repo. When its stamp is newer than this bundle's:
+     - latest.json "manifest" (every file of the new www: name, sha256, URL): the plugin copies each file whose hash
+       matches the copy inside the app (APK assets / iOS bundle) or one it downloaded before, and downloads only the
+       changed ones (one request per file, so the iOS whole-download timeout never covers 30 MB);
+     - else latest.json "url" + "sha256": one zip (the old Runebound way).
+   - The download runs behind an "UPDATING" overlay with a progress bar, then the app switches to it right away. A slow
+     or failed download never blocks the game: after 45 s the overlay goes and the bundle is applied on the next
+     background/restart instead; an error just leaves the installed version running.
+   - The last step and any error are kept in localStorage 'rb_upd' (how long the last update download took in 'rb_upd_done') and shown
+     next to the build stamp in the pause menu.
+   Publish with: python tools/publish_update.py grandtoreto-app */
+(() => {
+  const C = window.Capacitor, U = C && C.Plugins && C.Plugins.CapacitorUpdater;
+  if (!U || !(C.isNativePlatform && C.isNativePlatform())) return;
+  U.notifyAppReady().catch(() => {});
+  const REPO = 'https://raw.githubusercontent.com/jortiga/studio3-updates/main/'; /* one public repo, a folder per game: <app>/latest.json */
+  const note = (s) => { try { localStorage.setItem('rb_upd', s + ' @' + new Date().toISOString().slice(5, 16).replace('T', ' ')); } catch (e) { /* no storage */ } };
+  const nums = (v) => String(v || '0').split('.').map((n) => parseInt(n, 10) || 0);
+  const atLeast = (a, b) => { a = nums(a); b = nums(b); for (let i = 0; i < 3; i++) if ((a[i] || 0) !== (b[i] || 0)) return (a[i] || 0) > (b[i] || 0); return true; };
+
+  /* pause menu: "build <stamp> · <last update step>" under the settings */
+  addEventListener('DOMContentLoaded', () => fetch('bundle.json').then((r) => r.json()).then((B) => {
+    const p = document.getElementById('pause'); if (!p || !B.stamp) return;
+    const d = document.createElement('div');
+    d.style.cssText = 'font:500 11px "Barlow Condensed",system-ui,sans-serif;opacity:0.45;text-align:center;margin-top:4px;letter-spacing:0.06em;color:#cfd3ff';
+    const get = (k) => { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } };
+    const show = () => { const s = get('rb_upd'), u = get('rb_upd_done'); d.textContent = 'build ' + B.stamp + (s ? ' · ' + s : '') + (u ? ' · ' + u : ''); };
+    show(); new MutationObserver(show).observe(p, { attributes: true, attributeFilter: ['class'] });
+    (p.querySelector('.panel') || p).appendChild(d);
+  }).catch(() => {}));
+
+  /* "UPDATING" overlay in the game's colours: title, percent and a pink-to-cyan bar */
+  let veil = null, bar = null, pct = null;
+  const showVeil = (p) => {
+    if (!veil) {
+      veil = document.createElement('div');
+      veil.style.cssText = 'position:fixed;inset:0;z-index:2147483000;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:#07061ae6;color:#f4f2ff;font:400 22px Anton,Impact,system-ui,sans-serif;letter-spacing:0.12em';
+      const t = document.createElement('div'); t.textContent = 'UPDATING…';
+      const track = document.createElement('div');
+      track.style.cssText = 'width:min(60vw,280px);height:6px;border-radius:3px;background:#ffffff1f;overflow:hidden';
+      bar = document.createElement('div');
+      bar.style.cssText = 'height:100%;width:3%;background:linear-gradient(90deg,#ff4fb8,#2fe6ff);transition:width .3s';
+      pct = document.createElement('div');
+      pct.style.cssText = 'font:500 13px "Barlow Condensed",system-ui,sans-serif;letter-spacing:0.1em;opacity:0.7;min-height:1em';
+      track.appendChild(bar); veil.append(t, track, pct);
+      (document.body || document.documentElement).appendChild(veil);
+    }
+    if (p != null) { const v = Math.max(3, Math.min(100, Math.round(p))); bar.style.width = v + '%'; pct.textContent = v + '%'; }
+  };
+  const hideVeil = () => { if (veil) veil.remove(); veil = null; };
+
+  (async () => {
+    try {
+      note('checking');
+      const B = await (await fetch('bundle.json', { cache: 'no-store' })).json(), mine = B.stamp; /* written by the app's build_www.py */
+      if (!B.app) return note('no app name');
+      const feed = REPO + B.app + '/latest.json';
+      const r = await fetch(feed + '?t=' + Date.now(), { cache: 'no-store' });
+      if (!r.ok) return note('feed ' + r.status);
+      const L = await r.json();
+      const delta = Array.isArray(L.manifest) && L.manifest.length > 0;
+      if (!(delta || (L.url && L.sha256)) || !(+L.stamp > +mine)) return note('up to date (' + L.stamp + ')');
+      const nat = (await U.getBuiltinVersion()).version;
+      if (L.minNative && !atLeast(nat, L.minNative)) return note('needs app ' + L.minNative + ' (have ' + nat + ')');
+      const have = ((await U.list()).bundles || []).find((b) => b.version === String(L.stamp) && b.status !== 'error');
+      let b = have, late = false, secs = 0;
+      const timer = setTimeout(() => { late = true; hideVeil(); }, 45000); /* a slow download keeps going in the background */
+      if (!b) {
+        showVeil(0);
+        const prog = U.addListener ? await U.addListener('download', (e) => { if (!late && e && e.percent != null) showVeil(e.percent); }) : null;
+        note('downloading ' + L.stamp + (delta ? ' (' + L.manifest.length + ' files)' : ''));
+        const t0 = Date.now();
+        try {
+          b = delta
+            ? await U.download({ url: feed, version: String(L.stamp), manifest: L.manifest }) /* each entry carries its own sha256 */
+            : await U.download({ url: L.url, version: String(L.stamp), checksum: L.sha256 }); /* the plugin refuses a zip without its SHA-256 */
+        } finally { if (prog && prog.remove) prog.remove(); }
+        secs = Math.round((Date.now() - t0) / 100) / 10;
+      }
+      clearTimeout(timer);
+      try { localStorage.setItem('rb_upd_done', 'last update ' + (secs ? secs + ' s' : 'ready')); } catch (e) { /* no storage */ }
+      if (!late) { note('installing ' + L.stamp); showVeil(100); await U.set({ id: b.id }); return; } /* reloads into the new bundle */
+      await U.next({ id: b.id }); note('ready ' + L.stamp + ' (next start)');
+    } catch (e) { hideVeil(); note('error: ' + String((e && e.message) || e).replace(/ ?https?:\/\/\S+/g, '').slice(0, 160)); }
+  })();
+})();

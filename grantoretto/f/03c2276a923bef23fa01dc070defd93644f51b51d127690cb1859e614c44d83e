@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<script src="gt-flags.js"></script>
+<link rel="icon" href="data:,">
+<script id="slash">/* a link without the trailing slash breaks every relative asset path (MOBILE_PERFORMANCE.md 5b) */
+if (/^https?:$/.test(location.protocol) && !/\/$|\.[a-z0-9]+$/i.test(location.pathname)) location.replace(location.pathname + '/' + location.search + location.hash);</script>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<style id="noselect">/* MOBILE_PERFORMANCE.md: a double tap must never select text, show the iOS callout/loupe or zoom the page */
+html, body, body * { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
+img, canvas { -webkit-user-drag: none; }
+input, textarea, [contenteditable] { -webkit-user-select: text; user-select: text; }
+html, body { touch-action: manipulation; }</style>
+<script id="nozoom">/* iOS still allows pinch and double-tap zoom in some cases */
+document.addEventListener('gesturestart', function (e) { e.preventDefault(); });
+document.addEventListener('dblclick', function (e) { e.preventDefault(); }, { passive: false });
+for (var ev of ['selectstart', 'contextmenu']) document.addEventListener(ev, function (e) {
+  if (!(e.target.closest && e.target.closest('input, textarea, [contenteditable]'))) e.preventDefault(); });
+/* the iOS loupe still shows on a long press: cancel touchstart on the race surfaces (3D canvas + HUD, where fast double
+   taps happen). Pointer events still fire, so gas/shift/nitro keep working. Menus keep native touch on purpose: many of
+   their tap targets are plain divs (map pins, garage thumbs, rival rows, story) and iOS drops the click if touchstart is
+   cancelled. Buttons and scrolling panels always keep native touch. */
+document.addEventListener('touchstart', function (e) {
+  var t = e.target; if (!t || !t.closest) return;
+  if (t.closest('button, a, input, textarea, select, label, [contenteditable]')) return;
+  if (t.id === 'gl' || t.tagName === 'CANVAS' || t.closest('#hud')) e.preventDefault();
+}, { passive: false });</script>
+<meta name="theme-color" content="#07061a">
+<title>Drag Nights Race</title>
+<link rel="preload" href="fonts/Anton-400.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/BarlowCondensed-700.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="ui.css">
+<link rel="stylesheet" href="wow.css">
+<link rel="stylesheet" href="worldmap.css">
+<link rel="stylesheet" href="min.css">
+<link rel="stylesheet" href="theme_minimal.css">
+<link rel="stylesheet" href="theme_premium.css">
+<link rel="stylesheet" href="theme_synth.css">
+<link rel="stylesheet" href="story.css">
+<link rel="stylesheet" href="prog.css">
+<script>/* theme before first paint (themes.js owns it after boot) */
+try { var q = new URLSearchParams(location.search).get('theme'), t = q || localStorage.getItem('gt_theme_v1') || 'premium';
+  if (!/^(premium|synth)$/.test(t)) t = 'premium'; document.documentElement.dataset.theme = t; } catch (e) { document.documentElement.dataset.theme = 'premium'; }</script>
+<script id="preload">/* fetch the game modules and the hero car alongside main.js instead of one after another (MOBILE_PERFORMANCE.md 5b) */
+for (const [rel, as, u] of [['modulepreload', '', 'vendor/three.module.min.js'], ['modulepreload', '', 'physics.js'], ['modulepreload', '', 'assets.js'], ['modulepreload', '', 'meta.js'], ['modulepreload', '', 'ui.js'], ['modulepreload', '', 'depth.js'], ['modulepreload', '', 'car3d.js'], ['modulepreload', '', 'fx3d.js'], ['modulepreload', '', 'scene_extras.js'], ['modulepreload', '', 'audio.js'], ['preload', 'image', 'sprites/car_hero.webp']]) {
+  const l = document.createElement('link'); l.rel = rel; if (as) l.as = as; l.href = u; document.head.appendChild(l); }</script>
+<script id="audiofix">/* copied from rougulike/game/index.html (incl. the ?adbg overlay) */
+/* iOS leaves WebAudio "interrupted" after an app switch, or "running" but silent after Home:
+   wake every AudioContext when the app is visible again, and on the first touch after coming back
+   suspend + resume it, which restarts the audio output */
+(() => { const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return; const all = window.__audioCtxs = []; let kick = false;
+  function Ctx(...a) { const c = new AC(...a); all.push(c); return c; } Ctx.prototype = AC.prototype;
+  window.AudioContext = Ctx; if (window.webkitAudioContext) window.webkitAudioContext = Ctx;
+  const wake = () => { for (const c of all) if (c.state !== 'running' && c.state !== 'closed') c.resume().catch(() => {}); };
+  const tap = () => { if (!kick) return wake(); kick = false;
+    for (const c of all) if (c.state !== 'closed') c.suspend().then(() => c.resume()).catch(() => c.resume().catch(() => {})); };
+  document.addEventListener('visibilitychange', () => { if (document.hidden) kick = true; else setTimeout(wake, 300); });
+  addEventListener('pagehide', () => { kick = true; });
+  for (const ev of ['pointerdown', 'touchend', 'click', 'keydown']) addEventListener(ev, tap, { capture: true, passive: true });
+  if (/[?&]adbg/.test(location.search)) { // ?adbg: show each AudioContext's state, the music log and audio load errors on screen
+    window.__musicLog = []; const errs = [], w = console.warn.bind(console);
+    console.warn = (...a) => { if (/^\[?(music|sfx|audio)/.test(String(a[0]))) errs.push(a.map(String).join(' ').slice(0, 90)); w(...a); };
+    addEventListener('load', () => {
+      const d = document.createElement('div'); d.style.cssText = 'position:fixed;left:0;bottom:0;z-index:99999;background:#000c;color:#0f0;font:12px monospace;padding:4px;pointer-events:none;white-space:pre';
+      document.body.appendChild(d); const log = [];
+      document.addEventListener('visibilitychange', () => log.push((document.hidden ? 'hide ' : 'show ') + all.map(c => c.state).join(',')));
+      setInterval(() => { d.textContent = all.map((c, i) => `ctx${i} ${c.state} t=${c.currentTime.toFixed(1)} sr=${c.sampleRate}`).join('\n') + '\nloaded ' + JSON.stringify(window.__audioLoaded || null)
+        + '\n' + window.__musicLog.slice(-6).join('\n') + '\n' + errs.slice(-5).join('\n') + '\n' + log.slice(-4).join('\n'); }, 300);
+    });
+  }
+})();</script>
+<script src="ad-ids.js"></script>
+<script src="ads.js"></script>
+<script src="gt-platform.js"></script>
+<script src="gt-durable.js"></script>
+<script src="updater.js"></script>
+</head>
+<body>
+<script id="orient">/* orientation class + visible height before the first style pass (main.js layout() owns them after boot) */
+(function () { var p = innerWidth / innerHeight < 1.1; document.body.classList.add(p ? 'portrait' : 'landscape'); document.documentElement.style.setProperty('--appH', innerHeight + 'px'); })();</script>
+<canvas id="gl"></canvas>
+
+<div id="hud" class="hidden">
+  <div id="top">
+    <button id="pauseBtn" class="btn ic" aria-label="Pause"><svg class="i" viewBox="0 0 24 24"><path d="M9 6v12M15 6v12"/></svg></button>
+    <div id="prog">
+      <div class="track"><div class="lane"><div id="mk2" class="mk p2"></div><div id="mk1" class="mk p1"></div></div></div>
+      <svg class="flag" viewBox="0 0 12 9"><rect width="12" height="9" fill="#fff"/><path d="M0 0h3v3H0zM6 0h3v3H6zM3 3h3v3H3zM9 3h3v3H9zM0 6h3v3H0zM6 6h3v3H6z" fill="#111"/></svg>
+      <svg class="exitI" viewBox="0 0 14 10"><rect width="14" height="10" rx="1.5" fill="#0d6b3a"/><rect x=".8" y=".8" width="12.4" height="8.4" rx="1" fill="none" stroke="#f2f2f2" stroke-width=".7"/><path d="M4.5 8V5.2L8.6 2.6M6.4 2.4h2.4v2.4" fill="none" stroke="#f2f2f2" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </div>
+    <div id="dist">1/4 MI</div>
+  </div>
+  <div id="times">
+    <div class="trow"><i class="dot p1"></i><span class="tag">P1</span><span id="p1t" class="tval">0.000</span></div>
+    <div class="trow"><i class="dot p2"></i><span class="tag">P2</span><span id="p2t" class="tval">0.000</span></div>
+  </div>
+
+  <div id="vsTag"><b id="vsName"></b><i id="vsSub"></i></div>
+  <div id="pops"><div class="pop"><b></b><i></i></div><div class="pop"><b></b><i></i></div><div class="pop"><b></b><i></i></div></div>
+
+  <!-- MANUAL H-gate (min.css / main.js): a faint shift pattern; a thumb drag anywhere in the left half moves the knob along it -->
+  <div id="hpad"></div>
+  <div id="hgate"><svg class="hLines"></svg><i class="hKnob"></i></div>
+  <div id="controls">
+    <div id="prompt"></div>
+    <div class="ctlL">
+      <button id="minus" data-key="↓ KICKDOWN" class="btn ic" aria-label="Shift down"><span class="kbd">↓ KICKDOWN</span><svg class="i" viewBox="0 0 24 24"><path d="M6 12h12"/></svg><svg class="i iDn" viewBox="0 0 24 24"><path d="M12 4v13M6 11.5l6 6.5 6-6.5M6 20h12"/></svg></button>
+      <button id="nitro" data-key="SHIFT" class="btn ic" aria-label="Nitro"><span class="kbd">&#8679; SHIFT</span><svg class="ring" viewBox="0 0 64 64"><circle id="nitroFill" cx="32" cy="32" r="30" pathLength="100"/></svg><svg class="i" viewBox="0 0 24 24"><path d="M13.5 3 6 13.5h5.5L10.5 21 18 10.5h-5.5z"/></svg></button>
+    </div>
+    <div id="tachWrap">
+      <canvas id="tach"></canvas>
+      <div id="gear">N</div>
+      <div id="speedo"><span id="kmh">0</span><small>KM/H</small></div>
+    </div>
+    <div class="ctlR">
+      <button id="plus" data-key="SPACE" class="btn ic" aria-label="Shift up"><span class="kbd">SPACE</span><svg class="i" viewBox="0 0 24 24"><path d="M12 20V7M6 12.5l6-6.5 6 6.5M6 4h12"/></svg></button>
+      <button id="gas" data-key="HOLD SPACE" class="btn ic pedal" aria-label="Gas"><span class="kbd">HOLD SPACE</span><svg class="i" viewBox="0 0 24 24"><path d="M8.5 3h7l2.5 17.5h-12z"/><path d="M9.6 8h4.8M9 12.5h6M8.4 17h7.2"/></svg></button>
+    </div>
+  </div>
+</div>
+
+<div id="topbar" class="hidden">
+  <button id="backBtn" class="btn sq ic" aria-label="Back"><svg class="i" viewBox="0 0 24 24"><path d="M14.5 5.5 8 12l6.5 6.5"/></svg></button>
+  <div id="scrTitle" class="tabTitle">GARAGE</div>
+  <button id="streakBtn" class="btn ic" aria-label="Daily check-in"><svg class="i" viewBox="0 0 24 24"><rect x="4" y="9" width="16" height="11" rx="1.5"/><path d="M3 9h18M12 9v11M12 9c-1.5-3.5-5.5-4.5-5.5-2S10 9 12 9c1.5-3.5 5.5-4.5 5.5-2S14 9 12 9"/></svg><b class="stN" id="stN">0</b><i class="stDot"></i></button>
+  <button id="storyBtn" class="btn ic" aria-label="Story"><svg class="i" viewBox="0 0 24 24"><path d="M12 6.5C10 5 7 4.5 3.5 5v13c3.5-.5 6.5 0 8.5 1.5 2-1.5 5-2 8.5-1.5V5C17 4.5 14 5 12 6.5zM12 6.5v13"/></svg></button>
+  <div class="cur">
+    <div class="cpill coin" id="coinPill"><i class="ico it0"></i><b id="coinVal">0</b></div>
+    <div class="cpill gem" id="gemPill"><i class="ico it1"></i><b id="gemVal">0</b></div>
+  </div>
+</div>
+
+<div id="title" class="screen hidden">
+  <div class="titleArt"></div>
+  <div class="logo"><div class="l1">DRAG NIGHTS <span>RACE</span></div><div class="tag">NIGHT DRAG LEGENDS</div></div>
+  <div class="carTag" id="menuCar"><b id="menuTier">D</b><span id="menuCarName">-</span></div>
+  <div class="menuCol">
+    <button class="btn big gold" id="careerBtn"><span class="mTxt">CAREER<small id="careerSub">TIER D &middot; RIVAL 1/10</small></span></button>
+    <button class="btn dailyCard" id="dailyBtn"><i class="dThumb" id="dThumb"></i><span class="dTxt"><b id="dName">DAILY CHALLENGE</b><small id="dSub">-</small></span>
+      <span class="dRight"><span class="dMedals" id="dMedals"><i data-m="b"></i><i data-m="s"></i><i data-m="g"></i></span><small class="dTime" id="dTime">--:--:--</small></span></button>
+    <div class="menuRow">
+      <button class="btn tile" id="garageBtn"><svg class="i" viewBox="0 0 24 24"><path d="M2.5 15.5V12.2L6 8h9.5l4 4.2h2v3.3"/><path d="M9 15.5h6.5M2.5 15.5h2M19.5 15.5h2"/><circle cx="7" cy="15.5" r="2.2"/><circle cx="17.5" cy="15.5" r="2.2"/></svg><span>GARAGE</span></button>
+      <button class="btn tile" id="quickBtn"><svg class="i" viewBox="0 0 24 24"><path d="M5 21V4M5 4h12.5L15 8.5l2.5 4.5H5"/></svg><span>QUICK RACE</span></button>
+    </div>
+    <div id="dailyTag" class="daily">DAILY FIRST WIN &middot; COINS &times;2</div>
+    <div class="setRow menuSet"><span>ENGINE</span><div class="seg" data-seg="eng"></div></div>
+  </div>
+</div>
+
+<div id="garage" class="screen meta hidden">
+  <div class="gHead">
+    <div class="tierBadge" id="gTier">D</div>
+    <div class="gNameBox"><div id="gName" class="carT">-</div><div id="gSub" class="carS">-</div></div>
+  </div>
+  <button class="btn arrow ic" id="gPrev" aria-label="Previous car"><svg class="i" viewBox="0 0 24 24"><path d="M14.5 5.5 8 12l6.5 6.5"/></svg></button>
+  <button class="btn arrow ic" id="gNext" aria-label="Next car"><svg class="i" viewBox="0 0 24 24"><path d="M9.5 5.5 16 12l-6.5 6.5"/></svg></button>
+  <div class="hot" id="hot"></div>
+  <div class="gBottom" id="gBottom">
+    <div class="gStrip hidden" id="gStats"></div>
+    <div class="gThumbs" id="gThumbs"></div>
+    <div class="row act"><button class="btn mid sm ic" id="gStatBtn" aria-label="Stats"><svg class="i" viewBox="0 0 24 24"><path d="M5 19V11M10 19V5M15 19v-6M20 19V8"/></svg></button><button class="btn mid gold" id="gAction"><span>SELECT</span></button></div>
+  </div>
+  <div class="pPanel glass" id="pPanel">
+    <div class="pHead"><span class="pIco" id="pIco"></span><div class="pName"><b id="pName">ENGINE</b><small id="pLv">LV 0/5</small></div><div class="pips" id="pPips"></div>
+      <button class="btn ic pX" id="pX" aria-label="Close"><svg class="i" viewBox="0 0 24 24"><path d="M7 7l10 10M17 7 7 17"/></svg></button></div>
+    <div class="tabs pTabs" id="pTabs"><button class="tab on" id="pTabUp">UPGRADE</button><button class="tab" id="pTabStyle">STYLE</button></div>
+    <div class="pList" id="pList"></div>
+    <div class="seg wide" id="pStyleSeg"></div>
+    <div class="pBody" id="pOpts"></div>
+    <div class="pBody" id="pUp">
+      <div id="uDesc" class="uDesc"></div>
+      <div id="uEffect" class="uEffect"></div>
+      <div class="uEt"><span>1/4 MILE</span><b id="uEt">-</b></div>
+      <button class="btn mid gold" id="uBuy"><span>UPGRADE</span></button>
+    </div>
+    <div class="pBody" id="pPaint">
+      <div class="paintGrid" id="paintGrid"></div>
+      <div id="paintInfo" class="paintInfo"></div>
+    </div>
+    <div class="pBody" id="pRims">
+      <div id="rimRow" class="rims"></div>
+      <div id="rimInfo" class="paintInfo"></div>
+    </div>
+    <div class="pBody" id="pEx">
+      <div class="uDesc">Exhaust note: the sound only, no speed change.</div>
+      <div class="seg wide" id="exSeg"><button data-v="stock">STOCK</button><button data-v="sport">SPORT</button><button data-v="straight">STRAIGHT PIPE</button></div>
+    </div>
+  </div>
+</div>
+
+<div id="career" class="screen meta hidden">
+  <div class="wm" id="wm"></div>
+  <div class="cSide">
+    <div class="aCta hidden" id="aCta"></div>
+    <div class="aCard cCard" id="aCard"></div>
+  </div>
+</div>
+
+<div id="result" class="screen hidden">
+  <div class="panel glass resP">
+    <div class="rzHero">
+      <div class="rzKick"><span id="resType"></span><span id="resPlace"></span></div>
+      <div id="resBanner" class="banner">YOU WIN</div>
+      <div class="rzTimes">
+        <div class="rzT p1"><small id="resN1">YOU</small><b id="resP1">-</b></div>
+        <i class="rzVs">VS</i>
+        <div class="rzT p2"><small id="resN2">RIVAL</small><b id="resP2">-</b></div>
+      </div>
+      <div id="resMargin" class="rzMargin">-</div>
+    </div>
+    <div class="rzReward" id="resReward"></div>
+    <div class="rzSide">
+      <div class="rzRibbon hidden" id="resRibbon"></div>
+      <div class="rzNext" id="resNext"></div>
+      <div class="rzDet" id="resDet">
+        <button class="rzDetBtn" id="resDetBtn" aria-expanded="false"><span>RACE DETAILS</span><svg class="i" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button>
+        <div class="rzDetBody"><div class="rzChips" id="resChips"></div><div class="rzStats" id="resStats"></div></div>
+      </div>
+    </div>
+    <div class="paintRow"><span>PAINT</span><div class="swatches" id="swatchesRes"></div></div>
+    <div class="row">
+      <button class="btn mid sm ic" id="menuBtn" aria-label="Menu"><svg class="i" viewBox="0 0 24 24"><path d="M4 11.5 12 4.5l8 7M6.5 9.5V19.5h11V9.5"/></svg></button>
+      <button class="btn mid" id="upBtn"><span>UPGRADE</span></button>
+      <button class="btn mid gold" id="againBtn"><span>RACE AGAIN</span></button>
+    </div>
+  </div>
+</div>
+
+<div id="pause" class="screen hidden">
+  <div class="panel small sheet">
+    <div class="sheetTitle">Paused</div>
+    <div class="col">
+      <button class="btn mid gold" id="resumeBtn"><span>RESUME</span><kbd class="kHint">P</kbd></button>
+      <div class="row2">
+        <button class="btn mid" id="restartBtn"><span>RESTART</span></button>
+        <button class="btn mid" id="quitBtn"><span>MENU</span></button>
+      </div>
+    </div>
+    <div class="setRows">
+      <div class="setRow" hidden><span>GRAPHICS</span><div class="seg" data-seg="gfx"></div></div><!-- user: always HIGH, no switch -->
+      <div class="setRow"><span>ENGINE</span><div class="seg" data-seg="eng"></div></div>
+      <div class="setRow"><span>MUSIC</span><div class="seg" id="musicSeg"><button data-v="1">ON</button><button data-v="0">OFF</button></div></div>
+      <div class="setRow"><span>SOUND FX</span><div class="seg" id="sfxSeg"><button data-v="1">ON</button><button data-v="0">OFF</button></div></div>
+      <div class="setRow"><span>CONTROLS</span><div class="seg" id="ctlSeg"><button data-v="0">AUTO GAS</button><button data-v="1">MANUAL</button></div></div>
+      <div class="setRow"><span>LAUNCH TUTORIAL</span><div class="seg"><button id="tutBtn">REPLAY</button></div></div>
+    </div>
+    <div class="pKeys" id="pKeys"><span><kbd class="wide">SPACE</kbd><i>HOLD = REV<br>TAP = GEAR UP</i></span><span><kbd class="wide">&#8679; SHIFT</kbd><i>NITRO<br>or &rarr; key</i></span><span><kbd>P</kbd><i>PAUSE<br>or Esc</i></span></div>
+    <div class="hiddenCtl"><button class="btn mid" id="gfxBtn"><span>GRAPHICS: HIGH</span></button><button class="btn mid" data-eng-switch><span>ENGINE: LIVE</span></button></div>
+  </div>
+</div>
+
+<div id="bokeh"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+<div id="rei" class="hidden"><div class="reiArt"></div></div>
+<div id="resScene" class="hidden"></div>
+<div id="cutin"></div>
+<div id="vs" class="hidden"></div>
+<div id="subs"></div>
+<canvas id="fx2d"></canvas>
+<div id="wipe"></div>
+<div id="toast"></div>
+<div id="claim" class="hidden"><div class="panel claimSheet"><div class="sheetTitle" id="clTitle">DAY 1</div><div class="clSub">LOGIN STREAK</div>
+  <div class="clDays" id="clDays"></div><div class="clTrack" id="clTrack"></div><div class="clRw" id="clRw"></div><button class="btn mid gold" id="clBtn"><span>CLAIM</span></button><button class="btn mid" id="clClose"><span>CLOSE</span></button></div></div>
+<div id="rotate"><svg viewBox="0 0 64 64"><rect x="20" y="8" width="24" height="44" rx="4"/><path d="M50 30a20 20 0 0 1-8 18M46 46l-4 2 1-5"/></svg><b>ROTATE YOUR PHONE</b><span>DRAG NIGHTS RACE PLAYS IN LANDSCAPE</span></div>
+<div id="loading"><div class="lbar"><span id="lfill"></span></div><div class="ltxt">DRAG NIGHTS RACE</div><div class="ltap" id="ltap">TAP FOR SOUND</div></div>
+<script>/* browsers only allow audio after a tap: invite it on the loading screen so the intro music starts while loading */
+(function(){var t=document.getElementById("ltap");function go(){t.textContent="♪";t.classList.add("on");document.removeEventListener("pointerdown",go,true);document.removeEventListener("keydown",go,true);}
+document.addEventListener("pointerdown",go,true);document.addEventListener("keydown",go,true);})();</script>
+
+<script>/* phone app build: GT_BUILD.name (build_www.py) renames the title, rotate and loading texts; web keeps Drag Nights Race */
+(function(){var n=window.GT_BUILD&&window.GT_BUILD.name;if(!n)return;var u=n.toUpperCase(),w=u.split(" "),q=function(s){return document.querySelector(s);};
+document.title=n;var l=q(".logo .l1");if(l)l.innerHTML=w.slice(0,-1).join(" ")+" <span>"+w[w.length-1]+"</span>";
+var r=q("#rotate span");if(r)r.textContent=u+" PLAYS IN LANDSCAPE";var x=q("#loading .ltxt");if(x)x.textContent=u;})();</script>
+<script type="module" src="main.js"></script>
+</body>
+</html>

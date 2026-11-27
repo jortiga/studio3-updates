@@ -1,0 +1,99 @@
+// Drag Nights Race ads bridge (store apps only; @capacitor-community/admob 7.2.0). Same rules as the studio template
+// (rougulike-app/web-src/ads.js, PUBLISHING.md / MOBILE_PERFORMANCE.md):
+//  - AdMob is NOT started at app boot. It starts when the first race result appears, so SDK start-up and ad loading
+//    never compete with the first race.
+//  - Google's UMP consent form where required, then Apple's tracking prompt (ATT) on iOS. Ads run whatever the answer.
+//  - Our own phones get test ads: ad-ids.json "testDevices" (the hash is per app; read it from logcat / the Xcode log).
+//  - Interstitial between races (gt-platform.js decides when) and a rewarded ad for x2 COINS on the result screen
+//    (window.GTReward in gt-platform.js; the button only shows while a rewarded ad is loaded). Same as Runebound.
+// Ad unit ids come from ad-ids.js (build_www.py writes it from ad-ids.json): Google's public TEST ids until the real
+// AdMob apps and units exist (see README.md).
+(() => {
+  const C = window.Capacitor;
+  if (!C || !C.isNativePlatform || !C.isNativePlatform() || !C.Plugins || !C.Plugins.AdMob) return;
+  const AdMob = C.Plugins.AdMob;
+  const ALL = window.GT_AD_IDS || {};
+  const IDS = C.getPlatform() === 'ios'
+    ? (ALL.ios || { interstitial: 'ca-app-pub-3940256099942544/4411468910', rewarded: 'ca-app-pub-3940256099942544/1712485313', testing: true })
+    : ALL;
+  const testing = !!IDS.testing;
+  let started = null, ready = false, loaded = false, loading = null, rLoaded = false, rLoading = null;
+
+  /* perf (Note 9, 2026-11-15, user: "one of the lags is when ads is loading"): native ad loading (SDK start, consent check,
+     every interstitial / rewarded load) stalls the WebView. It only ever starts at a calm moment: a menu / garage screen, or a
+     result screen that has been up for 2.5 s (counters settled); never while staging, counting down or racing. Ad rules
+     (when an ad may show, how often) are unchanged */
+  let resSince = 0;
+  const calmNow = () => { const g = window.__g && window.__g.G; if (!g) return false;
+    if (g.state !== 'result') resSince = 0; else if (!resSince) resSince = Date.now();
+    return !g.paused && (g.state === 'title' || (g.state === 'result' && Date.now() - resSince > 2500)); };
+  const calmQ = [];
+  let calmBusy = false;   /* one native call at a time: the next waits until the previous load has finished */
+  setInterval(() => { if (calmQ.length && !calmBusy && calmNow()) { const f = calmQ.shift(); calmBusy = true;
+    Promise.resolve().then(f).catch(() => {}).then(() => { calmBusy = false; }); } else calmNow(); }, 400);
+  const whenCalm = (f) => { if (!calmQ.includes(f)) calmQ.push(f); };
+
+  const once = (event) => new Promise((resolve) => {
+    let h; AdMob.addListener(event, (v) => { h && h.remove(); resolve(v); }).then((x) => (h = x));
+  });
+
+  function prep() {
+    if (loaded || loading || !ready) return loading;
+    loading = AdMob.prepareInterstitial({ adId: IDS.interstitial, isTesting: testing })
+      .then(() => { loaded = true; }, () => { loaded = false; setTimeout(() => whenCalm(prep), 30000); })
+      .finally(() => { loading = null; });
+    return loading;
+  }
+  function prepR() {
+    if (!IDS.rewarded || rLoaded || rLoading || !ready) return rLoading;
+    rLoading = AdMob.prepareRewardVideoAd({ adId: IDS.rewarded, isTesting: testing })
+      .then(() => { rLoaded = true; }, () => { rLoaded = false; setTimeout(() => whenCalm(prepR), 30000); })
+      .finally(() => { rLoading = null; });
+    return rLoading;
+  }
+
+  function start() {
+    if (started) return started;
+    started = (async () => {
+      try {
+        await AdMob.initialize({ initializeForTesting: testing || !!(IDS.testDevices && IDS.testDevices.length), testingDevices: IDS.testDevices || [] });
+        try {
+          const info = await AdMob.requestConsentInfo();
+          if (info.isConsentFormAvailable && info.status === 'REQUIRED') await AdMob.showConsentForm();
+        } catch (e) { /* consent service unreachable: non-personalised ads */ }
+        if (C.getPlatform() === 'ios') { try { await AdMob.requestTrackingAuthorization(); } catch (e) { /* not available */ } }
+        ready = true; whenCalm(prepR); whenCalm(prep);   /* queued: one load at a time, calm moments only */
+      } catch (e) { /* AdMob unavailable: the game runs without ads */ }
+    })();
+    return started;
+  }
+
+  // Resolves when the ad closes, or at once if none is loaded (the player never waits for an ad).
+  async function interstitial() {
+    if (!ready || !loaded) { whenCalm(() => start().then(() => whenCalm(prep))); return; }
+    loaded = false;
+    const closed = Promise.race([once('interstitialAdDismissed'), once('interstitialAdFailedToShow')]);
+    try { await AdMob.showInterstitial(); await closed; } catch (e) { /* failed to show */ }
+    whenCalm(prep);   /* a race starts right after the ad: reload on the next result / menu screen */
+  }
+
+  // Resolves true only if the player watched to the reward (Runebound's showRewarded).
+  async function rewarded() {
+    if (!ready || !rLoaded) { whenCalm(() => start().then(() => whenCalm(prepR))); return false; }
+    rLoaded = false;
+    let got = false;
+    const h = await AdMob.addListener('onRewardedVideoAdReward', () => { got = true; });
+    const closed = Promise.race([once('onRewardedVideoAdDismissed'), once('onRewardedVideoAdFailedToShow')]);
+    try { await AdMob.showRewardVideoAd(); await closed; } catch (e) { /* failed to show */ }
+    h.remove(); whenCalm(prepR);
+    return got;
+  }
+
+  window.GTAds = { start, interstitial, rewarded, canReward: () => ready && rLoaded, get ready() { return ready && loaded; } };
+
+  // Start after the first race result (the game's G.state becomes 'result').
+  const t = setInterval(() => {
+    const g = window.__g && window.__g.G;
+    if (g && g.state === 'result') { clearInterval(t); whenCalm(start); }   /* first result, once it has settled (or the menu) */
+  }, 500);
+})();

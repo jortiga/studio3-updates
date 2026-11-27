@@ -1,0 +1,23 @@
+// UI themes: one structure (min.css) + a look per theme (theme_<name>.css, all loaded, each scoped to
+// :root[data-theme=<name>]). Pick with ?theme=premium|synth or the THEME control in pause; the
+// choice is saved (localStorage gt_theme_v1) and switches live. The race tach reads its colours from CSS variables
+// (--tach-*), so a switch fires 'themechange' and the HUD re-bakes its dial.
+export const THEMES = [['premium', 'PREMIUM'], ['synth', 'SYNTH']];   // user kept these two (manga/arcade/minimal dropped; theme_minimal.css stays as the base tokens)
+const KEY = 'gt_theme_v1', DEFAULT = 'premium';
+const ok = (t) => THEMES.some(([k]) => k === t);
+
+export function current() { return document.documentElement.dataset.theme || DEFAULT; }
+export function apply(t, save = true) {
+  if (!ok(t)) t = DEFAULT;
+  document.documentElement.dataset.theme = t;
+  if (save) try { localStorage.setItem(KEY, t); } catch { /* private mode */ }
+  dispatchEvent(new CustomEvent('themechange', { detail: t }));
+}
+
+// boot: URL flag > saved choice > default (runs on import, before the first frame)
+(() => {
+  const q = new URLSearchParams(location.search).get('theme');
+  let t = null;
+  try { t = localStorage.getItem(KEY); } catch { /* */ }
+  if (ok(q)) apply(q, true); else apply(ok(t) ? t : DEFAULT, false);
+})();

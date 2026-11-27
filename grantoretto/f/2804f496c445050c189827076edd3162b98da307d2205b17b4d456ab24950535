@@ -1,0 +1,108 @@
+// Cast: who is who (portrait art, names), voiced lines through Audio.voice() and the subtitle box.
+// cast.json (owned by the audio pipeline) is the source of truth for names and lines; it may load late or lack a
+// line, so everything falls back to an estimate from the text.
+import * as O from './overlay.js';
+let AU = null;
+import('./audio.js').then((m) => { AU = m.Audio || m.default || null; }).catch(() => null);
+export const audio = () => AU;
+
+let cast = null;
+export const castReady = fetch('cast.json').then((r) => r.json()).then((j) => { cast = j; return j; }).catch(() => null);
+
+// art/*.webp painted by tools/make_art.py
+export const ART = {
+  mika: 'art/mika_win.webp', rei: 'art/rei.webp', driver: 'art/driver.webp', rival_a: 'art/rival_a.webp', rival_b: 'art/rival_b.webp',
+  kaito: 'art/kaito.webp', misaki: 'art/misaki.webp', goro: 'art/goro.webp', shin: 'art/shin.webp', empress: 'art/empress.webp',
+};
+export const BOSS = { D: 'kaito', C: 'misaki', B: 'goro', A: 'shin', S: 'empress' };
+const FALLBACK_NAME = { mika: 'MIKA', rei: 'REI', driver: 'YOU', rival_a: 'RIVAL', rival_b: 'RIVAL' };
+
+// Every non-boss career rival has its own bust: art/rival_<tier>_<rung>.webp (rung 0-based; tools/make_rivals.py,
+// looks in tools/rivals.json). Their lines/voices reuse the generic rival_a / rival_b (alternating by rung).
+const RIVAL_TIERS = 'dcbas'; // tiers whose 9 rival busts are painted (others fall back to rival_a / rival_b)
+for (const t of RIVAL_TIERS) for (let i = 0; i < 9; i++) ART[`rival_${t}_${i}`] = `art/rival_${t}_${i}.webp`;
+const RIVAL_RE = /^rival_([a-z])_(\d+)$/;
+const RNAME = {};
+/** Voice/lines id behind a character id: a per-rival portrait id -> rival_a / rival_b (men) or rival_c / rival_d
+ *  (women; gender from cast.json "rivals", made from tools/rivals.json). */
+export function voiceOf(id) {
+  const m = RIVAL_RE.exec(id || '');
+  if (!m) return id;
+  const alt = (+m[2] + m[1].toUpperCase().charCodeAt(0)) % 2;
+  const fem = cast && cast.rivals && cast.rivals[id] && cast.rivals[id].sex === 'f';
+  return fem ? (alt ? 'rival_d' : 'rival_c') : (alt ? 'rival_b' : 'rival_a');
+}
+/** Deterministic per-rival voice colour (so 45 rivals don't sound like 4 people): rate +-7 %, shelf +-3 dB. */
+export function voiceColour(id) {
+  if (!RIVAL_RE.test(id || '')) return null;
+  let h = 2166136261;
+  for (const ch of id) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619) >>> 0; }
+  h ^= h >>> 13; h = Math.imul(h, 0x5bd1e995) >>> 0; h ^= h >>> 15;   // avalanche: neighbours differ
+  const u = (h & 0xffff) / 0xffff, v = (h >>> 16) / 0xffff;
+  return { rate: +(1 + (u * 2 - 1) * 0.07).toFixed(3), tilt: +((v * 2 - 1) * 3).toFixed(1) };
+}
+
+/** The character id for a career rung info (or a quick race). */
+export function rivalChar(ri, seed = 0) {
+  if (ri && ri.isBoss) return BOSS[ri.tier] || 'rival_a';
+  if (ri && ri.tier && RIVAL_TIERS.includes(ri.tier.toLowerCase()) && ri.i >= 0 && ri.i < 9) {
+    const id = `rival_${ri.tier.toLowerCase()}_${ri.i}`;
+    if (ri.name) RNAME[id] = ri.name;
+    return id;
+  }
+  const i = ri ? ri.i + ri.tier.charCodeAt(0) : seed;
+  return i % 2 ? 'rival_b' : 'rival_a';
+}
+export function charOf(id) { return cast && cast.characters && cast.characters[voiceOf(id)]; }
+export function charName(id) {
+  if (RNAME[id]) return RNAME[id].toUpperCase();
+  const c = charOf(id);
+  return (c ? c.name : FALLBACK_NAME[voiceOf(id)] || id).toUpperCase();
+}
+export function line(id, key) { const c = charOf(id); return c && c.lines && c.lines[key]; }
+export function hasLine(id, key) { return !!line(id, key); }
+const estimate = (t) => (t ? 0.45 + 0.065 * t.length : 0);
+
+/** Play a cast line; returns its duration (s). Never throws. */
+export function voice(id, key) {
+  const l = line(id, key);
+  let d = 0;
+  try { if (AU && AU.voice) d = AU.voice(voiceOf(id), key, voiceColour(id) || {}) || 0; } catch { /* */ }
+  return d || (l ? l.dur || estimate(l.text) : 0);
+}
+
+// ---------- subtitles ----------
+// The speech slot of the overlay manager (overlay.js): one box at a time, later lines wait (max 1) or replace it
+// (`now`). `where` picks the placement class (reiSub / vsSub / rsSub / race). Returns the line duration (s).
+const sub = document.getElementById('subs');
+const cleanName = (n) => n.replace(/'.*'/, '').replace(/\s*\(.*\)\s*/, '').trim();
+export function say(id, key, { where = 'bottom', name = null, hold = 0.5, mute = false, now = false } = {}) {
+  const l = line(id, key);
+  if (!l) return 0;
+  const est = l.dur || estimate(l.text);
+  if (!sub) return mute ? est : voice(id, key);
+  let d = est;
+  O.push('speech', () => {
+    d = mute ? est : voice(id, key);
+    sub.className = 'show ' + where + ' c_' + voiceOf(id);
+    sub.innerHTML = `<b>${cleanName(name || charName(id)) || 'RIVAL'}</b><span>${l.sub || l.text}</span>`;
+    return d + hold;
+  }, () => { sub.className = 'hide ' + where; }, { max: 1, key: id, now });
+  return d;
+}
+export function hideSub() { if (sub) { O.clear('speech'); sub.className = 'hide'; } }
+
+// ---------- background preload (after the menu is up: never blocks the menu music) ----------
+let preloaded = false;
+export function preloadArt(extra = []) {
+  if (preloaded) return; preloaded = true;
+  const list = [...new Set([...Object.entries(ART).filter(([k]) => !RIVAL_RE.test(k)).map(([, v]) => v), 'art/mika_ready.webp', 'art/mika_go.webp', 'art/cut_eyes.webp', 'art/cut_shift.webp', ...extra])];
+  let i = 0;
+  const next = () => {
+    if (i >= list.length) return;
+    const im = new Image(); im.decoding = 'async'; try { im.fetchPriority = 'low'; } catch { /* */ }
+    im.onload = im.onerror = () => setTimeout(next, 30);
+    im.src = list[i++];
+  };
+  for (let k = 0; k < 2; k++) next(); // two at a time
+}
